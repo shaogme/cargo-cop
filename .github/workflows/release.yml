@@ -1,9 +1,12 @@
 name: 发布 cargo-cop
 
 on:
-  push:
-    tags:
-      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: cargo-cop 的 Cargo 包版本（不含 v 前缀）
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -36,13 +39,12 @@ jobs:
       - name: 校验发布版本
         shell: bash
         env:
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          tag_version="${RELEASE_TAG#v}"
           package_version="$(cargo pkgid --package cargo-cop | sed 's/^.*[#@]//')"
-          if [[ "$tag_version" != "$package_version" ]]; then
-            echo "标签版本 $tag_version 与 cargo-cop 版本 $package_version 不一致" >&2
+          if [[ "$RELEASE_VERSION" != "$package_version" ]]; then
+            echo "输入版本 $RELEASE_VERSION 与 cargo-cop 版本 $package_version 不一致" >&2
             exit 1
           fi
 
@@ -57,11 +59,10 @@ jobs:
         shell: bash
         env:
           TARGET: ${{ matrix.target }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          version="${RELEASE_TAG#v}"
-          package_dir="cargo-cop-${TARGET}-v${version}"
+          package_dir="cargo-cop-${TARGET}-v${RELEASE_VERSION}"
           mkdir -p "$package_dir"
           cp "target/${TARGET}/release/cargo-cop" "$package_dir/cargo-cop"
           tar -czf "${package_dir}.tgz" "$package_dir"
@@ -71,10 +72,9 @@ jobs:
         shell: pwsh
         env:
           TARGET: ${{ matrix.target }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_VERSION: ${{ inputs.version }}
         run: |
-          $version = $env:RELEASE_TAG.Substring(1)
-          $packageDir = "cargo-cop-$($env:TARGET)-v$version"
+          $packageDir = "cargo-cop-$($env:TARGET)-v$($env:RELEASE_VERSION)"
           New-Item -ItemType Directory -Path $packageDir | Out-Null
           Copy-Item "target/$($env:TARGET)/release/cargo-cop.exe" "$packageDir/cargo-cop.exe"
           Compress-Archive -Path $packageDir -DestinationPath "$packageDir.zip"
@@ -103,6 +103,8 @@ jobs:
 
       - uses: softprops/action-gh-release@v3
         with:
+          tag_name: v${{ inputs.version }}
+          target_commitish: ${{ github.sha }}
           files: dist/*
           generate_release_notes: true
           fail_on_unmatched_files: true
