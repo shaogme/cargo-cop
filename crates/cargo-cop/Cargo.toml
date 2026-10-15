@@ -1,0 +1,34 @@
+[package]
+name = "cargo-cop"
+description = "A configurable static checker for Rust source code conventions."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "../../README.md"
+keywords = ["cargo-plugin", "linter", "rust", "static-analysis"]
+categories = ["command-line-utilities", "development-tools"]
+
+[dependencies]
+clap.workspace = true
+cop-config.workspace = true
+cop-cargo.workspace = true
+cop-analysis.workspace = true
+cop-rules.workspace = true
+cop-report.workspace = true
+cop-i18n.workspace = true
+cop-model.workspace = true
+serde_json.workspace = true
+log = "0.4"
+
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }-v{ version }{ archive-suffix }"
+bin-dir = "{ name }-{ target }-v{ version }/{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
+disabled-strategies = ["quick-install", "compile"]
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-fmt = "zip"

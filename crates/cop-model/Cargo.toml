@@ -1,0 +1,16 @@
+[package]
+name = "cop-model"
+description = "Shared diagnostic, source location, rule, and scan state types for cargo-cop."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "../../README.md"
+keywords = ["diagnostics", "rust", "types"]
+categories.workspace = true
+
+[dependencies]
+serde.workspace = true

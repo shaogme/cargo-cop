@@ -1,0 +1,18 @@
+[package]
+name = "cop-report"
+description = "Human-readable and JSON diagnostic rendering for cargo-cop."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "../../README.md"
+keywords = ["diagnostics", "json", "rust"]
+categories.workspace = true
+
+[dependencies]
+cop-model.workspace = true
+cop-i18n.workspace = true
+serde_json.workspace = true

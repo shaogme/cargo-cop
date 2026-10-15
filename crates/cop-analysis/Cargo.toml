@@ -1,0 +1,18 @@
+[package]
+name = "cop-analysis"
+description = "Rust module graph discovery, cfg evaluation, symbol indexing, and path analysis for cargo-cop."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "../../README.md"
+keywords = ["analysis", "rust", "static-analysis"]
+categories.workspace = true
+
+[dependencies]
+cop-cargo.workspace = true
+cop-syntax.workspace = true
+cop-model.workspace = true

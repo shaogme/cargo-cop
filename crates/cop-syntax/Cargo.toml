@@ -1,0 +1,16 @@
+[package]
+name = "cop-syntax"
+description = "A lightweight Rust lexer, parser, and syntax tree for cargo-cop static analysis."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "../../README.md"
+keywords = ["parser", "rust", "syntax"]
+categories.workspace = true
+
+[dependencies]
+cop-model.workspace = true

@@ -1,0 +1,17 @@
+[package]
+name = "cop-config"
+description = "Configuration discovery, schema validation, and command-line overrides for cargo-cop."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "../../README.md"
+keywords = ["configuration", "rust", "static-analysis"]
+categories.workspace = true
+
+[dependencies]
+cop-model.workspace = true
+toml.workspace = true

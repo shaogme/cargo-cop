@@ -1,0 +1,19 @@
+[package]
+name = "cop-rules"
+description = "Configurable Rust source convention checks for cargo-cop."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "../../README.md"
+keywords = ["lint", "rust", "static-analysis"]
+categories.workspace = true
+
+[dependencies]
+cop-config.workspace = true
+cop-analysis.workspace = true
+cop-syntax.workspace = true
+cop-model.workspace = true

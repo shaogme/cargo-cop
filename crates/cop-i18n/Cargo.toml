@@ -1,0 +1,31 @@
+[package]
+name = "cop-i18n"
+description = "English and Simplified Chinese diagnostic messages for cargo-cop."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "../../README.md"
+keywords = ["fluent", "internationalization", "rust"]
+categories.workspace = true
+
+[dependencies]
+cop-model.workspace = true
+fluent-bundle = "=0.15.3"
+fluent-templates = { version = "=0.12.1", default-features = false, features = ["macros", "walkdir"] }
+language-tags = "=0.3.2"
+log = "0.4"
+unic-langid = "=0.9.5"
+# 限定 Fluent 间接依赖版本以保持 Rust 1.75 MSRV。 / Pin Fluent transitive dependencies to preserve Rust 1.75 MSRV.
+rustc-hash = { version = "=2.1.1", default-features = false }
+unic-langid-impl = "=0.9.5"
+unic-langid-macros = "=0.9.5"
+unic-langid-macros-impl = "=0.9.5"
+
+[build-dependencies]
+cop-model.workspace = true
+fluent-syntax = "=0.11.1"
+unic-langid = "=0.9.5"
