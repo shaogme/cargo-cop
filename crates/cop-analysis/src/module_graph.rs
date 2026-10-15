@@ -35,7 +35,9 @@ pub struct ModuleNode {
     cfg_condition: Option<String>,
     crate_root: bool,
     inline: bool,
+    order_only: bool,
     items: Vec<Item>,
+    source_items: Vec<Item>,
     source: Arc<ParseOutput>,
 }
 
@@ -73,6 +75,7 @@ struct ModuleScope {
     is_root: bool,
     source_is_root: bool,
     is_inline: bool,
+    active: bool,
     items: Vec<Item>,
     inner_attributes: Vec<Attribute>,
     source: Arc<ParseOutput>,
@@ -153,8 +156,16 @@ impl ModuleNode {
         self.inline
     }
 
+    pub fn is_order_only(&self) -> bool {
+        self.order_only
+    }
+
     pub fn items(&self) -> &[Item] {
         &self.items
+    }
+
+    pub fn source_items(&self) -> &[Item] {
+        &self.source_items
     }
 
     pub fn parse_output(&self) -> &ParseOutput {
@@ -205,6 +216,7 @@ impl GraphBuilder<'_> {
             is_root: true,
             source_is_root: true,
             is_inline: false,
+            active: true,
             items: source.items().to_vec(),
             inner_attributes: source.inner_attributes().to_vec(),
             source,
@@ -221,17 +233,40 @@ impl GraphBuilder<'_> {
         let evaluator = CfgEvaluator::new(self.target);
         let scope_effects =
             evaluator.evaluate_attributes(&scope.inner_attributes, scope.source.source());
-        self.report_effects(&scope, &scope.inner_attributes, &scope_effects);
-        if scope_effects.decision == Some(CfgDecision::False) {
-            return;
+        if scope.active {
+            self.report_effects(&scope, &scope.inner_attributes, &scope_effects);
         }
+        scope.active &= scope_effects.decision != Some(CfgDecision::False);
         scope.cfg_condition = merge_conditions(scope.cfg_condition, &scope_effects.conditions);
         let mut active_items = Vec::new();
         let source = scope.source.clone();
         for item in &scope.items {
+            if !scope.active {
+                if let ItemKind::Module(module) = item.kind() {
+                    if module.is_inline() {
+                        self.visit_module(ModuleVisit {
+                            scope: &scope,
+                            item,
+                            module,
+                            effects: AttributeEffects::default(),
+                        });
+                    }
+                }
+                continue;
+            }
             let effects = evaluator.evaluate_attributes(item.attributes(), source.source());
             self.report_effects(&scope, item.attributes(), &effects);
             if effects.decision == Some(CfgDecision::False) {
+                if let ItemKind::Module(module) = item.kind() {
+                    if module.is_inline() {
+                        self.visit_module(ModuleVisit {
+                            scope: &scope,
+                            item,
+                            module,
+                            effects,
+                        });
+                    }
+                }
                 continue;
             }
             active_items.push(item.clone());
@@ -295,7 +330,9 @@ impl GraphBuilder<'_> {
             cfg_condition: scope.cfg_condition,
             crate_root: scope.is_root,
             inline: scope.is_inline,
+            order_only: !scope.active,
             items: active_items,
+            source_items: scope.items,
             source: scope.source,
         };
         self.nodes.push(node);
@@ -325,6 +362,7 @@ impl GraphBuilder<'_> {
                 is_root: false,
                 source_is_root: scope.source_is_root,
                 is_inline: true,
+                active: scope.active && effects.decision != Some(CfgDecision::False),
                 items: module.items().to_vec(),
                 inner_attributes: module.inner_attributes().to_vec(),
                 source: scope.source.clone(),
@@ -367,6 +405,7 @@ impl GraphBuilder<'_> {
             is_root: false,
             source_is_root: false,
             is_inline: false,
+            active: true,
             items: source.items().to_vec(),
             inner_attributes: source.inner_attributes().to_vec(),
             source,

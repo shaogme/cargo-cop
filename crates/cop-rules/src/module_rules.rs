@@ -85,8 +85,11 @@ impl ModuleRuleSet {
             if module.parse_output().coverage() != CoverageStatus::Complete {
                 continue;
             }
-            Self::module_layout(module, diagnostics, &adapter);
             Self::out_of_line_modules(module, diagnostics, &adapter);
+            if module.is_order_only() {
+                continue;
+            }
+            Self::module_layout(module, diagnostics, &adapter);
             Self::private_children(module, diagnostics, &adapter);
             Self::item_spacing(module, diagnostics, &adapter);
             Self::module_line_count(module, diagnostics, &adapter);
@@ -125,11 +128,12 @@ impl ModuleRuleSet {
         diagnostics: &mut Vec<Diagnostic>,
         adapter: &RuleDiagnosticAdapter<'_>,
     ) {
-        let mut encountered_non_module = false;
-        for item in module.items() {
+        let mut encountered_after_module_prefix = false;
+        for item in module.source_items() {
             match item.kind() {
+                ItemKind::ExternCrate(_) => {}
                 ItemKind::Module(child) if !child.is_inline() => {
-                    if encountered_non_module {
+                    if encountered_after_module_prefix {
                         adapter.push(
                             module,
                             diagnostics,
@@ -141,7 +145,7 @@ impl ModuleRuleSet {
                         );
                     }
                 }
-                _ => encountered_non_module = true,
+                _ => encountered_after_module_prefix = true,
             }
         }
     }

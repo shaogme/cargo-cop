@@ -21,7 +21,9 @@ impl SyntaxRuleSet {
     ) {
         let adapter = RuleDiagnosticAdapter::new(configuration);
         for module in snapshot.modules() {
-            if module.parse_output().coverage() != CoverageStatus::Complete {
+            if module.parse_output().coverage() != CoverageStatus::Complete
+                || module.is_order_only()
+            {
                 continue;
             }
             Self::lint_relaxation(module, diagnostics, &adapter);

@@ -3,7 +3,7 @@ item-spacing = Adjacent definitions require { $expected } blank lines; found { $
    *[other] { $actual } blank lines
 }
 module-file-layout = Submodule entry files must not use the mod.rs layout
-out-of-line-modules-at-scope-start = Out-of-line module declarations must be contiguous at the beginning of the module scope
+out-of-line-modules-at-scope-start = Out-of-line module declarations must follow extern crate declarations and stay before use declarations and other items
 private-child-module = Submodule { $module } must use a private mod declaration
 child-module-line-count = The effective line count of submodule file { $file } is { $actual }; it must be between { $minimum } and { $maximum }
 no-parent-glob-import = Child modules must not use super::* to import parent implementation details
@@ -20,7 +20,8 @@ closure-parameter-limit = This closure has { $actual } parameters; the maximum i
 tuple-arity = This tuple has { $actual } elements; the maximum is { $maximum }
 declaration-before-use = Name { $name } is referenced before its declaration
 no-inline-qualified-path = Path { $path } is rooted directly at an external crate; import the required name first
-use-at-scope-start = use declarations must be contiguous at the beginning of a scope, before non-attribute items
+extern-crate-at-scope-start = extern crate declarations must appear at the start of a module scope
+use-at-scope-start = Module-scope use declarations must follow out-of-line modules and precede other items
 block-use-at-scope-start = A use declaration in a block must appear before the first non-use statement
 merge-import-prefix = This import shares the prefix { $prefix } with the import on line { $line }; merge them into one use tree
 merge-block-import-prefix = This block import shares the prefix { $prefix } with the import on line { $line }; merge them into one use tree

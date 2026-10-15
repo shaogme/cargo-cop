@@ -54,7 +54,7 @@ dependencies = [
 
 [[package]]
 name = "cargo-cop"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap",
  "cop-analysis",
@@ -116,7 +116,7 @@ checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
 
 [[package]]
 name = "cop-analysis"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "cop-cargo",
  "cop-model",
@@ -125,7 +125,7 @@ dependencies = [
 
 [[package]]
 name = "cop-cargo"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "cop-model",
  "serde",
@@ -135,7 +135,7 @@ dependencies = [
 
 [[package]]
 name = "cop-config"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "cop-model",
  "toml",
@@ -143,7 +143,7 @@ dependencies = [
 
 [[package]]
 name = "cop-i18n"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "cop-model",
  "fluent-bundle",
@@ -160,14 +160,14 @@ dependencies = [
 
 [[package]]
 name = "cop-model"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "cop-report"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "cop-i18n",
  "cop-model",
@@ -176,7 +176,7 @@ dependencies = [
 
 [[package]]
 name = "cop-rules"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "cop-analysis",
  "cop-config",
@@ -186,7 +186,7 @@ dependencies = [
 
 [[package]]
 name = "cop-syntax"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "cop-model",
 ]

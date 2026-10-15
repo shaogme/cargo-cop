@@ -407,6 +407,32 @@ use std::os::windows::fs::MetadataExt as WinMetadataExt;
 
 ```
 
+### 5.5 模块作用域声明顺序
+
+模块作用域的前导 item 必须依次排列为：`extern crate` 声明、外部模块声明（`mod name;`）、`use` 导入、其他 item。每一类可以为空或包含多个声明；外层 `#[cfg(...)]`、`#[path = "..."]` 等属性仍附属于其后的声明。inline module（`mod name { ... }`）按其他 item 处理，block 内 `use` 仍按 block 导入规则检查。
+
+```rust
+extern crate legacy_dep;
+extern crate another_dep as alias;
+
+mod alpha;
+mod beta;
+
+use crate::alpha::Alpha;
+use alias::Thing;
+
+fn run() {}
+```
+
+```rust
+mod alpha;
+extern crate legacy_dep;
+
+use crate::alpha::Alpha;
+fn run() {}
+use crate::beta::Beta;
+```
+
 ---
 
 > **提交准则**：在提交代码（Commit/PR）之前，必须在本地完整运行测试与检查（包括 `cargo fmt --check`、`cargo clippy -- -D warnings` 与 `cargo test`）。如任一检查未通过，必须修复后方可提交。

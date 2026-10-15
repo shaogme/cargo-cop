@@ -1,6 +1,6 @@
 item-spacing = 相邻定义之间应有 { $expected } 个空行，当前有 { $actual } 个
 module-file-layout = 子模块入口文件不能使用 mod.rs 布局
-out-of-line-modules-at-scope-start = 外部模块声明必须连续位于模块作用域的前导位置
+out-of-line-modules-at-scope-start = 外部模块声明必须位于 extern crate 声明之后、use 声明和其他 item 之前，并连续排列
 private-child-module = 子模块 { $module } 必须使用私有 mod 声明
 child-module-line-count = 子模块文件 { $file } 的有效代码行数为 { $actual }，要求在 { $minimum } 到 { $maximum } 行之间
 no-parent-glob-import = 子模块不得使用 super::* 导入父模块实现
@@ -17,7 +17,8 @@ closure-parameter-limit = 闭包参数数量为 { $actual }，最多允许 { $ma
 tuple-arity = tuple 元素数量为 { $actual }，最多允许 { $maximum } 个
 declaration-before-use = 名称 { $name } 在其声明之前被引用
 no-inline-qualified-path = 路径 { $path } 直接以外部 crate 为根，应先导入所需名称
-use-at-scope-start = use 声明必须连续放在作用域的非属性前导位置
+extern-crate-at-scope-start = extern crate 声明必须位于模块作用域开头
+use-at-scope-start = 模块作用域中的 use 声明必须位于外部模块声明之后、其他 item 之前
 block-use-at-scope-start = block 作用域中的 use 声明必须位于首个非 use 语句之前
 merge-import-prefix = 此导入与第 { $line } 行的导入共享前缀 { $prefix }，可合并为一条 use tree
 merge-block-import-prefix = 此 block 导入与第 { $line } 行共享前缀 { $prefix }，可合并为一条 use tree

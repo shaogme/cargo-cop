@@ -126,12 +126,26 @@ All rules are enabled by default and use `error` severity unless configured othe
 | `tuple_arity` | Tuple types and expressions may have at most two elements. |
 | `no_inline_qualified_path` | Import external crate names before using them as the root of a qualified path. |
 | `merge_common_prefix_imports` | Merge eligible adjacent imports that share a path prefix and have compatible visibility and `cfg` conditions. |
-| `imports_at_scope_start` | Keep module imports after out-of-line module declarations and before other items; keep block imports before other statements. |
-| `out_of_line_modules_at_scope_start` | Keep out-of-line module declarations together at the beginning of a module scope. |
+| `extern_crate_at_scope_start` | Keep module-scope `extern crate` declarations at the start of each module scope. |
+| `imports_at_scope_start` | Place module-scope `use` declarations after out-of-line modules and before other items; keep block imports before other statements. |
+| `out_of_line_modules_at_scope_start` | Keep out-of-line modules together after `extern crate` declarations and before `use` declarations and other items. |
 | `cfg_use_group_spacing` | Keep imports with different `cfg` conditions in distinct groups separated by one blank line. |
 | `cfg_inside_use_tree` | Put `cfg` attributes on a complete `use` item, not inside a braced use tree. |
 
 Rule IDs are stable configuration keys. Tool errors and analysis issues are not rules and cannot be disabled with `--disable-rule`.
+
+Module-scope order example:
+
+```rust
+extern crate legacy_dep as legacy;
+
+mod alpha;
+
+use crate::alpha::Alpha;
+use legacy::Thing;
+
+fn run() {}
+```
 
 ## Reports and exit codes
 
@@ -164,7 +178,7 @@ The workspace separates the command-line application from the analysis pipeline:
 | `cop-cargo` | Cargo metadata, package and target selection, features, dependencies, and target `cfg`. |
 | `cop-syntax` | Project-owned Rust lexer, syntax tree, parser, and parser coverage status. |
 | `cop-analysis` | `cfg` evaluation, module graph discovery, symbol and path resolution, analysis status. |
-| `cop-rules` | The 18 source convention rules. |
+| `cop-rules` | The 19 source convention rules. |
 | `cop-model` | Shared rule IDs, diagnostic, location, message, and scan-status types. |
 | `cop-report` | Stable diagnostic ordering and human/JSON rendering. |
 | `cop-i18n` | English and Simplified Chinese messages. |

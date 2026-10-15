@@ -23,6 +23,7 @@ pub enum RuleId {
     TupleArity,
     NoInlineQualifiedPath,
     MergeCommonPrefixImports,
+    ExternCrateAtScopeStart,
     ImportsAtScopeStart,
     OutOfLineModulesAtScopeStart,
     CfgUseGroupSpacing,
@@ -83,7 +84,7 @@ pub struct Diagnostic {
 }
 
 impl RuleId {
-    pub const ALL: [Self; 18] = [
+    pub const ALL: [Self; 19] = [
         Self::ModuleFileLayout,
         Self::NoLintRelaxation,
         Self::ItemSpacing,
@@ -98,6 +99,7 @@ impl RuleId {
         Self::TupleArity,
         Self::NoInlineQualifiedPath,
         Self::MergeCommonPrefixImports,
+        Self::ExternCrateAtScopeStart,
         Self::ImportsAtScopeStart,
         Self::OutOfLineModulesAtScopeStart,
         Self::CfgUseGroupSpacing,
@@ -120,6 +122,7 @@ impl RuleId {
             Self::TupleArity => "tuple_arity",
             Self::NoInlineQualifiedPath => "no_inline_qualified_path",
             Self::MergeCommonPrefixImports => "merge_common_prefix_imports",
+            Self::ExternCrateAtScopeStart => "extern_crate_at_scope_start",
             Self::ImportsAtScopeStart => "imports_at_scope_start",
             Self::OutOfLineModulesAtScopeStart => "out_of_line_modules_at_scope_start",
             Self::CfgUseGroupSpacing => "cfg_use_group_spacing",

@@ -97,6 +97,17 @@ fn item_spacing_diagnostics(output: &RunOutput) -> Vec<Value> {
         .collect()
 }
 
+fn rule_diagnostics(output: &RunOutput, rule_id: &str) -> Vec<Value> {
+    let report = serde_json::from_str::<Value>(&output.stdout).expect("JSON 报告");
+    report["diagnostics"]
+        .as_array()
+        .expect("诊断数组")
+        .iter()
+        .filter(|diagnostic| diagnostic["rule_id"] == rule_id)
+        .cloned()
+        .collect()
+}
+
 fn write_package(root: &Path, name: &str, source: &str) {
     fs::create_dir_all(root.join(name).join("src")).expect("创建 package 源码目录");
     fs::write(root.join(name).join("Cargo.toml"), package_manifest(name))
@@ -1097,7 +1108,7 @@ fn checks_import_spacing_in_module_and_nested_block_scopes() {
 }
 
 #[test]
-fn accepts_module_declarations_before_imports_and_inline_modules_after_imports() {
+fn accepts_extern_crates_modules_and_imports_in_module_scope_order() {
     let fixture = Fixture::new();
     fixture.write(
         "Cargo.toml",
@@ -1105,7 +1116,7 @@ fn accepts_module_declarations_before_imports_and_inline_modules_after_imports()
     );
     fixture.write(
         "src/lib.rs",
-        "#[path = \"parts/alpha.rs\"]\nmod alpha;\n#[cfg(feature = \"beta\")]\nmod beta;\nuse crate::alpha::Alpha;\nmod nested_scope {\n    mod child;\n    use crate::alpha::Alpha;\n    fn nested() {}\n}\nmod inline_after_imports {\n    fn ready() {}\n}\nfn run() {}\n",
+        "#[cfg(feature = \"beta\")]\nextern crate std as standard;\nextern crate core as primitive;\n#[path = \"parts/alpha.rs\"]\nmod alpha;\n#[cfg(feature = \"beta\")]\nmod beta;\nuse standard::fmt::Debug;\nuse primitive::marker::Copy;\nmod nested_scope {\n    mod child;\n    use crate::alpha::Alpha;\n    fn nested() {}\n}\nmod inline_after_imports {\n    fn ready() {}\n}\nfn run() {}\n",
     );
     fixture.write("src/parts/alpha.rs", "pub struct Alpha;\n");
     fixture.write("src/beta.rs", "pub struct Beta;\n");
@@ -1124,6 +1135,227 @@ fn accepts_module_declarations_before_imports_and_inline_modules_after_imports()
     assert!(output.stdout.contains("\"status\":\"complete\""));
     assert!(!output.has_rule("out_of_line_modules_at_scope_start"));
     assert!(!output.has_rule("imports_at_scope_start"));
+    assert!(!output.has_rule("extern_crate_at_scope_start"));
+}
+
+#[test]
+fn resolves_extern_crate_aliases_for_use_and_qualified_paths() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "src/lib.rs",
+        "extern crate std as standard;\nuse standard::mem;\nfn direct() { standard::mem::drop(1); mem::drop(2); }\n",
+    );
+
+    let output = fixture.run(&["--format", "json"]);
+
+    assert_eq!(output.status, 0, "{}", output.stdout);
+    assert!(!output.has_rule("no_inline_qualified_path"));
+    assert!(!output.has_rule("imports_at_scope_start"));
+    assert!(!output.has_rule("out_of_line_modules_at_scope_start"));
+}
+
+#[test]
+fn reports_module_scope_order_violations_on_the_late_items() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "src/lib.rs",
+        "mod before_crate;\n#[cfg(any())]\nextern crate std as after_module;\n\nuse std::fmt::Debug;\n#[cfg(any())]\nextern crate std as after_use;\n\nfn run() {}\nuse core::fmt::Debug;\nmod after_use;\n#[cfg(any())]\nmod inactive_scope {\n    fn first() {}\n    use std::fmt::Debug;\n}\n",
+    );
+    fixture.write("src/before_crate.rs", "pub struct BeforeCrate;\n");
+    fixture.write("src/after_use.rs", "pub struct AfterUse;\n");
+
+    let chinese = fixture.run(&[
+        "--format",
+        "json",
+        "--disable-rule",
+        "child_module_line_count",
+        "--disable-rule",
+        "cfg_use_group_spacing",
+    ]);
+    let english = fixture.run(&[
+        "--format",
+        "json",
+        "--locale",
+        "en-US",
+        "--disable-rule",
+        "child_module_line_count",
+        "--disable-rule",
+        "cfg_use_group_spacing",
+    ]);
+
+    assert_eq!(chinese.status, 1, "{}", chinese.stdout);
+    assert_eq!(english.status, 1, "{}", english.stdout);
+    let extern_crates = rule_diagnostics(&chinese, "extern_crate_at_scope_start");
+    assert_eq!(extern_crates.len(), 2, "{}", chinese.stdout);
+    assert_eq!(
+        extern_crates
+            .iter()
+            .map(|diagnostic| diagnostic["start"]["line"].as_u64().unwrap())
+            .collect::<Vec<_>>(),
+        vec![2, 6]
+    );
+    assert_eq!(extern_crates[0]["severity"], "error");
+    assert!(extern_crates[0]["message"]
+        .as_str()
+        .unwrap()
+        .contains("extern crate 声明必须位于模块作用域开头"));
+    let english_extern_crates = rule_diagnostics(&english, "extern_crate_at_scope_start");
+    assert!(english_extern_crates[0]["message"]
+        .as_str()
+        .unwrap()
+        .contains("extern crate declarations must appear at the start of a module scope"));
+
+    let imports = rule_diagnostics(&chinese, "imports_at_scope_start");
+    assert_eq!(imports.len(), 2, "{}", chinese.stdout);
+    assert_eq!(
+        imports
+            .iter()
+            .map(|diagnostic| diagnostic["start"]["line"].as_u64().unwrap())
+            .collect::<Vec<_>>(),
+        vec![10, 15]
+    );
+    assert!(imports[0]["message"]
+        .as_str()
+        .unwrap()
+        .contains("模块作用域中的 use 声明"));
+    let english_imports = rule_diagnostics(&english, "imports_at_scope_start");
+    assert!(english_imports[0]["message"]
+        .as_str()
+        .unwrap()
+        .contains("Module-scope use declarations"));
+
+    let modules = rule_diagnostics(&chinese, "out_of_line_modules_at_scope_start");
+    assert_eq!(modules.len(), 1, "{}", chinese.stdout);
+    assert_eq!(modules[0]["start"]["line"], 11);
+    assert!(modules[0]["message"]
+        .as_str()
+        .unwrap()
+        .contains("外部模块声明必须位于 extern crate 声明之后"));
+    let english_modules = rule_diagnostics(&english, "out_of_line_modules_at_scope_start");
+    assert!(english_modules[0]["message"]
+        .as_str()
+        .unwrap()
+        .contains("Out-of-line module declarations must follow extern crate declarations"));
+}
+
+#[test]
+fn checks_late_extern_crates_in_each_module_scope_but_not_function_blocks() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "src/lib.rs",
+        "extern crate std as root_prefix;\nmod external_scope;\nfn root_item() {}\n#[cfg(any())]\nextern crate core as root_late;\nmod inline_scope {\n    extern crate std as inline_prefix;\n    fn inline_item() {}\n    #[cfg(any())]\n    extern crate core as inline_late;\n    fn nested_block() {\n        extern crate alloc;\n    }\n}\n",
+    );
+    fixture.write(
+        "src/external_scope.rs",
+        "extern crate std as child_prefix;\nfn child_item() {}\n#[cfg(any())]\nextern crate core as child_late;\n",
+    );
+
+    let output = fixture.run(&[
+        "--format",
+        "json",
+        "--disable-rule",
+        "child_module_line_count",
+    ]);
+
+    assert_eq!(output.status, 1, "{}", output.stdout);
+    let extern_crates = rule_diagnostics(&output, "extern_crate_at_scope_start");
+    assert_eq!(extern_crates.len(), 3, "{}", output.stdout);
+    assert_eq!(extern_crates[0]["path"], "src/external_scope.rs");
+    assert_eq!(extern_crates[0]["start"]["line"], 3);
+    assert_eq!(extern_crates[1]["path"], "src/lib.rs");
+    assert_eq!(extern_crates[1]["start"]["line"], 4);
+    assert_eq!(extern_crates[2]["path"], "src/lib.rs");
+    assert_eq!(extern_crates[2]["start"]["line"], 9);
+    assert!(!output.has_rule("imports_at_scope_start"));
+    assert!(!output.has_rule("out_of_line_modules_at_scope_start"));
+}
+
+#[test]
+fn configures_extern_crate_order_rule_and_allows_disabling_it() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write("src/lib.rs", "fn run() {}\nextern crate std;\n");
+    fixture.write(
+        "cargo-cop.toml",
+        "version = 2\n\n[rules.extern_crate_at_scope_start]\nenabled = false\nseverity = \"warning\"\n",
+    );
+
+    let configured_disabled = fixture.run(&["--format", "json"]);
+    assert_eq!(
+        configured_disabled.status, 0,
+        "{}",
+        configured_disabled.stdout
+    );
+    assert!(!configured_disabled.has_rule("extern_crate_at_scope_start"));
+
+    fixture.write(
+        "cargo-cop.toml",
+        "version = 2\n\n[rules.extern_crate_at_scope_start]\nenabled = true\nseverity = \"warning\"\n",
+    );
+    let warning = fixture.run(&["--format", "json"]);
+    let error = fixture.run(&[
+        "--format",
+        "json",
+        "--severity",
+        "extern_crate_at_scope_start=error",
+    ]);
+    let cli_disabled = fixture.run(&[
+        "--format",
+        "json",
+        "--disable-rule",
+        "extern_crate_at_scope_start",
+    ]);
+
+    assert_eq!(warning.status, 0, "{}", warning.stdout);
+    assert!(warning.has_rule("extern_crate_at_scope_start"));
+    assert!(warning.stdout.contains("\"severity\":\"warning\""));
+    assert_eq!(error.status, 1, "{}", error.stdout);
+    assert!(error.stdout.contains("\"severity\":\"error\""));
+    assert_eq!(cli_disabled.status, 0, "{}", cli_disabled.stdout);
+    assert!(!cli_disabled.has_rule("extern_crate_at_scope_start"));
+}
+
+#[test]
+fn checks_order_inside_files_disabled_by_cfg_attributes() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write("src/lib.rs", "mod disabled;\n");
+    fixture.write(
+        "src/disabled.rs",
+        "#![cfg(any())]\nfn first() {}\nuse std::fmt::Debug;\n",
+    );
+
+    let output = fixture.run(&[
+        "--format",
+        "json",
+        "--disable-rule",
+        "child_module_line_count",
+    ]);
+
+    assert_eq!(output.status, 1, "{}", output.stdout);
+    let imports = rule_diagnostics(&output, "imports_at_scope_start");
+    assert_eq!(imports.len(), 1, "{}", output.stdout);
+    assert_eq!(imports[0]["path"], "src/disabled.rs");
+    assert_eq!(imports[0]["start"]["line"], 3);
+
+    fixture.write(
+        "src/lib.rs",
+        "#![cfg(any())]\nfn first() {}\nuse std::fmt::Debug;\n",
+    );
+    let root_output = fixture.run(&[
+        "--format",
+        "json",
+        "--disable-rule",
+        "child_module_line_count",
+    ]);
+    assert_eq!(root_output.status, 1, "{}", root_output.stdout);
+    let root_imports = rule_diagnostics(&root_output, "imports_at_scope_start");
+    assert_eq!(root_imports.len(), 1, "{}", root_output.stdout);
+    assert_eq!(root_imports[0]["path"], "src/lib.rs");
+    assert_eq!(root_imports[0]["start"]["line"], 3);
 }
 
 #[test]

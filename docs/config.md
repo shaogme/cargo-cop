@@ -57,7 +57,7 @@ The config file must contain the integer `version = 2`. The top-level fields are
 | `[rules.<ID>].enabled` | boolean | `true` | Whether the named rule runs. CLI `--disable-rule <ID>` can turn it off. |
 | `[rules.<ID>].severity` | `"warning"` or `"error"` | `"error"` | Severity assigned to diagnostics from the named rule. CLI `--severity ID=LEVEL` takes precedence. |
 
-`[rules]` may contain any of the 18 IDs in the rule catalog below. Each rule table accepts only `enabled` and `severity`. A setting for one rule has no effect on other rules.
+`[rules]` may contain any of the 19 IDs in the rule catalog below. Each rule table accepts only `enabled` and `severity`. A setting for one rule has no effect on other rules.
 
 ## Rule IDs
 
@@ -73,7 +73,7 @@ severity = "warning"
 
 Available IDs:
 
-`module_file_layout`, `no_lint_relaxation`, `item_spacing`, `private_child_modules`, `no_parent_private_dependency`, `child_module_line_count`, `impl_locality`, `private_fields_for_behavior_types`, `child_public_free_functions`, `declaration_before_use`, `parameter_limit`, `tuple_arity`, `no_inline_qualified_path`, `merge_common_prefix_imports`, `imports_at_scope_start`, `out_of_line_modules_at_scope_start`, `cfg_use_group_spacing`, and `cfg_inside_use_tree`.
+`module_file_layout`, `no_lint_relaxation`, `item_spacing`, `private_child_modules`, `no_parent_private_dependency`, `child_module_line_count`, `impl_locality`, `private_fields_for_behavior_types`, `child_public_free_functions`, `declaration_before_use`, `parameter_limit`, `tuple_arity`, `no_inline_qualified_path`, `merge_common_prefix_imports`, `extern_crate_at_scope_start`, `imports_at_scope_start`, `out_of_line_modules_at_scope_start`, `cfg_use_group_spacing`, and `cfg_inside_use_tree`.
 
 Rule diagnostics can be disabled or changed to `warning`. Tool errors and analysis issues are not rules, so rule settings cannot hide them. An analysis warning can still make the overall scan status `partial` even when `allow_warnings = true` suppresses it from the printed diagnostic list.
 

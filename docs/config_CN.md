@@ -57,7 +57,7 @@ severity = "error"
 | `[rules.<ID>].enabled` | 布尔值 | `true` | 是否运行该规则。命令行 `--disable-rule <ID>` 可将其关闭。 |
 | `[rules.<ID>].severity` | `"warning"` 或 `"error"` | `"error"` | 该规则诊断的级别。命令行 `--severity ID=LEVEL` 优先。 |
 
-`[rules]` 可以包含下方目录中的 18 个 ID。每个规则表只接受 `enabled` 和 `severity`。一条规则的设置不会影响其他规则。
+`[rules]` 可以包含下方目录中的 19 个 ID。每个规则表只接受 `enabled` 和 `severity`。一条规则的设置不会影响其他规则。
 
 ## 规则 ID
 
@@ -73,7 +73,7 @@ severity = "warning"
 
 可用 ID：
 
-`module_file_layout`、`no_lint_relaxation`、`item_spacing`、`private_child_modules`、`no_parent_private_dependency`、`child_module_line_count`、`impl_locality`、`private_fields_for_behavior_types`、`child_public_free_functions`、`declaration_before_use`、`parameter_limit`、`tuple_arity`、`no_inline_qualified_path`、`merge_common_prefix_imports`、`imports_at_scope_start`、`out_of_line_modules_at_scope_start`、`cfg_use_group_spacing`、`cfg_inside_use_tree`。
+`module_file_layout`、`no_lint_relaxation`、`item_spacing`、`private_child_modules`、`no_parent_private_dependency`、`child_module_line_count`、`impl_locality`、`private_fields_for_behavior_types`、`child_public_free_functions`、`declaration_before_use`、`parameter_limit`、`tuple_arity`、`no_inline_qualified_path`、`merge_common_prefix_imports`、`extern_crate_at_scope_start`、`imports_at_scope_start`、`out_of_line_modules_at_scope_start`、`cfg_use_group_spacing`、`cfg_inside_use_tree`。
 
 规则诊断可以关闭或改为 `warning`。工具错误和分析问题不属于规则，因此规则设置不能隐藏它们。即使 `allow_warnings = true` 隐藏了分析 warning，整体扫描状态仍可能是 `partial`。
 

@@ -6,7 +6,7 @@
 
 `cargo-cop` 是一个 Rust 源码静态检查工具。它会按照仓库规范检查选定的 Cargo package 和 target，覆盖模块布局、可见性、声明顺序、导入组织及源码结构等方面。
 
-项目提供 18 条可配置规则、人类可读和 JSON 报告，以及英文和简体中文诊断信息。既可以直接运行 `cargo-cop`，也可以使用 Cargo 子命令 `cargo cop`。
+项目提供 19 条可配置规则、人类可读和 JSON 报告，以及英文和简体中文诊断信息。既可以直接运行 `cargo-cop`，也可以使用 Cargo 子命令 `cargo cop`。
 
 ## 检查内容
 
@@ -126,12 +126,26 @@ Feature 选择根据所选 package 的 Cargo feature 定义计算，处理 defau
 | `tuple_arity` | tuple 类型和表达式最多包含 2 个元素。 |
 | `no_inline_qualified_path` | 通过导入后再使用外部 crate 名作为限定路径的根。 |
 | `merge_common_prefix_imports` | 合并路径有共同前缀且可见性和 `cfg` 条件兼容的相邻导入。 |
-| `imports_at_scope_start` | 模块导入放在外部模块声明之后、其他 item 之前；block 导入放在其他语句之前。 |
-| `out_of_line_modules_at_scope_start` | 外部模块声明应在模块作用域开头连续排列。 |
+| `extern_crate_at_scope_start` | 每个模块作用域中的 `extern crate` 声明必须位于开头。 |
+| `imports_at_scope_start` | 模块作用域中的 `use` 位于外部模块声明之后、其他 item 之前；block 导入放在其他语句之前。 |
+| `out_of_line_modules_at_scope_start` | 外部模块声明位于 `extern crate` 之后、`use` 和其他 item 之前，并连续排列。 |
 | `cfg_use_group_spacing` | 不同 `cfg` 条件的导入应分组排列，组间留一行空行。 |
 | `cfg_inside_use_tree` | `cfg` 属性应放在完整的 `use` item 上，不能嵌套在花括号 use tree 中。 |
 
 规则 ID 是稳定的配置键。工具错误和分析问题不是规则，不能通过 `--disable-rule` 关闭。
+
+模块作用域的顺序示例：
+
+```rust
+extern crate legacy_dep as legacy;
+
+mod alpha;
+
+use crate::alpha::Alpha;
+use legacy::Thing;
+
+fn run() {}
+```
 
 ## 报告与退出码
 
@@ -164,7 +178,7 @@ Workspace 将命令行应用与分析流程分层：
 | `cop-cargo` | Cargo 元数据、package 和 target 选择、features、依赖和 target `cfg`。 |
 | `cop-syntax` | 自有 Rust 词法分析器、语法树、解析器和解析覆盖状态。 |
 | `cop-analysis` | `cfg` 求值、模块图发现、符号和路径解析、分析状态。 |
-| `cop-rules` | 18 条源码规范检查规则。 |
+| `cop-rules` | 19 条源码规范检查规则。 |
 | `cop-model` | 共享规则 ID、诊断、位置、消息和扫描状态类型。 |
 | `cop-report` | 诊断稳定排序、人类可读和 JSON 渲染。 |
 | `cop-i18n` | 英文和简体中文消息。 |

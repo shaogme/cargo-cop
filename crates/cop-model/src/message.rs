@@ -59,6 +59,7 @@ pub const CLOSURE_PARAMETER_LIMIT: MessageId = MessageId::new("closure-parameter
 pub const TUPLE_ARITY: MessageId = MessageId::new("tuple-arity");
 pub const DECLARATION_BEFORE_USE: MessageId = MessageId::new("declaration-before-use");
 pub const NO_INLINE_QUALIFIED_PATH: MessageId = MessageId::new("no-inline-qualified-path");
+pub const EXTERN_CRATE_AT_SCOPE_START: MessageId = MessageId::new("extern-crate-at-scope-start");
 pub const USE_AT_SCOPE_START: MessageId = MessageId::new("use-at-scope-start");
 pub const BLOCK_USE_AT_SCOPE_START: MessageId = MessageId::new("block-use-at-scope-start");
 pub const MERGE_IMPORT_PREFIX: MessageId = MessageId::new("merge-import-prefix");
@@ -189,6 +190,7 @@ impl MessageId {
         TUPLE_ARITY,
         DECLARATION_BEFORE_USE,
         NO_INLINE_QUALIFIED_PATH,
+        EXTERN_CRATE_AT_SCOPE_START,
         USE_AT_SCOPE_START,
         BLOCK_USE_AT_SCOPE_START,
         MERGE_IMPORT_PREFIX,
