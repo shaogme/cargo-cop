@@ -1064,7 +1064,7 @@ fn preserves_module_context_and_checks_visibility_and_impl_ownership() {
     let output = fixture.run(&["--format", "json"]);
     assert_eq!(output.status, 1, "{}", output.stderr);
     assert!(output.has_rule("module_file_layout"));
-    assert!(output.has_rule("private_child_modules"));
+    assert!(output.has_rule("child_module_visibility"));
     assert!(output.has_rule("child_public_free_functions"));
     assert!(output.has_rule("private_fields_for_behavior_types"));
     assert!(output.has_rule("impl_locality"));
@@ -1073,6 +1073,142 @@ fn preserves_module_context_and_checks_visibility_and_impl_ownership() {
     assert!(!output
         .stdout
         .contains("类型 \"Data\" 必须将所有字段设为私有"));
+}
+
+#[test]
+fn allows_declaration_only_public_child_modules_in_inline_and_external_sources() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "src/lib.rs",
+        "pub mod inline_api {\n    pub use crate::types::PublicType;\n    pub(crate) use crate::types::PublicType as CrateType;\n    macro_rules! helper { () => {} }\n    type Alias = u8;\n    pub struct Record;\n    pub enum State { Ready }\n    #[cfg(any())]\n    fn disabled() {}\n    mod nested { fn implementation() {} }\n}\npub(crate) mod crate_api { pub(crate) use crate::types::PublicType; type Alias = u8; }\npub(crate) mod empty_api {}\n#[path = \"shared.rs\"] pub mod first_api;\n#[path = \"shared.rs\"] pub mod second_api;\n#[path = \"crate_shared.rs\"] pub(crate) mod crate_external;\nmod private_inline { struct Local; impl Local {} fn hidden() {} }\nmod private_external;\nmod types { pub struct PublicType; }\n",
+    );
+    fixture.write("src/shared.rs", "pub struct SharedType;\n");
+    fixture.write("src/crate_shared.rs", "pub enum SharedState { Ready }\n");
+    fixture.write("src/private_external.rs", "pub fn implementation() {}\n");
+
+    let output = fixture.run(&["--format", "json"]);
+
+    assert!(
+        !output.has_rule("child_module_visibility"),
+        "{}",
+        output.stdout
+    );
+    assert!(
+        !output.stdout.contains("macro_generated_module"),
+        "{}",
+        output.stdout
+    );
+}
+
+#[test]
+fn rejects_non_declarative_items_and_unsupported_module_visibility() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "src/lib.rs",
+        "pub mod has_function { fn hidden() {} }\npub mod has_impl { struct Local; impl Local {} }\npub mod has_restricted_use { pub(super) use core::fmt::Debug; }\npub mod has_macro_call { make_modules!(); }\npub mod has_unknown_cfg { #[cfg(mystery_flag)] fn possibly_enabled() {} }\npub(super) mod restricted { struct Local; }\npub(in crate) mod path_restricted { struct Local; }\n",
+    );
+
+    let output = fixture.run(&["--format", "json"]);
+
+    assert_eq!(
+        rule_diagnostics(&output, "child_module_visibility").len(),
+        7,
+        "{}",
+        output.stdout
+    );
+}
+
+#[test]
+fn rejects_public_modules_without_resolved_or_complete_child_sources() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "src/lib.rs",
+        "pub mod missing;\npub mod incomplete;\n#[cfg(any())]\npub mod disabled;\n",
+    );
+    fixture.write("src/incomplete.rs", "pub struct Record;\nfn broken( {\n");
+
+    let output = fixture.run(&["--format", "json"]);
+
+    assert_eq!(
+        rule_diagnostics(&output, "child_module_visibility").len(),
+        2,
+        "{}",
+        output.stdout
+    );
+    assert!(output
+        .stdout
+        .contains("\"analysis_issue\":\"missing_module\""));
+    assert!(output
+        .stdout
+        .contains("\"analysis_issue\":\"parser_coverage\""));
+}
+
+#[test]
+fn evaluates_feature_gated_items_for_public_child_module_visibility() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "Cargo.toml",
+        "[package]\nname = \"sample\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[features]\nimplementation = []\n",
+    );
+    fixture.write(
+        "src/lib.rs",
+        "pub mod api { #[cfg(feature = \"implementation\")] fn implementation() {} }\n",
+    );
+
+    let without_feature = fixture.run(&["--format", "json"]);
+    let with_feature = fixture.run(&["--format", "json", "--features", "implementation"]);
+
+    assert!(
+        !without_feature.has_rule("child_module_visibility"),
+        "{}",
+        without_feature.stdout
+    );
+    assert!(
+        with_feature.has_rule("child_module_visibility"),
+        "{}",
+        with_feature.stdout
+    );
+}
+
+#[test]
+fn replaces_private_child_module_id_in_configuration_and_cli() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write("src/lib.rs", "pub mod api { fn implementation() {} }\n");
+    fixture.write(
+        "cargo-cop.toml",
+        "version = 2\n\n[rules.private_child_modules]\nenabled = false\n",
+    );
+
+    let old_config = fixture.run(&["--format", "json"]);
+    fixture.write(
+        "cargo-cop.toml",
+        "version = 2\n\n[rules.child_module_visibility]\nseverity = \"warning\"\n",
+    );
+    let new_config = fixture.run(&["--format", "json"]);
+    let old_cli = fixture.run(&[
+        "--format",
+        "json",
+        "--disable-rule",
+        "private_child_modules",
+    ]);
+    let new_cli = fixture.run(&[
+        "--format",
+        "json",
+        "--severity",
+        "child_module_visibility=warning",
+    ]);
+
+    assert_eq!(old_config.status, 2, "{}", old_config.stdout);
+    assert_eq!(old_cli.status, 2, "{}", old_cli.stdout);
+    assert_eq!(new_config.status, 0, "{}", new_config.stdout);
+    assert_eq!(new_cli.status, 0, "{}", new_cli.stdout);
+    assert!(new_config.has_rule("child_module_visibility"));
+    assert!(new_config.stdout.contains("\"severity\":\"warning\""));
+    assert!(new_cli.stdout.contains("\"severity\":\"warning\""));
 }
 
 #[test]

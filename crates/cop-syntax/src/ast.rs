@@ -12,9 +12,9 @@ use crate::{
 
 pub use item::{Item, Visibility, VisibilityKind};
 pub use kind::{
-    ClosureNode, ExternCrateItem, FunctionBody, FunctionItem, ImplItem, ItemKind, MacroInvocation,
-    ModuleItem, NamedDeclaration, OtherItem, Parameter, PathNode, SyntaxNode, TraitItem, TupleNode,
-    UseItem, UseTree,
+    ClosureNode, ExternCrateItem, FunctionBody, FunctionItem, ImplItem, ItemKind, MacroDefinition,
+    MacroInvocation, ModuleItem, NamedDeclaration, OtherItem, Parameter, PathNode, SyntaxNode,
+    TraitItem, TupleNode, UseItem, UseTree,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -177,6 +177,10 @@ impl AstFactory {
 
     pub(crate) fn macro_invocation(path: PathNode, bounds: Range<usize>) -> MacroInvocation {
         MacroInvocation::new(path, bounds)
+    }
+
+    pub(crate) fn macro_definition(bounds: Range<usize>) -> MacroDefinition {
+        MacroDefinition::new(bounds)
     }
 
     pub(crate) fn other(bounds: Range<usize>) -> OtherItem {

@@ -42,7 +42,7 @@ pub const ITEM_SPACING: MessageId = MessageId::new("item-spacing");
 pub const MODULE_FILE_LAYOUT: MessageId = MessageId::new("module-file-layout");
 pub const OUT_OF_LINE_MODULES_AT_SCOPE_START: MessageId =
     MessageId::new("out-of-line-modules-at-scope-start");
-pub const PRIVATE_CHILD_MODULE: MessageId = MessageId::new("private-child-module");
+pub const CHILD_MODULE_VISIBILITY: MessageId = MessageId::new("child-module-visibility");
 pub const CHILD_MODULE_LINE_COUNT: MessageId = MessageId::new("child-module-line-count");
 pub const NO_PARENT_GLOB_IMPORT: MessageId = MessageId::new("no-parent-glob-import");
 pub const NO_PARENT_PRIVATE_PATH: MessageId = MessageId::new("no-parent-private-path");
@@ -174,7 +174,7 @@ impl MessageId {
         ITEM_SPACING,
         MODULE_FILE_LAYOUT,
         OUT_OF_LINE_MODULES_AT_SCOPE_START,
-        PRIVATE_CHILD_MODULE,
+        CHILD_MODULE_VISIBILITY,
         CHILD_MODULE_LINE_COUNT,
         NO_PARENT_GLOB_IMPORT,
         NO_PARENT_PRIVATE_PATH,
@@ -297,7 +297,7 @@ impl MessageId {
         match self {
             ITEM_SPACING => &[("expected", NUMBER), ("actual", NUMBER)],
             CFG_USE_GROUP_SPACING => &[("empty_lines", NUMBER)],
-            PRIVATE_CHILD_MODULE => &[("module", TEXT)],
+            CHILD_MODULE_VISIBILITY => &[("module", TEXT)],
             CHILD_MODULE_LINE_COUNT => &[
                 ("file", TEXT),
                 ("actual", NUMBER),

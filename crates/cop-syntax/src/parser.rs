@@ -17,8 +17,9 @@ use self::{attributes::AttributeParser, expression::SyntaxCollector};
 use crate::{
     ast::{
         AstFactory, Attribute, ExternCrateItem, FunctionItem, ImplItem, Item, ItemKind,
-        MacroInvocation, ModuleItem, NamedDeclaration, Parameter, ParseIssue, ParseIssueKind,
-        ParseOutput, ParseOutputParts, TraitItem, UseItem, UseTree, Visibility, VisibilityKind,
+        MacroDefinition, MacroInvocation, ModuleItem, NamedDeclaration, Parameter, ParseIssue,
+        ParseIssueKind, ParseOutput, ParseOutputParts, TraitItem, UseItem, UseTree, Visibility,
+        VisibilityKind,
     },
     recovery::Recovery,
     Delimiter, RustLexer, SourceFile, Token, TokenKind,
@@ -206,6 +207,9 @@ impl Parser<'_> {
             "fn" => ItemKind::Function(self.parse_function()?),
             _ if Recovery::function_keyword(self.tokens, self.cursor).is_some() => {
                 ItemKind::Function(self.parse_function()?)
+            }
+            _ if SyntaxCollector::macro_definition_end(self.tokens, self.cursor).is_some() => {
+                ItemKind::MacroDefinition(self.parse_macro_definition()?)
             }
             _ if SyntaxCollector::macro_item_end(self.tokens, self.cursor).is_some() => {
                 ItemKind::Macro(self.parse_macro_item()?)
@@ -570,6 +574,12 @@ impl Parser<'_> {
         let (invocation, next_index) = SyntaxCollector::macro_item(self.tokens, self.cursor)?;
         self.cursor = next_index;
         Some(invocation)
+    }
+
+    fn parse_macro_definition(&mut self) -> Option<MacroDefinition> {
+        let (definition, next_index) = SyntaxCollector::macro_definition(self.tokens, self.cursor)?;
+        self.cursor = next_index;
+        Some(definition)
     }
 
     fn parse_unsupported(

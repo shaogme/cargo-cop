@@ -38,6 +38,12 @@ pub struct MacroInvocation {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MacroDefinition {
+    start: usize,
+    end: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SyntaxNode {
     Path(PathNode),
     Tuple(TupleNode),
@@ -131,6 +137,7 @@ pub enum ItemKind {
     Function(FunctionItem),
     Impl(ImplItem),
     Macro(MacroInvocation),
+    MacroDefinition(MacroDefinition),
     Other(OtherItem),
 }
 
@@ -457,6 +464,23 @@ impl MacroInvocation {
 
     pub fn path(&self) -> &PathNode {
         &self.path
+    }
+
+    pub fn start(&self) -> usize {
+        self.start
+    }
+
+    pub fn end(&self) -> usize {
+        self.end
+    }
+}
+
+impl MacroDefinition {
+    pub(crate) fn new(bounds: Range<usize>) -> Self {
+        Self {
+            start: bounds.start,
+            end: bounds.end,
+        }
     }
 
     pub fn start(&self) -> usize {

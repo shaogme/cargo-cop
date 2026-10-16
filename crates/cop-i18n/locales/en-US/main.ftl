@@ -4,7 +4,7 @@ item-spacing = Adjacent definitions require { $expected } blank lines; found { $
 }
 module-file-layout = Submodule entry files must not use the mod.rs layout
 out-of-line-modules-at-scope-start = Out-of-line module declarations must follow extern crate declarations and stay before use declarations and other items
-private-child-module = Submodule { $module } must use a private mod declaration
+child-module-visibility = Non-private submodule { $module } may contain only declarations and use items with private, public, or pub(crate) visibility
 child-module-line-count = The effective line count of submodule file { $file } is { $actual }; it must be between { $minimum } and { $maximum }
 no-parent-glob-import = Child modules must not use super::* to import parent implementation details
 no-parent-private-path = The child module path depends on private item { $item } from ancestor module { $ancestor }

@@ -1,7 +1,9 @@
 use std::ops::Range;
 
 use crate::{
-    ast::{AstFactory, ClosureNode, MacroInvocation, Parameter, PathNode, SyntaxNode},
+    ast::{
+        AstFactory, ClosureNode, MacroDefinition, MacroInvocation, Parameter, PathNode, SyntaxNode,
+    },
     recovery::Recovery,
     Delimiter, Token, TokenKind,
 };
@@ -51,6 +53,40 @@ impl SyntaxCollector {
         let path_start = path.start();
         let invocation = AstFactory::macro_invocation(path, path_start..end_offset);
         Some((invocation, end))
+    }
+
+    pub(super) fn macro_definition(
+        tokens: &[Token],
+        start: usize,
+    ) -> Option<(MacroDefinition, usize)> {
+        let (path, path_end) = Self::path_at(tokens, start, tokens.len())?;
+        if !path
+            .segments()
+            .last()
+            .is_some_and(|name| name == "macro_rules")
+            || !tokens
+                .get(path_end)
+                .is_some_and(|token| Recovery::is_punctuation(token, "!"))
+            || !matches!(tokens.get(path_end + 1)?.kind(), TokenKind::Identifier(_))
+        {
+            return None;
+        }
+        let group_index = path_end + 2;
+        let group_end = Self::group_end(tokens, group_index, tokens.len())?;
+        let mut next_index = group_end + 1;
+        let mut end = tokens[group_end].end();
+        if tokens
+            .get(next_index)
+            .is_some_and(|token| Recovery::is_punctuation(token, ";"))
+        {
+            end = tokens[next_index].end();
+            next_index += 1;
+        }
+        Some((AstFactory::macro_definition(path.start()..end), next_index))
+    }
+
+    pub(super) fn macro_definition_end(tokens: &[Token], start: usize) -> Option<usize> {
+        Self::macro_definition(tokens, start).map(|(_, next_index)| next_index)
     }
 
     pub(super) fn macro_item_end(tokens: &[Token], start: usize) -> Option<usize> {

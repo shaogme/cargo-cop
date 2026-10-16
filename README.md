@@ -6,7 +6,7 @@
 
 `cargo-cop` is a static checker for Rust source code. It checks selected Cargo packages and targets against repository conventions, including module layout, visibility, declaration order, imports, and source structure.
 
-The project provides 18 configurable rules, human-readable and JSON reports, and English and Simplified Chinese diagnostic messages. It can run as the `cargo-cop` executable or as the `cargo cop` Cargo subcommand.
+The project provides 19 configurable rules, human-readable and JSON reports, and English and Simplified Chinese diagnostic messages. It can run as the `cargo-cop` executable or as the `cargo cop` Cargo subcommand.
 
 ## What it checks
 
@@ -115,7 +115,7 @@ All rules are enabled by default and use `error` severity unless configured othe
 | `module_file_layout` | An out-of-line child module file must not use the `mod.rs` layout. Crate roots are exempt. |
 | `no_lint_relaxation` | Reject `allow` lint attributes, including `cfg_attr` attributes that inject `allow`. |
 | `item_spacing` | Enforce blank-line spacing between adjacent definitions in an item scope. Consecutive `const`, `static`, or type-alias definitions of the same kind require no blank line; other checked pairs require one. |
-| `private_child_modules` | Child module declarations must have private visibility. |
+| `child_module_visibility` | Child modules are private by default. `pub` and `pub(crate)` are allowed only for modules containing nested modules, `use` items with private, `pub`, or `pub(crate)` visibility, `macro_rules!` definitions, type aliases, structs, enums, traits, unions, constants, or statics. |
 | `no_parent_private_dependency` | A child module must not import `super::*` or resolve a `super::`/`crate::` path to a private ancestor item. |
 | `child_module_line_count` | Each out-of-line child-module file must contain 70–800 effective code lines. Blank lines, comments, and `#[cfg(test)]` code are excluded. |
 | `impl_locality` | Keep inherent impls with the repository type's definition; restrict external trait impl targets to the permitted built-in and standard-library roots. |

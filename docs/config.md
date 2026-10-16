@@ -73,7 +73,9 @@ severity = "warning"
 
 Available IDs:
 
-`module_file_layout`, `no_lint_relaxation`, `item_spacing`, `private_child_modules`, `no_parent_private_dependency`, `child_module_line_count`, `impl_locality`, `private_fields_for_behavior_types`, `child_public_free_functions`, `declaration_before_use`, `parameter_limit`, `tuple_arity`, `no_inline_qualified_path`, `merge_common_prefix_imports`, `extern_crate_at_scope_start`, `imports_at_scope_start`, `out_of_line_modules_at_scope_start`, `cfg_use_group_spacing`, and `cfg_inside_use_tree`.
+`module_file_layout`, `no_lint_relaxation`, `item_spacing`, `child_module_visibility`, `no_parent_private_dependency`, `child_module_line_count`, `impl_locality`, `private_fields_for_behavior_types`, `child_public_free_functions`, `declaration_before_use`, `parameter_limit`, `tuple_arity`, `no_inline_qualified_path`, `merge_common_prefix_imports`, `extern_crate_at_scope_start`, `imports_at_scope_start`, `out_of_line_modules_at_scope_start`, `cfg_use_group_spacing`, and `cfg_inside_use_tree`.
+
+The former `private_child_modules` ID was replaced by `child_module_visibility`. Update `[rules.private_child_modules]`, `--disable-rule private_child_modules`, and `--severity private_child_modules=...` to use the new ID. The schema version remains `2`.
 
 Rule diagnostics can be disabled or changed to `warning`. Tool errors and analysis issues are not rules, so rule settings cannot hide them. An analysis warning can still make the overall scan status `partial` even when `allow_warnings = true` suppresses it from the printed diagnostic list.
 

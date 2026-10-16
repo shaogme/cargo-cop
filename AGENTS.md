@@ -126,7 +126,7 @@ fn get_user() -> User {
 
 ### 3.1 子模块可见性与依赖流向
 
-* **子模块声明私有化**：父模块声明子模块时，必须声明为私有（`mod child;`），**严禁声明为 `pub mod child;` 或 `pub(crate) mod child;**`。
+* **子模块默认私有**：父模块声明子模块时默认使用私有可见性（`mod child;`）。仅当子模块直接内容全部是模块声明、私有/`pub`/`pub(crate)` `use` 导入、`macro_rules!` 宏定义、类型别名、结构体、枚举、trait、union、常量或静态变量时，才允许使用 `pub` 或 `pub(crate)`。函数、`impl`、`extern crate`、`pub(super)` / `pub(in path)` 等其他可见性形式的导入、宏调用及无法识别的 item 都不符合例外。
 * **单向依赖控制**：
 * 允许同级子模块之间相互引用（`use crate::parent::sibling;`）。
 * **严禁子模块反向依赖父模块的私有实现**：禁止在子模块内使用 `super::*` 或绝对路径读取父模块的内部未公开实现；必要的数据与状态应通过参数向下传递。
@@ -134,11 +134,16 @@ fn get_user() -> User {
 ```rust
 // ===== 父模块 (parent.rs) =====
 
-// Bad: 公开暴露子模块
+// 错误：公开暴露包含实现 item 的子模块
 pub mod child;
 
-// Good: 子模块必须完全私有
+// 正确：子模块默认私有
 mod child;
+
+// 正确：仅包含声明性 item 的子模块可以公开
+pub mod declarations {
+    pub struct Record;
+}
 
 ```
 

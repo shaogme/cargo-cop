@@ -656,7 +656,11 @@ fn item_include_macros(item: &Item) -> Vec<MacroInvocation> {
                 invocations.extend(item_include_macros(nested));
             }
         }
-        ItemKind::Module(_) | ItemKind::Use(_) | ItemKind::ExternCrate(_) | ItemKind::Other(_) => {}
+        ItemKind::Module(_)
+        | ItemKind::MacroDefinition(_)
+        | ItemKind::Use(_)
+        | ItemKind::ExternCrate(_)
+        | ItemKind::Other(_) => {}
     }
     invocations
 }

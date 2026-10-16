@@ -123,6 +123,19 @@ impl AnalysisSnapshot {
         &self.modules
     }
 
+    pub fn child_module(&self, parent: &ModuleNode, name: &str) -> Option<&ModuleNode> {
+        let mut children = self.modules.iter().filter(|module| {
+            module.context_index() == parent.context_index()
+                && module.parent_namespace() == parent.namespace()
+                && module
+                    .namespace()
+                    .last()
+                    .is_some_and(|segment| segment == name)
+        });
+        let child = children.next()?;
+        children.next().is_none().then_some(child)
+    }
+
     pub fn symbols(&self) -> &SymbolIndex {
         &self.symbols
     }

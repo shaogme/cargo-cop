@@ -73,7 +73,9 @@ severity = "warning"
 
 可用 ID：
 
-`module_file_layout`、`no_lint_relaxation`、`item_spacing`、`private_child_modules`、`no_parent_private_dependency`、`child_module_line_count`、`impl_locality`、`private_fields_for_behavior_types`、`child_public_free_functions`、`declaration_before_use`、`parameter_limit`、`tuple_arity`、`no_inline_qualified_path`、`merge_common_prefix_imports`、`extern_crate_at_scope_start`、`imports_at_scope_start`、`out_of_line_modules_at_scope_start`、`cfg_use_group_spacing`、`cfg_inside_use_tree`。
+`module_file_layout`、`no_lint_relaxation`、`item_spacing`、`child_module_visibility`、`no_parent_private_dependency`、`child_module_line_count`、`impl_locality`、`private_fields_for_behavior_types`、`child_public_free_functions`、`declaration_before_use`、`parameter_limit`、`tuple_arity`、`no_inline_qualified_path`、`merge_common_prefix_imports`、`extern_crate_at_scope_start`、`imports_at_scope_start`、`out_of_line_modules_at_scope_start`、`cfg_use_group_spacing`、`cfg_inside_use_tree`。
+
+原来的 `private_child_modules` ID 已替换为 `child_module_visibility`。请将 `[rules.private_child_modules]`、`--disable-rule private_child_modules` 和 `--severity private_child_modules=...` 改用新 ID。配置 schema 版本仍为 `2`。
 
 规则诊断可以关闭或改为 `warning`。工具错误和分析问题不属于规则，因此规则设置不能隐藏它们。即使 `allow_warnings = true` 隐藏了分析 warning，整体扫描状态仍可能是 `partial`。
 

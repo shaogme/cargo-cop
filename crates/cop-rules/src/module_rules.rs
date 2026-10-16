@@ -3,10 +3,10 @@ use std::{ops::Range, path::Path};
 use cop_analysis::{AnalysisSnapshot, ModuleNode};
 use cop_config::ResolvedConfig;
 use cop_model::{
-    Diagnostic, LocalizedMessage, RuleId, CHILD_MODULE_LINE_COUNT, ITEM_SPACING,
-    MODULE_FILE_LAYOUT, OUT_OF_LINE_MODULES_AT_SCOPE_START, PRIVATE_CHILD_MODULE,
+    Diagnostic, LocalizedMessage, RuleId, CHILD_MODULE_LINE_COUNT, CHILD_MODULE_VISIBILITY,
+    ITEM_SPACING, MODULE_FILE_LAYOUT, OUT_OF_LINE_MODULES_AT_SCOPE_START,
 };
-use cop_syntax::{CoverageStatus, Item, ItemKind, ParseOutput};
+use cop_syntax::{CoverageStatus, Item, ItemKind, ParseOutput, VisibilityKind};
 
 use crate::support::{RuleDiagnosticAdapter, RuleReport, SyntaxSupport};
 
@@ -83,6 +83,9 @@ impl ModuleRuleSet {
         let adapter = RuleDiagnosticAdapter::new(configuration);
         for module in snapshot.modules() {
             if module.parse_output().coverage() != CoverageStatus::Complete {
+                if !module.is_order_only() {
+                    Self::child_module_visibility(snapshot, module, diagnostics, &adapter);
+                }
                 continue;
             }
             Self::out_of_line_modules(module, diagnostics, &adapter);
@@ -90,7 +93,7 @@ impl ModuleRuleSet {
                 continue;
             }
             Self::module_layout(module, diagnostics, &adapter);
-            Self::private_children(module, diagnostics, &adapter);
+            Self::child_module_visibility(snapshot, module, diagnostics, &adapter);
             Self::item_spacing(module, diagnostics, &adapter);
             Self::module_line_count(module, diagnostics, &adapter);
         }
@@ -150,7 +153,8 @@ impl ModuleRuleSet {
         }
     }
 
-    fn private_children(
+    fn child_module_visibility(
+        snapshot: &AnalysisSnapshot,
         module: &ModuleNode,
         diagnostics: &mut Vec<Diagnostic>,
         adapter: &RuleDiagnosticAdapter<'_>,
@@ -159,18 +163,56 @@ impl ModuleRuleSet {
             let ItemKind::Module(child) = item.kind() else {
                 continue;
             };
-            if SyntaxSupport::is_non_private(item) {
-                adapter.push(
-                    module,
-                    diagnostics,
-                    RuleReport::new(
-                        RuleId::PrivateChildModules,
-                        LocalizedMessage::new(PRIVATE_CHILD_MODULE)
-                            .with_text("module", child.name()),
-                        Some(item.start()..item.end()),
-                    ),
-                );
+            if !SyntaxSupport::is_non_private(item) {
+                continue;
             }
+            let visibility_allows_exception =
+                Self::visibility_allows_exception(item.visibility().kind());
+            let contents_are_declarative = visibility_allows_exception
+                && snapshot
+                    .child_module(module, child.name())
+                    .is_some_and(|child_module| {
+                        child_module.parse_output().coverage() == CoverageStatus::Complete
+                            && child_module.items().iter().all(Self::is_declarative_item)
+                    });
+            if contents_are_declarative {
+                continue;
+            }
+            adapter.push(
+                module,
+                diagnostics,
+                RuleReport::new(
+                    RuleId::ChildModuleVisibility,
+                    LocalizedMessage::new(CHILD_MODULE_VISIBILITY)
+                        .with_text("module", child.name()),
+                    Some(item.start()..item.end()),
+                ),
+            );
+        }
+    }
+
+    fn is_declarative_item(item: &Item) -> bool {
+        match item.kind() {
+            ItemKind::Module(_)
+            | ItemKind::MacroDefinition(_)
+            | ItemKind::Struct(_)
+            | ItemKind::Enum(_)
+            | ItemKind::Union(_)
+            | ItemKind::TypeAlias(_) => true,
+            ItemKind::Trait(_) | ItemKind::Constant(_) | ItemKind::Static(_) => true,
+            ItemKind::Use(_) => {
+                matches!(item.visibility().kind(), VisibilityKind::Private)
+                    || Self::visibility_allows_exception(item.visibility().kind())
+            }
+            _ => false,
+        }
+    }
+
+    fn visibility_allows_exception(visibility: &VisibilityKind) -> bool {
+        match visibility {
+            VisibilityKind::Public => true,
+            VisibilityKind::Restricted(scope) => scope == "(crate)",
+            VisibilityKind::Private => false,
         }
     }
 
