@@ -85,7 +85,7 @@ impl ImportRuleSet {
         diagnostics: &mut Vec<Diagnostic>,
         adapter: &RuleDiagnosticAdapter<'_>,
     ) {
-        if reference.segments.len() < 2 {
+        if reference.segments.len() < 2 || is_use_tree_reference(reference, module) {
             return;
         }
         let explicitly_scoped = reference
@@ -368,6 +368,22 @@ fn common_prefix_len(left: &[String], right: &[String]) -> usize {
         .zip(right)
         .take_while(|(left_segment, right_segment)| left_segment == right_segment)
         .count()
+}
+
+fn is_use_tree_reference(reference: &PathReference, module: &ModuleNode) -> bool {
+    let output = module.parse_output();
+    let tokens = output.tokens();
+    let Some(reference_index) = tokens
+        .iter()
+        .position(|token| token.start() == reference.start)
+    else {
+        return false;
+    };
+    tokens[..reference_index]
+        .iter()
+        .rev()
+        .take_while(|token| token.text(output.source()) != ";")
+        .any(|token| token.text(output.source()) == "use")
 }
 
 fn path_label(segments: &[String]) -> String {
