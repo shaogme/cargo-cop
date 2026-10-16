@@ -801,7 +801,7 @@ fn resolves_qualified_paths_with_imports_and_local_shadowing() {
 fn reports_current_crate_qualified_paths_and_accepts_imported_names() {
     let fixture = Fixture::new();
     fixture.write("Cargo.toml", &package_manifest("sample"));
-    let source = "mod diagnostics { pub enum CodecStage { Conversion } }\nuse crate::diagnostics::CodecStage;\nfn read_sequence() { let _ = crate::diagnostics::CodecStage::Conversion; }\n\nfn imported_sequence() { let _ = CodecStage::Conversion; }\n";
+    let source = "use crate::diagnostics::CodecStage;\nmod diagnostics { pub enum CodecStage { Conversion } }\nfn read_sequence() { let _ = crate::diagnostics::CodecStage::Conversion; }\n\nfn imported_sequence() { let _ = CodecStage::Conversion; }\n";
     fixture.write("src/lib.rs", source);
 
     let output = fixture.run(&["--format", "json"]);
@@ -824,7 +824,7 @@ fn reports_current_crate_qualified_paths_and_accepts_imported_names() {
 
     fixture.write(
         "src/lib.rs",
-        "mod diagnostics { pub enum CodecStage { Conversion } }\nuse crate::diagnostics::CodecStage;\nfn read_sequence() { let _ = CodecStage::Conversion; }\n",
+        "use crate::diagnostics::CodecStage;\nmod diagnostics { pub enum CodecStage { Conversion } }\nfn read_sequence() { let _ = CodecStage::Conversion; }\n",
     );
     let imported = fixture.run(&["--format", "json"]);
 

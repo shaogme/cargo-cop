@@ -31,24 +31,26 @@ impl BlockImportRuleSet {
         module: &ModuleNode,
         diagnostics: &mut Vec<Diagnostic>,
         adapter: &RuleDiagnosticAdapter<'_>,
-    ) {
+    ) -> Vec<Range<usize>> {
         match item.kind() {
             ItemKind::Function(function) => {
                 if let Some(body) = function.body() {
-                    check_function_blocks(body, module, diagnostics, adapter);
+                    check_function_blocks(body, module, diagnostics, adapter)
+                } else {
+                    Vec::new()
                 }
             }
-            ItemKind::Trait(trait_item) => {
-                for nested in trait_item.items() {
-                    Self::check_item(nested, module, diagnostics, adapter);
-                }
-            }
-            ItemKind::Impl(impl_item) => {
-                for nested in impl_item.items() {
-                    Self::check_item(nested, module, diagnostics, adapter);
-                }
-            }
-            _ => {}
+            ItemKind::Trait(trait_item) => trait_item
+                .items()
+                .iter()
+                .flat_map(|nested| Self::check_item(nested, module, diagnostics, adapter))
+                .collect(),
+            ItemKind::Impl(impl_item) => impl_item
+                .items()
+                .iter()
+                .flat_map(|nested| Self::check_item(nested, module, diagnostics, adapter))
+                .collect(),
+            _ => Vec::new(),
         }
     }
 }
@@ -58,28 +60,32 @@ fn check_function_blocks(
     module: &ModuleNode,
     diagnostics: &mut Vec<Diagnostic>,
     adapter: &RuleDiagnosticAdapter<'_>,
-) {
+) -> Vec<Range<usize>> {
     let output = module.parse_output();
     let tokens = output.tokens();
     let Some(open_index) = tokens.iter().position(|token| {
         token.start() == body.start()
             && matches!(token.kind(), TokenKind::OpenDelimiter(Delimiter::Brace))
     }) else {
-        return;
+        return Vec::new();
     };
     let Some(close_index) = matching_delimiter(tokens, open_index) else {
-        return;
+        return Vec::new();
     };
     let mut scopes = vec![BlockScope {
         open_index,
         close_index,
     }];
     collect_nested_blocks(tokens, output, open_index, close_index, &mut scopes);
+    let mut use_tree_ranges = Vec::new();
     for scope in scopes {
-        let imports = check_block_imports(&scope, tokens, module, diagnostics, adapter);
+        let (imports, scope_use_tree_ranges) =
+            check_block_imports(&scope, tokens, module, diagnostics, adapter);
+        use_tree_ranges.extend(scope_use_tree_ranges);
         check_block_common_prefixes(&imports, module, diagnostics, adapter);
         check_block_cfg_spacing(&imports, module, diagnostics, adapter);
     }
+    use_tree_ranges
 }
 
 fn collect_nested_blocks(
@@ -141,13 +147,14 @@ fn check_block_imports(
     module: &ModuleNode,
     diagnostics: &mut Vec<Diagnostic>,
     adapter: &RuleDiagnosticAdapter<'_>,
-) -> Vec<BlockImportRecord> {
+) -> (Vec<BlockImportRecord>, Vec<Range<usize>>) {
     let output = module.parse_output();
     let mut seen_non_import = false;
     let mut statement_start = true;
     let mut inside_use = false;
     let mut pending_attribute_start = None;
     let mut imports = Vec::new();
+    let mut use_tree_ranges = Vec::new();
     let mut index = scope.open_index + 1;
     while index < scope.close_index {
         let token = &tokens[index];
@@ -229,6 +236,7 @@ fn check_block_imports(
             if let Some(end_index) = use_semicolon(tokens, index, scope.close_index, output) {
                 let start = pending_attribute_start.unwrap_or(token.start());
                 let end = tokens[end_index].end();
+                use_tree_ranges.push(start..end);
                 if !seen_non_import {
                     if let Some(import) = parse_block_import(module, start, end) {
                         imports.push(import);
@@ -244,7 +252,7 @@ fn check_block_imports(
         }
         index += 1;
     }
-    imports
+    (imports, use_tree_ranges)
 }
 
 fn parse_block_import(module: &ModuleNode, start: usize, end: usize) -> Option<BlockImportRecord> {

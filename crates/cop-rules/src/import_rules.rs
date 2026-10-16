@@ -1,6 +1,6 @@
 mod block_imports;
 
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, ops::Range};
 
 use cop_analysis::{AnalysisSnapshot, ModuleNode, PathResolutionKind};
 use cop_config::ResolvedConfig;
@@ -36,11 +36,11 @@ impl ImportRuleSet {
                 continue;
             }
             Self::extern_crate_at_scope_start(module, diagnostics, &adapter);
-            Self::imports_at_scope_start(module, diagnostics, &adapter);
+            let use_tree_ranges = Self::imports_at_scope_start(module, diagnostics, &adapter);
             if module.is_order_only() {
                 continue;
             }
-            Self::inline_qualified_paths(module, snapshot, diagnostics, &adapter);
+            Self::inline_qualified_paths(module, snapshot, &use_tree_ranges, diagnostics, &adapter);
             Self::common_prefixes(module, diagnostics, &adapter);
             Self::cfg_group_spacing(module, diagnostics, &adapter);
             Self::cfg_inside_use_tree(module, diagnostics, &adapter);
@@ -50,6 +50,7 @@ impl ImportRuleSet {
     fn inline_qualified_paths(
         module: &ModuleNode,
         snapshot: &AnalysisSnapshot,
+        use_tree_ranges: &[Range<usize>],
         diagnostics: &mut Vec<Diagnostic>,
         adapter: &RuleDiagnosticAdapter<'_>,
     ) {
@@ -68,6 +69,9 @@ impl ImportRuleSet {
                     },
                     _ => return,
                 };
+                if is_inside_use_tree(reference.start, use_tree_ranges) {
+                    return;
+                }
                 Self::check_qualified_path(&reference, module, snapshot, diagnostics, adapter);
             });
             if matches!(item.kind(), ItemKind::Impl(_)) {
@@ -121,7 +125,7 @@ impl ImportRuleSet {
         module: &ModuleNode,
         diagnostics: &mut Vec<Diagnostic>,
         adapter: &RuleDiagnosticAdapter<'_>,
-    ) {
+    ) -> Vec<Range<usize>> {
         let mut encountered_other_item = false;
         for item in module.source_items() {
             match item.kind() {
@@ -145,9 +149,17 @@ impl ImportRuleSet {
                 }
             }
         }
+        let mut use_tree_ranges = Vec::new();
         for item in module.items() {
-            block_imports::BlockImportRuleSet::check_item(item, module, diagnostics, adapter);
+            use_tree_ranges.extend(block_imports::BlockImportRuleSet::check_item(
+                item,
+                module,
+                diagnostics,
+                adapter,
+            ));
         }
+        use_tree_ranges.sort_unstable_by_key(|range| range.start);
+        use_tree_ranges
     }
 
     fn extern_crate_at_scope_start(
@@ -368,6 +380,13 @@ fn common_prefix_len(left: &[String], right: &[String]) -> usize {
         .zip(right)
         .take_while(|(left_segment, right_segment)| left_segment == right_segment)
         .count()
+}
+
+fn is_inside_use_tree(offset: usize, use_tree_ranges: &[Range<usize>]) -> bool {
+    let range_index = use_tree_ranges.partition_point(|range| range.end <= offset);
+    use_tree_ranges
+        .get(range_index)
+        .is_some_and(|range| range.contains(&offset))
 }
 
 fn path_label(segments: &[String]) -> String {
