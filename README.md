@@ -124,7 +124,7 @@ All rules are enabled by default and use `error` severity unless configured othe
 | `declaration_before_use` | A named declaration must precede references to it within the applicable source scope. |
 | `parameter_limit` | Functions, methods, and closures may have at most five parameters. |
 | `tuple_arity` | Tuple types and expressions may have at most two elements. |
-| `no_inline_qualified_path` | Import external crate names before using them as the root of a qualified path. |
+| `no_inline_qualified_path` | Report code paths rooted at an external crate name (including aliases) or explicitly at a module scope with `crate::`, `self::`, or `super::`; import the required names before use. |
 | `merge_common_prefix_imports` | Merge eligible adjacent imports that share a path prefix and have compatible visibility and `cfg` conditions. |
 | `extern_crate_at_scope_start` | Keep module-scope `extern crate` declarations at the start of each module scope. |
 | `imports_at_scope_start` | Place module-scope `use` declarations after out-of-line modules and before other items; keep block imports before other statements. |

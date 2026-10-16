@@ -124,7 +124,7 @@ Feature 选择根据所选 package 的 Cargo feature 定义计算，处理 defau
 | `declaration_before_use` | 在适用的源码作用域中，具名声明必须先于对它的引用。 |
 | `parameter_limit` | 函数、方法和闭包的参数数量最多为 5 个。 |
 | `tuple_arity` | tuple 类型和表达式最多包含 2 个元素。 |
-| `no_inline_qualified_path` | 通过导入后再使用外部 crate 名作为限定路径的根。 |
+| `no_inline_qualified_path` | 报告代码中以外部 crate 名（含别名）或显式模块路径 `crate::`、`self::`、`super::` 为根的限定路径；使用前应导入所需名称。 |
 | `merge_common_prefix_imports` | 合并路径有共同前缀且可见性和 `cfg` 条件兼容的相邻导入。 |
 | `extern_crate_at_scope_start` | 每个模块作用域中的 `extern crate` 声明必须位于开头。 |
 | `imports_at_scope_start` | 模块作用域中的 `use` 位于外部模块声明之后、其他 item 之前；block 导入放在其他语句之前。 |

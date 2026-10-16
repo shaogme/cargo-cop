@@ -798,6 +798,41 @@ fn resolves_qualified_paths_with_imports_and_local_shadowing() {
 }
 
 #[test]
+fn reports_current_crate_qualified_paths_and_accepts_imported_names() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    let source = "mod diagnostics { pub enum CodecStage { Conversion } }\nuse crate::diagnostics::CodecStage;\nfn read_sequence() { let _ = crate::diagnostics::CodecStage::Conversion; }\n\nfn imported_sequence() { let _ = CodecStage::Conversion; }\n";
+    fixture.write("src/lib.rs", source);
+
+    let output = fixture.run(&["--format", "json"]);
+
+    assert_eq!(output.status, 1, "{}", output.stdout);
+    let diagnostics = rule_diagnostics(&output, "no_inline_qualified_path");
+    assert_eq!(diagnostics.len(), 1, "{}", output.stdout);
+    let diagnostic = &diagnostics[0];
+    let line = usize::try_from(diagnostic["start"]["line"].as_u64().expect("诊断起始行"))
+        .expect("诊断起始行范围");
+    let start_column = usize::try_from(diagnostic["start"]["column"].as_u64().expect("诊断起始列"))
+        .expect("诊断起始列范围");
+    let end_column = usize::try_from(diagnostic["end"]["column"].as_u64().expect("诊断结束列"))
+        .expect("诊断结束列范围");
+    let source_line = source.lines().nth(line - 1).expect("诊断对应源码行");
+    assert_eq!(
+        &source_line[start_column - 1..end_column - 1],
+        "crate::diagnostics::CodecStage::Conversion"
+    );
+
+    fixture.write(
+        "src/lib.rs",
+        "mod diagnostics { pub enum CodecStage { Conversion } }\nuse crate::diagnostics::CodecStage;\nfn read_sequence() { let _ = CodecStage::Conversion; }\n",
+    );
+    let imported = fixture.run(&["--format", "json"]);
+
+    assert_eq!(imported.status, 0, "{}", imported.stdout);
+    assert!(!imported.has_rule("no_inline_qualified_path"));
+}
+
+#[test]
 fn reports_external_qualified_paths_in_nested_call_arguments() {
     let fixture = Fixture::new();
     fixture.write("Cargo.toml", &package_manifest("sample"));
@@ -825,6 +860,48 @@ fn reports_external_qualified_paths_in_nested_call_arguments() {
             expected_path
         );
     }
+}
+
+#[test]
+fn reports_local_roots_in_nested_calls_closures_and_trait_impl_methods() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    let source = "mod diagnostics { pub enum CodecStage { Conversion } }\n\nmod outer {\n    pub mod diagnostics { pub enum CodecStage { Conversion } }\n\n    pub mod child {\n        pub enum LocalStage { Conversion }\n\n        fn consume<T>(_: T) {}\n\n        fn wrap<T>(value: T) -> T { value }\n\n        fn nested_call_and_closure() {\n            consume(wrap(crate::diagnostics::CodecStage::Conversion));\n            let _closure = || crate::diagnostics::CodecStage::Conversion;\n            let _ = self::LocalStage::Conversion;\n            let _ = super::diagnostics::CodecStage::Conversion;\n        }\n\n        trait Operation {\n            fn convert() { let _ = crate::diagnostics::CodecStage::Conversion; }\n        }\n\n        struct Worker;\n\n        impl Operation for Worker {\n            fn convert() { let _ = crate::diagnostics::CodecStage::Conversion; }\n        }\n    }\n}\n";
+    fixture.write("src/lib.rs", source);
+
+    let output = fixture.run(&["--format", "json"]);
+
+    assert_eq!(output.status, 1, "{}", output.stdout);
+    let diagnostics = rule_diagnostics(&output, "no_inline_qualified_path");
+    assert_eq!(diagnostics.len(), 6, "{}", output.stdout);
+    let paths = diagnostics
+        .iter()
+        .map(|diagnostic| {
+            let line = usize::try_from(diagnostic["start"]["line"].as_u64().expect("诊断起始行"))
+                .expect("诊断起始行范围");
+            let start_column =
+                usize::try_from(diagnostic["start"]["column"].as_u64().expect("诊断起始列"))
+                    .expect("诊断起始列范围");
+            let end_column =
+                usize::try_from(diagnostic["end"]["column"].as_u64().expect("诊断结束列"))
+                    .expect("诊断结束列范围");
+            let source_line = source.lines().nth(line - 1).expect("诊断对应源码行");
+            source_line[start_column - 1..end_column - 1].to_owned()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        paths
+            .iter()
+            .filter(|path| path.as_str() == "crate::diagnostics::CodecStage::Conversion")
+            .count(),
+        4
+    );
+    assert!(paths
+        .iter()
+        .any(|path| path == "self::LocalStage::Conversion"));
+    assert!(paths
+        .iter()
+        .any(|path| path == "super::diagnostics::CodecStage::Conversion"));
 }
 
 #[test]

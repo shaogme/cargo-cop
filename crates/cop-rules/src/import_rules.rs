@@ -68,17 +68,17 @@ impl ImportRuleSet {
                     },
                     _ => return,
                 };
-                Self::check_external_path(&reference, module, snapshot, diagnostics, adapter);
+                Self::check_qualified_path(&reference, module, snapshot, diagnostics, adapter);
             });
             if matches!(item.kind(), ItemKind::Impl(_)) {
                 for reference in SyntaxSupport::impl_header_references(module, item) {
-                    Self::check_external_path(&reference, module, snapshot, diagnostics, adapter);
+                    Self::check_qualified_path(&reference, module, snapshot, diagnostics, adapter);
                 }
             }
         }
     }
 
-    fn check_external_path(
+    fn check_qualified_path(
         reference: &PathReference,
         module: &ModuleNode,
         snapshot: &AnalysisSnapshot,
@@ -88,15 +88,22 @@ impl ImportRuleSet {
         if reference.segments.len() < 2 {
             return;
         }
-        let resolution =
-            snapshot
-                .symbols()
-                .resolve_path_at(module, &reference.segments, Some(reference.start));
-        if resolution.kind() != PathResolutionKind::ExternalCrate
-            || resolution.external_crate().is_none()
-            || !resolution.is_external_crate_qualifier()
-        {
-            return;
+        let explicitly_scoped = reference
+            .segments
+            .first()
+            .is_some_and(|segment| matches!(segment.as_str(), "crate" | "self" | "super"));
+        if !explicitly_scoped {
+            let resolution = snapshot.symbols().resolve_path_at(
+                module,
+                &reference.segments,
+                Some(reference.start),
+            );
+            if resolution.kind() != PathResolutionKind::ExternalCrate
+                || resolution.external_crate().is_none()
+                || !resolution.is_external_crate_qualifier()
+            {
+                return;
+            }
         }
         adapter.push(
             module,
