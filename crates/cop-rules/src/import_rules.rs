@@ -88,10 +88,13 @@ impl ImportRuleSet {
         if reference.segments.len() < 2 {
             return;
         }
-        let resolution = snapshot.symbols().resolve_path(module, &reference.segments);
+        let resolution =
+            snapshot
+                .symbols()
+                .resolve_path_at(module, &reference.segments, Some(reference.start));
         if resolution.kind() != PathResolutionKind::ExternalCrate
-            || !resolution.alias_chain().is_empty()
-            || resolution.symbol().is_some()
+            || resolution.external_crate().is_none()
+            || !resolution.is_external_crate_qualifier()
         {
             return;
         }

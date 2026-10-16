@@ -1,3 +1,5 @@
+mod local_bindings;
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
@@ -6,6 +8,8 @@ use std::{
 use cop_cargo::{DependencyKind, SelectedPackage, TargetContext};
 use cop_model::SourceSpan;
 use cop_syntax::{Item, ItemKind, SourceFile, UseTree, VisibilityKind};
+
+use local_bindings::LocalBindings;
 
 use crate::{
     cfg_eval::{CfgDecision, CfgEvaluator},
@@ -72,6 +76,8 @@ pub struct PathResolution {
     kind: PathResolutionKind,
     symbol: Option<SymbolRecord>,
     external_crate: Option<String>,
+    external_path_depth: Option<usize>,
+    external_crate_qualifier: bool,
     visibility: VisibilityResult,
     alias_chain: Vec<String>,
 }
@@ -80,6 +86,7 @@ pub struct PathResolution {
 pub struct SymbolIndex {
     symbols: Vec<SymbolRecord>,
     external_crates: BTreeMap<usize, BTreeSet<String>>,
+    local_bindings: LocalBindings,
 }
 
 struct UseWalk<'a> {
@@ -95,8 +102,10 @@ struct UseWalk<'a> {
 struct ResolveState<'a> {
     context_index: usize,
     requester: &'a [String],
+    offset: Option<usize>,
     alias_chain: Vec<String>,
     seen_aliases: BTreeSet<(Vec<String>, String)>,
+    seen_local_aliases: BTreeSet<(usize, String)>,
 }
 
 impl SymbolRecord {
@@ -188,6 +197,10 @@ impl PathResolution {
     pub fn alias_chain(&self) -> &[String] {
         &self.alias_chain
     }
+
+    pub fn is_external_crate_qualifier(&self) -> bool {
+        self.external_crate_qualifier
+    }
 }
 
 impl SymbolIndex {
@@ -206,6 +219,7 @@ impl SymbolIndex {
             };
             index.add_module_symbols(module, target, &module_conditions);
         }
+        index.local_bindings = LocalBindings::build(modules);
         for (context_index, target) in package.targets().iter().enumerate() {
             let evaluator = CfgEvaluator::new(target);
             let build_script = target.kind().iter().any(|kind| kind == "custom-build");
@@ -274,11 +288,22 @@ impl SymbolIndex {
     }
 
     pub fn resolve_path(&self, module: &ModuleNode, path: &[String]) -> PathResolution {
+        self.resolve_path_at(module, path, None)
+    }
+
+    pub fn resolve_path_at(
+        &self,
+        module: &ModuleNode,
+        path: &[String],
+        offset: Option<usize>,
+    ) -> PathResolution {
         let mut state = ResolveState {
             context_index: module.context_index(),
             requester: module.namespace(),
+            offset,
             alias_chain: Vec::new(),
             seen_aliases: BTreeSet::new(),
+            seen_local_aliases: BTreeSet::new(),
         };
         self.resolve_inner(&mut state, module.namespace(), path)
     }
@@ -465,6 +490,8 @@ impl SymbolIndex {
                 kind: PathResolutionKind::Local,
                 symbol: None,
                 external_crate: None,
+                external_path_depth: None,
+                external_crate_qualifier: false,
                 visibility: VisibilityResult::Reachable,
                 alias_chain: state.alias_chain.clone(),
             };
@@ -480,9 +507,51 @@ impl SymbolIndex {
                 kind: PathResolutionKind::ExternalCrate,
                 symbol: None,
                 external_crate: Some(identifier_name(first).to_owned()),
+                external_path_depth: Some(rest.len().saturating_sub(1)),
+                external_crate_qualifier: true,
                 visibility: VisibilityResult::Public,
                 alias_chain: state.alias_chain.clone(),
             };
+        }
+        let has_explicit_scope = path
+            .first()
+            .is_some_and(|segment| matches!(segment.as_str(), "crate" | "::" | "self" | "super"));
+        if !has_explicit_scope && base == state.requester {
+            if let Some(offset) = state.offset {
+                if let Some(binding) =
+                    self.local_bindings
+                        .find(state.context_index, state.requester, offset, first)
+                {
+                    if let Some(target_path) = binding.target_path() {
+                        let key = (binding.scope_start(), binding.name().to_owned());
+                        if !state.seen_local_aliases.insert(key.clone()) {
+                            return unresolved(PathResolutionKind::AliasCycle, &state.alias_chain);
+                        }
+                        state.alias_chain.push(binding.name().to_owned());
+                        let mut redirected = target_path.to_vec();
+                        let suffix_length = rest.len().saturating_sub(1);
+                        redirected.extend(rest.iter().skip(1).cloned());
+                        let mut resolution =
+                            self.resolve_inner(state, state.requester, &redirected);
+                        if resolution.external_path_depth == Some(suffix_length) {
+                            resolution.external_crate_qualifier = true;
+                        } else if resolution.external_crate.is_some() {
+                            resolution.external_crate_qualifier = false;
+                        }
+                        state.seen_local_aliases.remove(&key);
+                        return resolution;
+                    }
+                    return PathResolution {
+                        kind: PathResolutionKind::Local,
+                        symbol: None,
+                        external_crate: None,
+                        external_path_depth: None,
+                        external_crate_qualifier: false,
+                        visibility: VisibilityResult::Reachable,
+                        alias_chain: state.alias_chain.clone(),
+                    };
+                }
+            }
         }
         let candidate = match self.find_symbol(state.context_index, &base, first) {
             Ok(Some(candidate)) => candidate,
@@ -498,6 +567,8 @@ impl SymbolIndex {
                         kind: PathResolutionKind::ExternalCrate,
                         symbol: None,
                         external_crate: Some(identifier_name(first).to_owned()),
+                        external_path_depth: Some(rest.len().saturating_sub(1)),
+                        external_crate_qualifier: true,
                         visibility: VisibilityResult::Public,
                         alias_chain: state.alias_chain.clone(),
                     };
@@ -512,6 +583,8 @@ impl SymbolIndex {
                     kind: PathResolutionKind::Local,
                     symbol: Some(candidate.clone()),
                     external_crate: None,
+                    external_path_depth: None,
+                    external_crate_qualifier: false,
                     visibility,
                     alias_chain: state.alias_chain.clone(),
                 };
@@ -522,8 +595,16 @@ impl SymbolIndex {
             }
             state.alias_chain.push(candidate.name.clone());
             let mut redirected = candidate.target_path.clone().unwrap_or_default();
+            let suffix_length = rest.len().saturating_sub(1);
             redirected.extend(rest.iter().skip(1).cloned());
-            let resolution = self.resolve_inner(state, &candidate.namespace, &redirected);
+            let request_offset = state.offset.take();
+            let mut resolution = self.resolve_inner(state, &candidate.namespace, &redirected);
+            state.offset = request_offset;
+            if resolution.external_path_depth == Some(suffix_length) {
+                resolution.external_crate_qualifier = true;
+            } else if resolution.external_crate.is_some() {
+                resolution.external_crate_qualifier = false;
+            }
             state
                 .seen_aliases
                 .remove(&(candidate.namespace.clone(), candidate.name.clone()));
@@ -534,6 +615,8 @@ impl SymbolIndex {
                 kind: PathResolutionKind::ExternalCrate,
                 symbol: Some(candidate.clone()),
                 external_crate: Some(external.clone()),
+                external_path_depth: Some(rest.len().saturating_sub(1)),
+                external_crate_qualifier: true,
                 visibility: candidate.is_visible_from(state.requester),
                 alias_chain: state.alias_chain.clone(),
             };
@@ -544,6 +627,8 @@ impl SymbolIndex {
                 kind: PathResolutionKind::Local,
                 symbol: Some(candidate.clone()),
                 external_crate: None,
+                external_path_depth: None,
+                external_crate_qualifier: false,
                 visibility,
                 alias_chain: state.alias_chain.clone(),
             };
@@ -558,6 +643,8 @@ impl SymbolIndex {
             kind: PathResolutionKind::Local,
             symbol: Some(candidate.clone()),
             external_crate: None,
+            external_path_depth: None,
+            external_crate_qualifier: false,
             visibility,
             alias_chain: state.alias_chain.clone(),
         }
@@ -597,6 +684,8 @@ fn unresolved(kind: PathResolutionKind, alias_chain: &[String]) -> PathResolutio
         kind,
         symbol: None,
         external_crate: None,
+        external_path_depth: None,
+        external_crate_qualifier: false,
         visibility: VisibilityResult::Unknown,
         alias_chain: alias_chain.to_vec(),
     }

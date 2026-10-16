@@ -798,6 +798,86 @@ fn resolves_qualified_paths_with_imports_and_local_shadowing() {
 }
 
 #[test]
+fn reports_external_qualified_paths_in_nested_call_arguments() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    let source = "fn build() {\n    consume(\n        wrapper(\n            std::path::PathBuf::from(\n                std::path::Path::new(\"input.txt\"),\n            ),\n        ),\n        std::path::Path::new(\"fallback.txt\"),\n    );\n}\n";
+    fixture.write("src/lib.rs", source);
+
+    let output = fixture.run(&["--format", "json"]);
+
+    assert_eq!(output.status, 1, "{}", output.stdout);
+    assert!(output.stdout.contains("\"status\":\"complete\""));
+    let diagnostics = rule_diagnostics(&output, "no_inline_qualified_path");
+    assert_eq!(diagnostics.len(), 3, "{}", output.stdout);
+    for (diagnostic, (line, start_column, end_column, expected_path)) in diagnostics.iter().zip([
+        (4, 13, 37, "std::path::PathBuf::from"),
+        (5, 17, 37, "std::path::Path::new"),
+        (8, 9, 29, "std::path::Path::new"),
+    ]) {
+        assert_eq!(diagnostic["start"]["line"], line);
+        assert_eq!(diagnostic["start"]["column"], start_column);
+        assert_eq!(diagnostic["end"]["line"], line);
+        assert_eq!(diagnostic["end"]["column"], end_column);
+        let source_line = source.lines().nth(line - 1).expect("诊断对应源码行");
+        assert_eq!(
+            &source_line[start_column - 1..end_column - 1],
+            expected_path
+        );
+    }
+}
+
+#[test]
+fn reports_external_crate_root_aliases_without_misclassifying_local_names() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "Cargo.toml",
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[workspace]\nmembers = [\"vendor\"]\nresolver = \"2\"\n\n[dependencies]\nvendor = { path = \"vendor\" }\n",
+    );
+    fixture.write("vendor/Cargo.toml", &package_manifest("vendor"));
+    fixture.write("vendor/src/lib.rs", "pub struct Thing;\n");
+    fixture.write(
+        "src/lib.rs",
+        "fn local_alias() { use vendor as external; let _ = external::Thing; }\n",
+    );
+
+    let local_alias = fixture.run(&["--format", "json", "--package", "app"]);
+    assert_eq!(local_alias.status, 1, "{}", local_alias.stdout);
+    assert_eq!(
+        local_alias
+            .stdout
+            .matches("\"rule_id\":\"no_inline_qualified_path\"")
+            .count(),
+        1,
+        "{}",
+        local_alias.stdout
+    );
+
+    fixture.write(
+        "src/lib.rs",
+        "use vendor as external;\nfn module_alias() { let _ = external::Thing; }\n",
+    );
+    let module_alias = fixture.run(&["--format", "json", "--package", "app"]);
+    assert_eq!(module_alias.status, 1, "{}", module_alias.stdout);
+    assert!(module_alias.has_rule("no_inline_qualified_path"));
+
+    fixture.write(
+        "src/lib.rs",
+        "use vendor::Thing;\nuse vendor::Thing as Imported;\nfn bare_item() { let _ = Thing; let _ = Imported::Associated; }\n",
+    );
+    let imported_items = fixture.run(&["--format", "json", "--package", "app"]);
+    assert_eq!(imported_items.status, 0, "{}", imported_items.stdout);
+    assert!(!imported_items.has_rule("no_inline_qualified_path"));
+
+    fixture.write(
+        "src/lib.rs",
+        "mod local { pub struct Thing; }\nfn local_module() { mod vendor { pub struct Thing; } let _ = vendor::Thing; }\nfn parameter(vendor: u8) { let _ = vendor::Thing; }\nfn local_binding() { let vendor = 1; let _ = vendor::Thing; }\nfn local_use_alias() { use crate::local as vendor; let _ = vendor::Thing; }\n",
+    );
+    let local_names = fixture.run(&["--format", "json", "--package", "app"]);
+    assert!(!local_names.has_rule("no_inline_qualified_path"));
+}
+
+#[test]
 fn preserves_absolute_roots_when_a_local_module_shadows_an_external_crate() {
     let fixture = Fixture::new();
     fixture.write("Cargo.toml", &package_manifest("sample"));
@@ -1149,8 +1229,17 @@ fn resolves_extern_crate_aliases_for_use_and_qualified_paths() {
 
     let output = fixture.run(&["--format", "json"]);
 
-    assert_eq!(output.status, 0, "{}", output.stdout);
-    assert!(!output.has_rule("no_inline_qualified_path"));
+    assert_eq!(output.status, 1, "{}", output.stdout);
+    assert_eq!(
+        output
+            .stdout
+            .matches("\"rule_id\":\"no_inline_qualified_path\"")
+            .count(),
+        1,
+        "{}",
+        output.stdout
+    );
+    assert!(output.stdout.contains("standard::mem::drop"));
     assert!(!output.has_rule("imports_at_scope_start"));
     assert!(!output.has_rule("out_of_line_modules_at_scope_start"));
 }
