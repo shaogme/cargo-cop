@@ -159,7 +159,7 @@ impl Application {
             None,
             &[lc_all.as_deref(), lc_messages.as_deref(), lang.as_deref()],
         )
-        .unwrap_or(Locale::ZH_CN);
+        .unwrap_or(Locale::EN_US);
         let startup = match Self::startup_locale(&arguments, environment_locale) {
             Ok(startup) => startup,
             Err(error) => {
@@ -219,7 +219,7 @@ impl Application {
                     ToolErrorKind::Arguments,
                     LocalizedMessage::new(LOCALE_INVALID_CLI).with_text("locale", value),
                 )
-                .with_locale(Locale::ZH_CN)
+                .with_locale(environment_locale)
             })?;
             return Ok(StartupContext {
                 locale,
@@ -239,7 +239,7 @@ impl Application {
                         ToolErrorKind::Configuration,
                         LocalizedMessage::new(LOCALE_INVALID_CONFIG).with_text("locale", value),
                     )
-                    .with_locale(Locale::ZH_CN)
+                    .with_locale(environment_locale)
                 })?;
                 Ok(StartupContext { locale, discovery })
             }
@@ -349,7 +349,7 @@ impl Application {
                     ToolErrorKind::Arguments,
                     LocalizedMessage::new(LOCALE_INVALID_CLI).with_text("locale", value),
                 )
-                .with_locale(Locale::ZH_CN)
+                .with_locale(fallback_locale)
             })?
         } else if let Some(value) = loaded_config.locale() {
             Locale::parse_explicit(value).map_err(|_| {
@@ -357,7 +357,7 @@ impl Application {
                     ToolErrorKind::Configuration,
                     LocalizedMessage::new(LOCALE_INVALID_CONFIG).with_text("locale", value),
                 )
-                .with_locale(Locale::ZH_CN)
+                .with_locale(fallback_locale)
             })?
         } else {
             fallback_locale

@@ -5,6 +5,7 @@ mod lexer;
 mod parser;
 mod recovery;
 mod source;
+mod string_literal;
 
 pub use ast::{
     Attribute, ClosureNode, CoverageStatus, ExternCrateItem, FunctionBody, FunctionItem, ImplItem,
@@ -17,3 +18,4 @@ pub use lexer::{
 };
 pub use parser::RustParser;
 pub use source::SourceFile;
+pub use string_literal::RustStringLiteral;

@@ -1,5 +1,5 @@
 use cop_cargo::TargetContext;
-use cop_syntax::{Attribute, SourceFile};
+use cop_syntax::{Attribute, RustStringLiteral, SourceFile};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CfgDecision {
@@ -358,93 +358,30 @@ impl PredicateParser<'_, '_, '_> {
     }
 
     fn string_literal(&mut self) -> Result<String, ()> {
+        let start = self.cursor;
         if !self.consume(b'"') {
             return Err(());
         }
-        let mut value = String::new();
-        while let Some(character) = self
-            .source
-            .get(self.cursor..)
-            .and_then(|s| s.chars().next())
-        {
-            self.cursor += character.len_utf8();
-            match character {
-                '"' => return Ok(value),
-                '\\' => {
-                    let escaped = self.source.as_bytes().get(self.cursor).copied().ok_or(())?;
-                    self.cursor += 1;
-                    match escaped {
-                        b'"' => value.push('"'),
-                        b'\\' => value.push('\\'),
-                        b'n' => value.push('\n'),
-                        b'r' => value.push('\r'),
-                        b't' => value.push('\t'),
-                        b'0' => value.push('\0'),
-                        b'x' => value.push(self.hexadecimal_escape()?),
-                        b'u' => value.push(self.unicode_escape()?),
-                        b'\n' => self.skip_continuation_whitespace(),
-                        b'\r' if self.consume(b'\n') => self.skip_continuation_whitespace(),
-                        _ => return Err(()),
-                    }
-                }
-                '\n' | '\r' => return Err(()),
-                other => value.push(other),
-            }
-        }
-        Err(())
-    }
-
-    fn hexadecimal_escape(&mut self) -> Result<char, ()> {
-        let digits = self.source.get(self.cursor..self.cursor + 2).ok_or(())?;
-        if !digits.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-            return Err(());
-        }
-        let value = u8::from_str_radix(digits, 16).map_err(|_| ())?;
-        if !value.is_ascii() {
-            return Err(());
-        }
-        self.cursor += 2;
-        Ok(char::from(value))
-    }
-
-    fn unicode_escape(&mut self) -> Result<char, ()> {
-        if !self.consume(b'{') {
-            return Err(());
-        }
-        let mut digits = String::new();
+        let mut escaped = false;
         while let Some(character) = self
             .source
             .get(self.cursor..)
             .and_then(|remaining| remaining.chars().next())
         {
             self.cursor += character.len_utf8();
+            if escaped {
+                escaped = false;
+                continue;
+            }
             match character {
-                '}' if !digits.is_empty() => {
-                    let value = u32::from_str_radix(&digits, 16).map_err(|_| ())?;
-                    return char::from_u32(value).ok_or(());
+                '\\' => escaped = true,
+                '"' => {
+                    return RustStringLiteral::decode(&self.source[start..self.cursor]).ok_or(());
                 }
-                '_' => {}
-                value if value.is_ascii_hexdigit() => digits.push(value),
-                _ => return Err(()),
+                _ => {}
             }
         }
         Err(())
-    }
-
-    fn skip_continuation_whitespace(&mut self) {
-        while self
-            .source
-            .get(self.cursor..)
-            .and_then(|remaining| remaining.chars().next())
-            .is_some_and(char::is_whitespace)
-        {
-            let length = self
-                .source
-                .get(self.cursor..)
-                .and_then(|remaining| remaining.chars().next())
-                .map_or(0, char::len_utf8);
-            self.cursor += length;
-        }
     }
 
     fn skip_space(&mut self) {
@@ -524,90 +461,7 @@ fn split_top_level(source: &str, separator: char) -> Vec<&str> {
     pieces
 }
 
-fn decode_string_literal(literal: &str) -> Option<String> {
-    let characters = literal.chars().collect::<Vec<_>>();
-    let mut decoded = String::new();
-    let mut cursor = 0;
-    while let Some(character) = characters.get(cursor).copied() {
-        cursor += 1;
-        if character != '\\' {
-            decoded.push(character);
-            continue;
-        }
-        let escaped = characters.get(cursor).copied()?;
-        cursor += 1;
-        match escaped {
-            '"' => decoded.push('"'),
-            '\\' => decoded.push('\\'),
-            'n' => decoded.push('\n'),
-            'r' => decoded.push('\r'),
-            't' => decoded.push('\t'),
-            '0' => decoded.push('\0'),
-            'x' => {
-                let digits = characters.get(cursor..cursor + 2)?;
-                if !digits.iter().all(char::is_ascii_hexdigit) {
-                    return None;
-                }
-                let value = u8::from_str_radix(&digits.iter().collect::<String>(), 16).ok()?;
-                if !value.is_ascii() {
-                    return None;
-                }
-                decoded.push(char::from(value));
-                cursor += 2;
-            }
-            'u' => {
-                if characters.get(cursor) != Some(&'{') {
-                    return None;
-                }
-                cursor += 1;
-                let start = cursor;
-                let mut digits = String::new();
-                while let Some(character) = characters.get(cursor).copied() {
-                    cursor += 1;
-                    match character {
-                        '}' if !digits.is_empty() && digits.len() <= 6 => break,
-                        '_' => {}
-                        value if value.is_ascii_hexdigit() => digits.push(value),
-                        _ => return None,
-                    }
-                    if cursor == characters.len() {
-                        return None;
-                    }
-                }
-                if cursor == start || characters.get(cursor - 1) != Some(&'}') {
-                    return None;
-                }
-                let value = u32::from_str_radix(&digits, 16).ok()?;
-                decoded.push(char::from_u32(value)?);
-            }
-            '\n' => skip_string_continuation_whitespace(&characters, &mut cursor),
-            '\r' if characters.get(cursor) == Some(&'\n') => {
-                cursor += 1;
-                skip_string_continuation_whitespace(&characters, &mut cursor);
-            }
-            _ => return None,
-        }
-    }
-    Some(decoded)
-}
-
-fn skip_string_continuation_whitespace(characters: &[char], cursor: &mut usize) {
-    while characters
-        .get(*cursor)
-        .is_some_and(|character| character.is_whitespace())
-    {
-        *cursor += 1;
-    }
-}
-
 fn parse_string_value(source: &str) -> Option<String> {
     let value = source.trim().strip_prefix('=')?.trim();
-    if let Some(raw) = value.strip_prefix('r') {
-        let hashes = raw.bytes().take_while(|byte| *byte == b'#').count();
-        let content = raw.get(hashes..)?.strip_prefix('"')?;
-        let ending = format!("\"{}", "#".repeat(hashes));
-        return content.strip_suffix(&ending).map(str::to_owned);
-    }
-    let literal = value.strip_prefix('"')?.strip_suffix('"')?;
-    decode_string_literal(literal)
+    RustStringLiteral::decode(value)
 }

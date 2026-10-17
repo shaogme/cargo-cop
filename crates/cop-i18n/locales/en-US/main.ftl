@@ -6,6 +6,7 @@ module-file-layout = Submodule entry files must not use the mod.rs layout
 out-of-line-modules-at-scope-start = Out-of-line module declarations must follow extern crate declarations and stay before use declarations and other items
 child-module-visibility = Non-private submodule { $module } may contain only declarations and use items with private, public, or pub(crate) visibility
 child-module-line-count = The effective line count of submodule file { $file } is { $actual }; it must be between { $minimum } and { $maximum }
+no-parent-path-attribute = A #[path] attribute must not traverse to a parent directory
 no-parent-glob-import = Child modules must not use super::* to import parent implementation details
 no-parent-private-path = The child module path depends on private item { $item } from ancestor module { $ancestor }
 impl-cross-file = The impl target { $target } is defined in another source file; impl blocks must be in the same file as the type definition

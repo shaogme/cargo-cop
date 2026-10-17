@@ -49,7 +49,7 @@ severity = "error"
 | --- | --- | --- | --- |
 | `version` | 整数 | 必填 | 必须是 `2`。 |
 | `allow_warnings` | 布尔值 | `false` | 设为 `true` 时，warning 诊断不会出现在诊断列表中，并计入 `summary.suppressed_warnings`；error 仍会显示。此设置同时作用于规则 warning 和分析 warning。 |
-| `[i18n].locale` | 非空字符串 | 环境语言，之后回退为 `zh-CN` | 诊断和报告语言。使用 `en-US` 或 `zh-CN`。命令行 `--locale` 优先。 |
+| `[i18n].locale` | 非空字符串 | 环境语言；除非明确识别为 `zh`，否则使用英文 | 诊断和报告语言。使用 `en-US` 或 `zh-CN`。命令行 `--locale` 优先。 |
 | `[scan].targets` | `"default"` 或 `"all"` | `"default"` | 选择默认 `lib`/`bin`/`proc-macro` targets，或全部 Cargo targets。命令行 `--all-targets` 会选择 `all`。 |
 | `[scan].target` | 非空字符串 | 未设置 | Target triple，或使用 `"host"` 选择 host triple。命令行 `--target` 优先。 |
 | `[scan].features` | 非空且不重复的字符串数组 | `[]` | 为所选根 package 请求启用的 features。若提供命令行 `--features`，命令行列表会替代此列表。 |
@@ -57,7 +57,7 @@ severity = "error"
 | `[rules.<ID>].enabled` | 布尔值 | `true` | 是否运行该规则。命令行 `--disable-rule <ID>` 可将其关闭。 |
 | `[rules.<ID>].severity` | `"warning"` 或 `"error"` | `"error"` | 该规则诊断的级别。命令行 `--severity ID=LEVEL` 优先。 |
 
-`[rules]` 可以包含下方目录中的 19 个 ID。每个规则表只接受 `enabled` 和 `severity`。一条规则的设置不会影响其他规则。
+`[rules]` 可以包含下方目录中的 20 个 ID。每个规则表只接受 `enabled` 和 `severity`。一条规则的设置不会影响其他规则。
 
 ## 规则 ID
 
@@ -73,7 +73,7 @@ severity = "warning"
 
 可用 ID：
 
-`module_file_layout`、`no_lint_relaxation`、`item_spacing`、`child_module_visibility`、`no_parent_private_dependency`、`child_module_line_count`、`impl_locality`、`private_fields_for_behavior_types`、`child_public_free_functions`、`declaration_before_use`、`parameter_limit`、`tuple_arity`、`no_inline_qualified_path`、`merge_common_prefix_imports`、`extern_crate_at_scope_start`、`imports_at_scope_start`、`out_of_line_modules_at_scope_start`、`cfg_use_group_spacing`、`cfg_inside_use_tree`。
+`module_file_layout`、`no_lint_relaxation`、`item_spacing`、`child_module_visibility`、`no_parent_path_attribute`、`no_parent_private_dependency`、`child_module_line_count`、`impl_locality`、`private_fields_for_behavior_types`、`child_public_free_functions`、`declaration_before_use`、`parameter_limit`、`tuple_arity`、`no_inline_qualified_path`、`merge_common_prefix_imports`、`extern_crate_at_scope_start`、`imports_at_scope_start`、`out_of_line_modules_at_scope_start`、`cfg_use_group_spacing`、`cfg_inside_use_tree`。
 
 原来的 `private_child_modules` ID 已替换为 `child_module_visibility`。请将 `[rules.private_child_modules]`、`--disable-rule private_child_modules` 和 `--severity private_child_modules=...` 改用新 ID。配置 schema 版本仍为 `2`。
 

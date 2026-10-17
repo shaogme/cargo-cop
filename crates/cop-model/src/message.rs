@@ -44,6 +44,7 @@ pub const OUT_OF_LINE_MODULES_AT_SCOPE_START: MessageId =
     MessageId::new("out-of-line-modules-at-scope-start");
 pub const CHILD_MODULE_VISIBILITY: MessageId = MessageId::new("child-module-visibility");
 pub const CHILD_MODULE_LINE_COUNT: MessageId = MessageId::new("child-module-line-count");
+pub const NO_PARENT_PATH_ATTRIBUTE: MessageId = MessageId::new("no-parent-path-attribute");
 pub const NO_PARENT_GLOB_IMPORT: MessageId = MessageId::new("no-parent-glob-import");
 pub const NO_PARENT_PRIVATE_PATH: MessageId = MessageId::new("no-parent-private-path");
 pub const IMPL_CROSS_FILE: MessageId = MessageId::new("impl-cross-file");
@@ -176,6 +177,7 @@ impl MessageId {
         OUT_OF_LINE_MODULES_AT_SCOPE_START,
         CHILD_MODULE_VISIBILITY,
         CHILD_MODULE_LINE_COUNT,
+        NO_PARENT_PATH_ATTRIBUTE,
         NO_PARENT_GLOB_IMPORT,
         NO_PARENT_PRIVATE_PATH,
         IMPL_CROSS_FILE,

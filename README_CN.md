@@ -6,7 +6,7 @@
 
 `cargo-cop` 是一个 Rust 源码静态检查工具。它会按照仓库规范检查选定的 Cargo package 和 target，覆盖模块布局、可见性、声明顺序、导入组织及源码结构等方面。
 
-项目提供 19 条可配置规则、人类可读和 JSON 报告，以及英文和简体中文诊断信息。既可以直接运行 `cargo-cop`，也可以使用 Cargo 子命令 `cargo cop`。
+项目提供 20 条可配置规则、人类可读和 JSON 报告，以及英文和简体中文诊断信息。既可以直接运行 `cargo-cop`，也可以使用 Cargo 子命令 `cargo cop`。
 
 ## 检查内容
 
@@ -116,6 +116,7 @@ Feature 选择根据所选 package 的 Cargo feature 定义计算，处理 defau
 | `no_lint_relaxation` | 禁止 `allow` lint 属性，包括通过 `cfg_attr` 注入的 `allow`。 |
 | `item_spacing` | 检查同一 item 作用域内相邻定义之间的空行。同种的连续 `const`、`static` 或类型别名之间不留空行；其他受检组合之间留一行。 |
 | `child_module_visibility` | 子模块默认私有；仅含嵌套模块、私有、`pub` 或 `pub(crate)` `use` 导入、`macro_rules!` 定义、类型别名、结构体、枚举、trait、union、常量或静态变量时，才可使用 `pub` 或 `pub(crate)`。 |
+| `no_parent_path_attribute` | 外部模块的 `#[path]` 属性不能包含 `..` 路径分量，包括嵌套在 `cfg_attr` 中的路径属性。 |
 | `no_parent_private_dependency` | 子模块不能使用 `super::*`，也不能通过 `super::` 或 `crate::` 路径访问祖先模块的私有 item。 |
 | `child_module_line_count` | 每个外部子模块文件须有 70–800 行有效代码；空行、注释和 `#[cfg(test)]` 代码不计入。 |
 | `impl_locality` | 固有 impl 应与仓库类型定义放在同一文件；外部 trait impl 的目标仅限允许的内置类型和标准库根路径。 |
@@ -159,7 +160,7 @@ fn run() {}
 
 分析 warning 会将状态标记为 `partial`，但单独出现时不会导致非零退出码。分析 error 或工具错误会使扫描不完整。规则可以降为 `warning`；只有配置 `allow_warnings = true` 时，warning 诊断才会从输出中隐藏，隐藏数量记入 `summary.suppressed_warnings`。
 
-默认诊断语言根据 `LC_ALL`、`LC_MESSAGES`、`LANG` 选择；无法匹配时回退到简体中文。`--locale` 优先级高于环境和配置；`[i18n].locale` 优先于环境变量。
+默认诊断语言按 `LC_ALL`、`LC_MESSAGES`、`LANG` 的顺序选择。仅当选中的 locale 明确标识 `zh` 语言时使用简体中文；其他 locale（包括 `C` 和 `POSIX`）使用英文。若无法识别任何环境 locale，也回退到英文。`--locale` 优先级高于环境和配置；`[i18n].locale` 优先于环境变量。
 
 ## 配置
 
@@ -178,7 +179,7 @@ Workspace 将命令行应用与分析流程分层：
 | `cop-cargo` | Cargo 元数据、package 和 target 选择、features、依赖和 target `cfg`。 |
 | `cop-syntax` | 自有 Rust 词法分析器、语法树、解析器和解析覆盖状态。 |
 | `cop-analysis` | `cfg` 求值、模块图发现、符号和路径解析、分析状态。 |
-| `cop-rules` | 19 条源码规范检查规则。 |
+| `cop-rules` | 20 条源码规范检查规则。 |
 | `cop-model` | 共享规则 ID、诊断、位置、消息和扫描状态类型。 |
 | `cop-report` | 诊断稳定排序、人类可读和 JSON 渲染。 |
 | `cop-i18n` | 英文和简体中文消息。 |

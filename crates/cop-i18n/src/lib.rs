@@ -14,7 +14,7 @@ include!(concat!(env!("OUT_DIR"), "/supported_locales.rs"));
 static_loader! {
     static LOCALES = {
         locales: "./locales",
-        fallback_language: "zh-CN",
+        fallback_language: "en-US",
     };
 }
 
@@ -56,7 +56,7 @@ impl Locale {
                 return Ok(locale);
             }
         }
-        Ok(Self::ZH_CN)
+        Ok(Self::EN_US)
     }
 
     pub const fn as_str(self) -> &'static str {
@@ -104,8 +104,8 @@ impl MessageFormatter {
             message.id().as_str(),
             self.locale.as_str()
         );
-        if self.locale != Locale::ZH_CN {
-            let fallback = Locale::ZH_CN.language_identifier();
+        if self.locale != Locale::EN_US {
+            let fallback = Locale::EN_US.language_identifier();
             if let Some(value) = LOCALES.lookup_no_default_fallback(
                 &fallback,
                 message.id().as_str(),
@@ -147,7 +147,11 @@ fn resolve_tag(value: &str) -> Option<Locale> {
     let tag = LanguageTag::parse(value.trim()).ok()?;
     tag.validate().ok()?;
     if tag.extended_language().is_some() {
-        return Some(Locale::ZH_CN);
+        return match tag.primary_language().to_ascii_lowercase().as_str() {
+            "en" => Some(Locale::EN_US),
+            "zh" => Some(Locale::ZH_CN),
+            _ => None,
+        };
     }
 
     let mut subtags = vec![tag.primary_language().to_ascii_lowercase()];
@@ -158,10 +162,7 @@ fn resolve_tag(value: &str) -> Option<Locale> {
         subtags.push(region.to_owned());
     }
     subtags.extend(tag.variant_subtags().map(str::to_owned));
-    let language_identifier = match subtags.join("-").parse::<LanguageIdentifier>() {
-        Ok(language_identifier) => language_identifier,
-        Err(_) => return Some(Locale::ZH_CN),
-    };
+    let language_identifier = subtags.join("-").parse::<LanguageIdentifier>().ok()?;
     let requested = language_identifier.to_string();
     let resource_tag = match requested.as_str() {
         "en" => "en-US",
@@ -172,7 +173,11 @@ fn resolve_tag(value: &str) -> Option<Locale> {
         .iter()
         .find(|locale| locale.eq_ignore_ascii_case(resource_tag))
     else {
-        return Some(Locale::ZH_CN);
+        return match tag.primary_language().to_ascii_lowercase().as_str() {
+            "en" => Some(Locale::EN_US),
+            "zh" => Some(Locale::ZH_CN),
+            _ => None,
+        };
     };
     match *locale {
         "zh-CN" => Some(Locale::ZH_CN),
@@ -189,10 +194,16 @@ fn resolve_environment_value(value: &str) -> Option<Locale> {
         without_encoding.to_ascii_uppercase().as_str(),
         "C" | "POSIX"
     ) {
-        return Some(Locale::ZH_CN);
+        return Some(Locale::EN_US);
     }
     let normalized = without_encoding.replace('_', "-");
-    resolve_tag(&normalized)
+    let tag = LanguageTag::parse(&normalized).ok()?;
+    tag.validate().ok()?;
+    if tag.primary_language().eq_ignore_ascii_case("zh") {
+        Some(Locale::ZH_CN)
+    } else {
+        Some(Locale::EN_US)
+    }
 }
 
 #[cfg(test)]
@@ -200,14 +211,14 @@ mod tests {
     use super::{Locale, SUPPORTED_LOCALES};
 
     #[test]
-    fn resolves_posix_environment_values_before_lower_priority_values() {
+    fn resolves_posix_environment_values_as_english_before_lower_priority_values() {
         assert_eq!(
             Locale::resolve(None, None, &[Some("C.UTF-8"), Some("en_US.UTF-8")]),
-            Ok(Locale::ZH_CN)
+            Ok(Locale::EN_US)
         );
         assert_eq!(
             Locale::resolve(None, None, &[Some("POSIX@latin"), Some("en_US")]),
-            Ok(Locale::ZH_CN)
+            Ok(Locale::EN_US)
         );
         assert_eq!(
             Locale::resolve(None, None, &[Some("123"), Some("en_US.UTF-8")]),
@@ -221,10 +232,7 @@ mod tests {
             Locale::resolve(Some("en"), Some("zh-CN"), &[Some("zh_CN")]),
             Ok(Locale::EN_US)
         );
-        assert_eq!(
-            Locale::resolve(None, Some("fr-FR"), &[Some("en_US")]),
-            Ok(Locale::ZH_CN)
-        );
+        assert!(Locale::resolve(None, Some("fr-FR"), &[Some("en_US")]).is_err());
         assert_eq!(
             Locale::parse_explicit("en-US-u-ca-gregory"),
             Ok(Locale::EN_US)

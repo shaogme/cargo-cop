@@ -49,7 +49,7 @@ The config file must contain the integer `version = 2`. The top-level fields are
 | --- | --- | --- | --- |
 | `version` | integer | Required | Must be `2`. |
 | `allow_warnings` | boolean | `false` | When `true`, warning diagnostics are omitted from the diagnostic list and counted in `summary.suppressed_warnings`. Errors remain visible. This applies to rule and analysis warnings. |
-| `[i18n].locale` | non-empty string | Environment locale, then `zh-CN` | Diagnostic and report language. Use `en-US` or `zh-CN`. CLI `--locale` takes precedence. |
+| `[i18n].locale` | non-empty string | Environment locale; English unless it identifies the `zh` language | Diagnostic and report language. Use `en-US` or `zh-CN`. CLI `--locale` takes precedence. |
 | `[scan].targets` | `"default"` or `"all"` | `"default"` | Select default `lib`/`bin`/`proc-macro` targets, or all declared Cargo targets. CLI `--all-targets` selects `all`. |
 | `[scan].target` | non-empty string | Unset | Target triple, or `"host"` to use the host triple. CLI `--target` takes precedence. |
 | `[scan].features` | array of unique non-empty strings | `[]` | Features requested for selected root packages. CLI `--features` replaces this list when supplied. |
@@ -57,7 +57,7 @@ The config file must contain the integer `version = 2`. The top-level fields are
 | `[rules.<ID>].enabled` | boolean | `true` | Whether the named rule runs. CLI `--disable-rule <ID>` can turn it off. |
 | `[rules.<ID>].severity` | `"warning"` or `"error"` | `"error"` | Severity assigned to diagnostics from the named rule. CLI `--severity ID=LEVEL` takes precedence. |
 
-`[rules]` may contain any of the 19 IDs in the rule catalog below. Each rule table accepts only `enabled` and `severity`. A setting for one rule has no effect on other rules.
+`[rules]` may contain any of the 20 IDs in the rule catalog below. Each rule table accepts only `enabled` and `severity`. A setting for one rule has no effect on other rules.
 
 ## Rule IDs
 
@@ -73,7 +73,7 @@ severity = "warning"
 
 Available IDs:
 
-`module_file_layout`, `no_lint_relaxation`, `item_spacing`, `child_module_visibility`, `no_parent_private_dependency`, `child_module_line_count`, `impl_locality`, `private_fields_for_behavior_types`, `child_public_free_functions`, `declaration_before_use`, `parameter_limit`, `tuple_arity`, `no_inline_qualified_path`, `merge_common_prefix_imports`, `extern_crate_at_scope_start`, `imports_at_scope_start`, `out_of_line_modules_at_scope_start`, `cfg_use_group_spacing`, and `cfg_inside_use_tree`.
+`module_file_layout`, `no_lint_relaxation`, `item_spacing`, `child_module_visibility`, `no_parent_path_attribute`, `no_parent_private_dependency`, `child_module_line_count`, `impl_locality`, `private_fields_for_behavior_types`, `child_public_free_functions`, `declaration_before_use`, `parameter_limit`, `tuple_arity`, `no_inline_qualified_path`, `merge_common_prefix_imports`, `extern_crate_at_scope_start`, `imports_at_scope_start`, `out_of_line_modules_at_scope_start`, `cfg_use_group_spacing`, and `cfg_inside_use_tree`.
 
 The former `private_child_modules` ID was replaced by `child_module_visibility`. Update `[rules.private_child_modules]`, `--disable-rule private_child_modules`, and `--severity private_child_modules=...` to use the new ID. The schema version remains `2`.
 

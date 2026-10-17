@@ -3,6 +3,7 @@ module-file-layout = 子模块入口文件不能使用 mod.rs 布局
 out-of-line-modules-at-scope-start = 外部模块声明必须位于 extern crate 声明之后、use 声明和其他 item 之前，并连续排列
 child-module-visibility = 非私有子模块 { $module } 只能包含声明项，以及私有、公开或 pub(crate) 可见性的 use 导入
 child-module-line-count = 子模块文件 { $file } 的有效代码行数为 { $actual }，要求在 { $minimum } 到 { $maximum } 行之间
+no-parent-path-attribute = `#[path]` 路径不能使用 `..` 访问父目录
 no-parent-glob-import = 子模块不得使用 super::* 导入父模块实现
 no-parent-private-path = 子模块路径依赖了祖先模块 { $ancestor } 的私有项 { $item }
 impl-cross-file = impl 目标 { $target } 定义在其他源文件，impl 必须与类型定义位于同一文件

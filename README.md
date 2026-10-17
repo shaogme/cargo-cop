@@ -6,7 +6,7 @@
 
 `cargo-cop` is a static checker for Rust source code. It checks selected Cargo packages and targets against repository conventions, including module layout, visibility, declaration order, imports, and source structure.
 
-The project provides 19 configurable rules, human-readable and JSON reports, and English and Simplified Chinese diagnostic messages. It can run as the `cargo-cop` executable or as the `cargo cop` Cargo subcommand.
+The project provides 20 configurable rules, human-readable and JSON reports, and English and Simplified Chinese diagnostic messages. It can run as the `cargo-cop` executable or as the `cargo cop` Cargo subcommand.
 
 ## What it checks
 
@@ -116,6 +116,7 @@ All rules are enabled by default and use `error` severity unless configured othe
 | `no_lint_relaxation` | Reject `allow` lint attributes, including `cfg_attr` attributes that inject `allow`. |
 | `item_spacing` | Enforce blank-line spacing between adjacent definitions in an item scope. Consecutive `const`, `static`, or type-alias definitions of the same kind require no blank line; other checked pairs require one. |
 | `child_module_visibility` | Child modules are private by default. `pub` and `pub(crate)` are allowed only for modules containing nested modules, `use` items with private, `pub`, or `pub(crate)` visibility, `macro_rules!` definitions, type aliases, structs, enums, traits, unions, constants, or statics. |
+| `no_parent_path_attribute` | An external module's `#[path]` attribute must not contain a `..` path component, including paths nested in `cfg_attr`. |
 | `no_parent_private_dependency` | A child module must not import `super::*` or resolve a `super::`/`crate::` path to a private ancestor item. |
 | `child_module_line_count` | Each out-of-line child-module file must contain 70–800 effective code lines. Blank lines, comments, and `#[cfg(test)]` code are excluded. |
 | `impl_locality` | Keep inherent impls with the repository type's definition; restrict external trait impl targets to the permitted built-in and standard-library roots. |
@@ -159,7 +160,7 @@ Human output contains one diagnostic per line followed by a summary. JSON output
 
 An analysis warning can mark the scan `partial`; this alone does not make the exit code nonzero. An analysis error or tool error marks the scan incomplete. A rule's severity can be lowered to `warning`, but warnings are only hidden when `allow_warnings = true` is set in the configuration; hidden warnings are counted in `summary.suppressed_warnings`.
 
-The default diagnostic language is selected from `LC_ALL`, `LC_MESSAGES`, and `LANG`, falling back to Simplified Chinese. `--locale` overrides the environment and configured locale; `[i18n].locale` overrides the environment.
+The default diagnostic language is selected from `LC_ALL`, `LC_MESSAGES`, and `LANG` in that order. Chinese is selected only when the selected locale identifies the `zh` language; other locales, including `C` and `POSIX`, use English. If no environment locale can be identified, English is used. `--locale` overrides the environment and configured locale; `[i18n].locale` overrides the environment.
 
 ## Configuration
 

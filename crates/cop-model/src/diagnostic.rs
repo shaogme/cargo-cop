@@ -13,6 +13,7 @@ pub enum RuleId {
     NoLintRelaxation,
     ItemSpacing,
     ChildModuleVisibility,
+    NoParentPathAttribute,
     NoParentPrivateDependency,
     ChildModuleLineCount,
     ImplLocality,
@@ -84,11 +85,12 @@ pub struct Diagnostic {
 }
 
 impl RuleId {
-    pub const ALL: [Self; 19] = [
+    pub const ALL: [Self; 20] = [
         Self::ModuleFileLayout,
         Self::NoLintRelaxation,
         Self::ItemSpacing,
         Self::ChildModuleVisibility,
+        Self::NoParentPathAttribute,
         Self::NoParentPrivateDependency,
         Self::ChildModuleLineCount,
         Self::ImplLocality,
@@ -112,6 +114,7 @@ impl RuleId {
             Self::NoLintRelaxation => "no_lint_relaxation",
             Self::ItemSpacing => "item_spacing",
             Self::ChildModuleVisibility => "child_module_visibility",
+            Self::NoParentPathAttribute => "no_parent_path_attribute",
             Self::NoParentPrivateDependency => "no_parent_private_dependency",
             Self::ChildModuleLineCount => "child_module_line_count",
             Self::ImplLocality => "impl_locality",

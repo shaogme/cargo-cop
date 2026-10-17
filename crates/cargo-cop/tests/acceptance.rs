@@ -359,7 +359,14 @@ fn rejects_unknown_requested_features_instead_of_ignoring_them() {
     );
     fixture.write("src/lib.rs", "pub fn ready() {}\n");
 
-    let output = fixture.run(&["--format", "json", "--features", "typo"]);
+    let output = fixture.run(&[
+        "--format",
+        "json",
+        "--features",
+        "typo",
+        "--locale",
+        "zh-CN",
+    ]);
 
     assert_eq!(output.status, 2, "{}", output.stdout);
     assert!(output.stdout.contains("\"tool_error\":\"arguments\""));
@@ -723,11 +730,116 @@ fn stops_recursive_module_file_cycles_without_losing_sibling_contexts() {
         "{}",
         output.stdout
     );
+    assert_eq!(
+        output
+            .stdout
+            .matches("\"rule_id\":\"no_parent_path_attribute\"")
+            .count(),
+        2,
+        "{}",
+        output.stdout
+    );
     assert!(output.stdout.contains("crate::first::nested"));
     assert!(output.stdout.contains("crate::second::nested"));
     assert!(!output
         .stdout
         .contains(&fixture.root.to_string_lossy().to_string()));
+}
+
+#[test]
+fn rejects_parent_traversal_in_external_module_path_attributes() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "src/lib.rs",
+        r##"#[path = "../x.rs"] mod direct;
+#[path = "parts/../../x.rs"] mod nested_parent;
+#[path = "..\\x.rs"] mod windows_parent;
+#[path = "\x2e\x2e/x.rs"] mod hex_parent;
+#[path = "\u{2e}\u{2e}/x.rs"] mod unicode_parent;
+#[path = r"../x.rs"] mod raw_parent;
+#[path = "../\
+    x.rs"] mod continued_parent;
+#[cfg_attr(any(), path = "../x.rs")] mod conditional;
+#[cfg_attr(all(), cfg_attr(any(), path = "../x.rs"))] mod nested_conditional;
+#[path = "child/file.rs"] mod allowed_child;
+#[path = "./x.rs"] mod allowed_dot;
+#[path = "foo..rs"] mod allowed_name;
+#[path = ".../x.rs"] mod allowed_ellipsis;
+#[path = "../x.rs"] mod inline { fn item() {} }
+"##,
+    );
+    fixture.write("x.rs", "");
+    fixture.write("src/..\\x.rs", "");
+    fixture.write("src/parts/marker.rs", "");
+    fixture.write("src/conditional.rs", "");
+    fixture.write("src/nested_conditional.rs", "");
+    fixture.write("src/child/file.rs", "");
+    fixture.write("src/x.rs", "");
+    fixture.write("src/foo..rs", "");
+    fixture.write("src/.../x.rs", "");
+
+    let default = fixture.run(&[
+        "--format",
+        "json",
+        "--disable-rule",
+        "child_module_line_count",
+    ]);
+    let warning = fixture.run(&[
+        "--format",
+        "json",
+        "--disable-rule",
+        "child_module_line_count",
+        "--severity",
+        "no_parent_path_attribute=warning",
+    ]);
+    let disabled = fixture.run(&[
+        "--format",
+        "json",
+        "--disable-rule",
+        "child_module_line_count",
+        "--disable-rule",
+        "no_parent_path_attribute",
+    ]);
+    let chinese = fixture.run(&[
+        "--format",
+        "json",
+        "--disable-rule",
+        "child_module_line_count",
+        "--locale",
+        "zh-CN",
+    ]);
+    let default_report = serde_json::from_str::<Value>(&default.stdout).expect("默认 JSON 报告");
+    let chinese_report = serde_json::from_str::<Value>(&chinese.stdout).expect("中文 JSON 报告");
+    let diagnostics = rule_diagnostics(&default, "no_parent_path_attribute");
+    let warning_diagnostics = rule_diagnostics(&warning, "no_parent_path_attribute");
+    let chinese_diagnostics = rule_diagnostics(&chinese, "no_parent_path_attribute");
+    let expected_lines = [1, 2, 3, 4, 5, 6, 7, 9, 10];
+
+    assert_eq!(default.status, 1, "{}", default.stdout);
+    assert_eq!(diagnostics.len(), 9, "{}", default.stdout);
+    assert_eq!(default_report["summary"]["errors"], 9);
+    assert!(diagnostics
+        .iter()
+        .enumerate()
+        .all(|(index, diagnostic)| diagnostic["start"]["line"] == expected_lines[index]));
+    assert_eq!(warning.status, 0, "{}", warning.stdout);
+    assert_eq!(warning_diagnostics.len(), 9);
+    assert!(warning_diagnostics
+        .iter()
+        .all(|diagnostic| diagnostic["severity"] == "warning"));
+    assert_eq!(disabled.status, 0, "{}", disabled.stdout);
+    assert!(!disabled.has_rule("no_parent_path_attribute"));
+    assert_eq!(chinese.status, default.status);
+    assert_eq!(chinese_report["locale"], "zh-CN");
+    assert_eq!(chinese_diagnostics.len(), 9);
+    assert_eq!(
+        chinese_diagnostics[0]["message_id"],
+        "no-parent-path-attribute"
+    );
+    assert!(chinese_diagnostics[0]["message"]
+        .as_str()
+        .is_some_and(|message| message.contains("访问父目录")));
 }
 
 #[test]
@@ -751,7 +863,7 @@ fn reports_invalid_radix_literals_as_incomplete_scans() {
     fixture.write("Cargo.toml", &package_manifest("sample"));
     fixture.write("src/lib.rs", "const INVALID: u8 = 0x;\n");
 
-    let invalid = fixture.run(&["--format", "json"]);
+    let invalid = fixture.run(&["--format", "json", "--locale", "zh-CN"]);
 
     assert_eq!(invalid.status, 2, "{}", invalid.stdout);
     assert!(invalid.stdout.contains("\"status\":\"incomplete\""));
@@ -1471,6 +1583,8 @@ fn reports_module_scope_order_violations_on_the_late_items() {
     let chinese = fixture.run(&[
         "--format",
         "json",
+        "--locale",
+        "zh-CN",
         "--disable-rule",
         "child_module_line_count",
         "--disable-rule",
@@ -2083,7 +2197,7 @@ fn restricts_trait_impl_exceptions_to_builtin_and_standard_library_types() {
     );
     fixture.write("vendor/src/lib.rs", "pub struct Thing;\n");
 
-    let output = fixture.run(&["--format", "json", "--package", "app"]);
+    let output = fixture.run(&["--format", "json", "--package", "app", "--locale", "zh-CN"]);
     assert_eq!(output.status, 1, "{}", output.stderr);
     assert_eq!(
         output
@@ -2286,7 +2400,7 @@ fn reports_missing_item_names_as_incomplete_syntax() {
     fixture.write("Cargo.toml", &package_manifest("sample"));
     fixture.write("src/lib.rs", "impl {}\nstruct {}\ntrait {}\nfn () {}\n");
 
-    let output = fixture.run(&["--format", "json"]);
+    let output = fixture.run(&["--format", "json", "--locale", "zh-CN"]);
 
     assert_eq!(output.status, 2, "{}", output.stdout);
     assert!(output.stdout.contains("\"status\":\"incomplete\""));
