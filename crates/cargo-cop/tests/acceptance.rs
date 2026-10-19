@@ -879,6 +879,28 @@ fn locates_trailing_cfg_attribute_tokens_at_the_unexpected_range() {
 }
 
 #[test]
+fn rejects_value_arguments_in_cfg_metadata_positions() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "src/lib.rs",
+        "#[cfg(any(256))]\nfn malformed_cfg() {}\n#[cfg_attr(all(), 256)]\nfn malformed_nested_attribute() {}\n#[cfg_attr(256, path = \"ignored.rs\")]\nfn malformed_predicate() {}\n",
+    );
+
+    let output = fixture.run(&["--format", "json"]);
+    let report = from_str::<Value>(&output.stdout).expect("JSON 报告");
+    let malformed_lines = report["diagnostics"]
+        .as_array()
+        .expect("诊断数组")
+        .iter()
+        .filter(|diagnostic| diagnostic["message_id"] == "malformed-cfg-attribute")
+        .map(|diagnostic| diagnostic["start"]["line"].as_u64().expect("诊断行号"))
+        .collect::<Vec<_>>();
+
+    assert_eq!(malformed_lines, [1, 3, 5], "{}", output.stdout);
+}
+
+#[test]
 fn filters_false_trait_and_impl_members_and_reports_unknown_members() {
     let fixture = Fixture::new();
     fixture.write(

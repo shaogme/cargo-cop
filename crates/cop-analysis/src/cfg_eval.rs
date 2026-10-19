@@ -3,7 +3,8 @@ use std::ops::Range;
 use cop_cargo::TargetContext;
 use cop_cfg::{CfgCondition, CfgContext, CfgEvaluator as SharedCfgEvaluator, CfgExpression};
 use cop_syntax::{
-    Attribute, AttributeMeta, AttributeMetaKind, AttributeMetaValueKind, LiteralKind, SourceFile,
+    Attribute, AttributeMeta, AttributeMetaArgument, AttributeMetaKind, AttributeMetaValueKind,
+    LiteralKind, SourceFile,
 };
 
 pub use cop_cfg::CfgDecision;
@@ -202,9 +203,15 @@ impl<'a> CfgEvaluator<'a> {
             }
             return;
         };
-        let Some(predicate) = arguments.first() else {
+        let Some(predicate_argument) = arguments.first() else {
             if !context.path_only {
                 record_malformed(context.effects, meta.bounds());
+            }
+            return;
+        };
+        let Some(predicate) = predicate_argument.meta() else {
+            if !context.path_only {
+                record_malformed(context.effects, predicate_argument.bounds());
             }
             return;
         };
@@ -230,8 +237,12 @@ impl<'a> CfgEvaluator<'a> {
             depth: context.depth + 1,
             path_only,
         };
-        for nested in arguments.iter().skip(1) {
-            self.apply_attribute(nested, &mut nested_context);
+        for argument in arguments.iter().skip(1) {
+            if let Some(nested) = argument.meta() {
+                self.apply_attribute(nested, &mut nested_context);
+            } else if !nested_context.path_only {
+                record_malformed(nested_context.effects, argument.bounds());
+            }
         }
     }
 
@@ -282,7 +293,7 @@ fn cfg_attribute_expression(meta: &AttributeMeta) -> Option<CfgExpression> {
     let AttributeMetaKind::List(arguments) = meta.kind() else {
         return None;
     };
-    let [expression] = arguments.as_slice() else {
+    let [AttributeMetaArgument::Meta(expression)] = arguments.as_slice() else {
         return None;
     };
     cfg_expression(expression)
@@ -308,7 +319,7 @@ fn cfg_expression(meta: &AttributeMeta) -> Option<CfgExpression> {
         AttributeMetaKind::List(arguments) => {
             let expressions = arguments
                 .iter()
-                .map(cfg_expression)
+                .map(|argument| cfg_expression(argument.meta()?))
                 .collect::<Option<Vec<_>>>()?;
             match (name.as_str(), expressions.len()) {
                 ("all", _) => Some(CfgExpression::All { expressions, range }),

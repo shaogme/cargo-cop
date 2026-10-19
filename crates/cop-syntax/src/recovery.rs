@@ -397,7 +397,7 @@ impl Recovery {
             TokenKind::OpenDelimiter(Delimiter::Parenthesis) => turbofish,
             TokenKind::Punctuation(value) => matches!(
                 value.as_str(),
-                "::" | "!" | "?" | "." | "+" | "=" | "," | ";" | ">" | ">>"
+                "::" | "!" | "?" | "." | "+" | "=" | "," | ";" | "|" | ">" | ">>"
             ),
             TokenKind::Identifier(value) => matches!(value.as_str(), "as" | "where"),
             _ => false,

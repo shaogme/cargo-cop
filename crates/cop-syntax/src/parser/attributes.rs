@@ -7,9 +7,9 @@ use cop_model::{
 
 use crate::{
     ast::{
-        AstFactory, Attribute, AttributeInput, AttributeMeta, AttributeMetaKind,
-        AttributeMetaValue, AttributeMetaValueKind, ParseIssue, ParseIssueKind, Visibility,
-        VisibilityKind,
+        AstFactory, Attribute, AttributeInput, AttributeMeta, AttributeMetaArgument,
+        AttributeMetaKind, AttributeMetaValue, AttributeMetaValueKind, ParseIssue, ParseIssueKind,
+        Visibility, VisibilityKind,
     },
     recovery::Recovery,
     Delimiter, LiteralKind, RustStringLiteral, SourceFile, Token, TokenKind,
@@ -83,9 +83,11 @@ impl AttributeParser {
             let end = tokens[close_index].end();
             let cfg_test = path.as_slice() == ["cfg"]
                 && matches!(meta.kind(), AttributeMetaKind::List(values)
-                    if values.len() == 1
-                        && values[0].path() == ["test"]
-                        && matches!(values[0].kind(), AttributeMetaKind::Word));
+                if values.len() == 1
+                    && values[0].meta().is_some_and(|value| {
+                        value.path() == ["test"]
+                            && matches!(value.kind(), AttributeMetaKind::Word)
+                    }));
             attributes.push(AstFactory::attribute(AttributeInput {
                 path,
                 inner,
@@ -170,38 +172,8 @@ impl AttributeParser {
         let path_end = tokens[*cursor - 1].end();
         let kind = if *cursor < end && Recovery::is_punctuation(&tokens[*cursor], "=") {
             *cursor += 1;
-            let value_start = *cursor;
-            let value_end = Self::meta_value_end(tokens, value_start, end)?;
-            if value_start == value_end {
-                return Err(path_end..tokens[*cursor - 1].end());
-            }
-            let first = &tokens[value_start];
-            let last = &tokens[value_end - 1];
-            *cursor = value_end;
-            let value_kind = match first.kind() {
-                TokenKind::Literal(kind) if value_end == value_start + 1 => {
-                    let text = first.text(source).to_owned();
-                    let decoded_string = (*kind == LiteralKind::String)
-                        .then(|| RustStringLiteral::decode(&text))
-                        .flatten();
-                    AttributeMetaValueKind::Literal {
-                        kind: *kind,
-                        text,
-                        decoded_string,
-                    }
-                }
-                TokenKind::Identifier(value)
-                    if value_end == value_start + 1
-                        && matches!(value.as_str(), "true" | "false") =>
-                {
-                    AttributeMetaValueKind::Boolean(value == "true")
-                }
-                _ => AttributeMetaValueKind::Expression(first.start()..last.end()),
-            };
-            AttributeMetaKind::NameValue(AttributeMetaValue::new(
-                value_kind,
-                first.start()..last.end(),
-            ))
+            let value = Self::parse_meta_value(source, tokens, cursor, end)?;
+            AttributeMetaKind::NameValue(value)
         } else if matches!(
             tokens.get(*cursor).map(Token::kind),
             Some(TokenKind::OpenDelimiter(Delimiter::Parenthesis))
@@ -210,10 +182,10 @@ impl AttributeParser {
             let close = Recovery::matching_delimiter(tokens, open)
                 .filter(|close| *close < end)
                 .ok_or_else(|| tokens[open].start()..tokens[end - 1].end())?;
-            let mut children = Vec::new();
+            let mut arguments = Vec::new();
             let mut child_cursor = open + 1;
             while child_cursor < close {
-                children.push(Self::parse_meta_item(
+                arguments.push(Self::parse_meta_argument(
                     source,
                     tokens,
                     &mut child_cursor,
@@ -228,7 +200,7 @@ impl AttributeParser {
                 child_cursor += 1;
             }
             *cursor = close + 1;
-            AttributeMetaKind::List(children)
+            AttributeMetaKind::List(arguments)
         } else {
             AttributeMetaKind::Word
         };
@@ -238,26 +210,98 @@ impl AttributeParser {
         Ok(AttributeMeta::new(path, kind, start..finish))
     }
 
-    fn meta_value_end(tokens: &[Token], start: usize, end: usize) -> Result<usize, Range<usize>> {
-        let mut cursor = start;
-        while cursor < end {
-            if matches!(tokens[cursor].kind(), TokenKind::OpenDelimiter(_)) {
-                cursor = Recovery::matching_delimiter(tokens, cursor)
-                    .filter(|close| *close < end)
-                    .map_or(end, |close| close + 1);
-                continue;
-            }
-            if Recovery::is_punctuation(&tokens[cursor], ",") {
-                break;
-            }
-            cursor += 1;
+    fn parse_meta_argument(
+        source: &SourceFile,
+        tokens: &[Token],
+        cursor: &mut usize,
+        end: usize,
+    ) -> Result<AttributeMetaArgument, Range<usize>> {
+        let is_boolean = matches!(
+            tokens.get(*cursor).map(Token::kind),
+            Some(TokenKind::Identifier(value)) if matches!(value.as_str(), "true" | "false")
+        );
+        if tokens
+            .get(*cursor)
+            .is_some_and(|token| token.kind().word().is_some() && !is_boolean)
+        {
+            Self::parse_meta_item(source, tokens, cursor, end).map(AttributeMetaArgument::Meta)
+        } else if is_boolean
+            || tokens
+                .get(*cursor)
+                .is_some_and(|token| Self::is_meta_value_start(token.kind()))
+        {
+            Self::parse_meta_value(source, tokens, cursor, end).map(AttributeMetaArgument::Value)
+        } else {
+            Err(tokens
+                .get(*cursor)
+                .map_or(0..0, |token| token.start()..token.end()))
         }
-        if cursor == start {
+    }
+
+    fn is_meta_value_start(kind: &TokenKind) -> bool {
+        match kind {
+            TokenKind::Literal(_) | TokenKind::OpenDelimiter(_) => true,
+            TokenKind::Punctuation(value) => matches!(
+                value.as_str(),
+                "!" | "&" | "&&" | "*" | "+" | "-" | ".." | "..=" | "|" | "||"
+            ),
+            _ => false,
+        }
+    }
+
+    fn parse_meta_value(
+        source: &SourceFile,
+        tokens: &[Token],
+        cursor: &mut usize,
+        end: usize,
+    ) -> Result<AttributeMetaValue, Range<usize>> {
+        let value_start = *cursor;
+        let value_end = Self::meta_value_end(tokens, value_start, end)?;
+        if value_start == value_end {
             return Err(tokens
-                .get(start)
+                .get(value_start)
                 .map_or(0..0, |token| token.start()..token.end()));
         }
-        Ok(cursor)
+        let first = &tokens[value_start];
+        let last = &tokens[value_end - 1];
+        *cursor = value_end;
+        let value_kind = match first.kind() {
+            TokenKind::Literal(kind) if value_end == value_start + 1 => {
+                let text = first.text(source).to_owned();
+                let decoded_string = (*kind == LiteralKind::String)
+                    .then(|| RustStringLiteral::decode(&text))
+                    .flatten();
+                AttributeMetaValueKind::Literal {
+                    kind: *kind,
+                    text,
+                    decoded_string,
+                }
+            }
+            TokenKind::Identifier(value)
+                if value_end == value_start + 1 && matches!(value.as_str(), "true" | "false") =>
+            {
+                AttributeMetaValueKind::Boolean(value == "true")
+            }
+            _ => AttributeMetaValueKind::Expression(first.start()..last.end()),
+        };
+        Ok(AttributeMetaValue::new(
+            value_kind,
+            first.start()..last.end(),
+        ))
+    }
+
+    fn meta_value_end(tokens: &[Token], start: usize, end: usize) -> Result<usize, Range<usize>> {
+        Recovery::split_top_level(tokens, start, end, ",")
+            .first()
+            .filter(|range| range.start == start && range.end > start)
+            .map_or_else(
+                || {
+                    Err(tokens
+                        .get(start)
+                        .map_or(0..0, |token| token.start()..token.end()))
+                },
+                |range| Ok(range.end),
+            )
     }
 
     fn fallback_meta(

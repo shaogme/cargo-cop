@@ -1,5 +1,3 @@
-use std::ops::Range;
-
 use crate::{
     ast::{ClosureParameterSyntax, ExpressionBlockKind, ExpressionSyntax, ExpressionSyntaxKind},
     parser::{
@@ -8,6 +6,7 @@ use crate::{
         token_cursor::{SyntaxError, SyntaxErrorKind, TokenCursor},
         types::TypeParser,
     },
+    recovery::Recovery,
     Delimiter, SourceFile, Token, TokenKind,
 };
 
@@ -46,7 +45,12 @@ impl ClosureParser {
             let close = Self::find_closure_pipe(cursor)
                 .ok_or_else(|| PathParser::error_at(cursor, SyntaxErrorKind::UnexpectedEof))?;
             let parameter_bounds = cursor.index()..close;
-            for range in Self::split_top_level(cursor.tokens(), parameter_bounds, ",") {
+            for range in Recovery::split_top_level(
+                cursor.tokens(),
+                parameter_bounds.start,
+                parameter_bounds.end,
+                ",",
+            ) {
                 if range.is_empty() {
                     continue;
                 }
@@ -176,33 +180,6 @@ impl ClosureParser {
             }
         }
         None
-    }
-
-    fn split_top_level(
-        tokens: &[Token],
-        bounds: Range<usize>,
-        separator: &str,
-    ) -> Vec<Range<usize>> {
-        let mut parts = Vec::new();
-        let mut start = bounds.start;
-        let mut index = bounds.start;
-        while index < bounds.end {
-            if matches!(tokens[index].kind(), TokenKind::OpenDelimiter(_)) {
-                if let Some(mut group) = TokenCursor::new(tokens, index..bounds.end) {
-                    if let Some(range) = group.skip_delimited_group() {
-                        index = range.end;
-                        continue;
-                    }
-                }
-            }
-            if matches!(tokens[index].kind(), TokenKind::Punctuation(value) if value == separator) {
-                parts.push(start..index);
-                start = index + 1;
-            }
-            index += 1;
-        }
-        parts.push(start..bounds.end);
-        parts
     }
 
     fn next_is_closure(cursor: &TokenCursor<'_>) -> bool {

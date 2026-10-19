@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use super::attribute_kinds::{AttributeMetaKind, AttributeMetaValueKind};
+use super::attribute_kinds::{AttributeMetaArgument, AttributeMetaKind, AttributeMetaValueKind};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AttributeMetaValue {
@@ -54,8 +54,8 @@ impl AttributeMeta {
         self.kind.is_word()
     }
 
-    pub fn children(&self) -> &[AttributeMeta] {
-        self.kind.children()
+    pub fn arguments(&self) -> &[AttributeMetaArgument] {
+        self.kind.arguments()
     }
 
     pub fn value(&self) -> Option<&AttributeMetaValue> {

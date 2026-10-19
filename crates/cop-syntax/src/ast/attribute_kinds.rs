@@ -15,10 +15,16 @@ pub enum AttributeMetaValueKind {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AttributeMetaArgument {
+    Meta(AttributeMeta),
+    Value(AttributeMetaValue),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AttributeMetaKind {
     Word,
     NameValue(AttributeMetaValue),
-    List(Vec<AttributeMeta>),
+    List(Vec<AttributeMetaArgument>),
 }
 
 impl AttributeMetaKind {
@@ -26,9 +32,9 @@ impl AttributeMetaKind {
         matches!(self, Self::Word)
     }
 
-    pub(super) fn children(&self) -> &[AttributeMeta] {
+    pub(super) fn arguments(&self) -> &[AttributeMetaArgument] {
         match self {
-            Self::List(children) => children,
+            Self::List(arguments) => arguments,
             Self::Word | Self::NameValue(_) => &[],
         }
     }
@@ -45,14 +51,44 @@ impl AttributeMetaKind {
         match self {
             Self::Word => path,
             Self::NameValue(value) => format!("{path} = {}", value.kind().normalized_text()),
-            Self::List(children) => {
-                let arguments = children
+            Self::List(arguments) => {
+                let arguments = arguments
                     .iter()
-                    .map(AttributeMeta::normalized)
+                    .map(AttributeMetaArgument::normalized)
                     .collect::<Vec<_>>()
                     .join(", ");
                 format!("{path}({arguments})")
             }
+        }
+    }
+}
+
+impl AttributeMetaArgument {
+    pub fn meta(&self) -> Option<&AttributeMeta> {
+        match self {
+            Self::Meta(meta) => Some(meta),
+            Self::Value(_) => None,
+        }
+    }
+
+    pub fn value(&self) -> Option<&AttributeMetaValue> {
+        match self {
+            Self::Value(value) => Some(value),
+            Self::Meta(_) => None,
+        }
+    }
+
+    pub fn bounds(&self) -> Range<usize> {
+        match self {
+            Self::Meta(meta) => meta.bounds(),
+            Self::Value(value) => value.bounds(),
+        }
+    }
+
+    fn normalized(&self) -> String {
+        match self {
+            Self::Meta(meta) => meta.normalized(),
+            Self::Value(value) => value.kind().normalized_text(),
         }
     }
 }

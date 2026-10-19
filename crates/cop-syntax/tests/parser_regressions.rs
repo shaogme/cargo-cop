@@ -1,5 +1,6 @@
 use cop_syntax::{
-    CoverageStatus, ExpressionSyntaxKind, ForeignItemSyntaxKind, ItemSyntaxKind, ParseIssueKind,
+    AttributeMetaArgument, AttributeMetaValueKind, CoverageStatus, ExpressionSyntaxKind,
+    ForeignItemSyntaxKind, ItemSyntaxKind, LiteralKind, ParseIssueCode, ParseIssueKind,
     ParseOptions, PatternSyntaxKind, RustParser, SourceFile, SyntaxNodeKind, TypeSyntaxKind,
 };
 
@@ -402,5 +403,227 @@ fn map_failures_keep_source_order_and_diagnostic_budget_stops_later_reads() -> T
             .any(|(start, end)| *start == colon && *end == colon + 1),
         "{:?}",
         parsed.issues()
+    );
+}
+
+#[test]
+fn parses_repr_align_attributes_on_global_and_local_types() {
+    let source = r#"
+#[repr(align(256))]
+struct Aligned(u8);
+
+fn local_type() {
+    #[repr(align(64))]
+    struct LocalAligned(u64);
+}
+"#;
+    let parsed = parse(source, "2021");
+    let repr_attributes = parsed
+        .syntax_nodes()
+        .iter()
+        .flat_map(|node| node.attributes())
+        .filter(|attribute| attribute.path() == ["repr"])
+        .collect::<Vec<_>>();
+
+    assert_eq!(repr_attributes.len(), 2, "{:?}", parsed.syntax_nodes());
+    assert!(
+        parsed
+            .issues()
+            .iter()
+            .all(|issue| issue.kind() != ParseIssueKind::InvalidAttribute),
+        "{:?}",
+        parsed.issues()
+    );
+    assert_eq!(
+        repr_attributes
+            .iter()
+            .map(|attribute| attribute.meta().normalized())
+            .collect::<Vec<_>>(),
+        ["repr(align(256))", "repr(align(64))"]
+    );
+    for (attribute, expected_value) in repr_attributes.iter().zip(["256", "64"]) {
+        let [AttributeMetaArgument::Meta(align)] = attribute.meta().arguments() else {
+            panic!("repr 列表应保留 align 元数据")
+        };
+        assert_eq!(align.path(), ["align"]);
+        let [AttributeMetaArgument::Value(value)] = align.arguments() else {
+            panic!("align 列表应保留直接值参数")
+        };
+        assert!(matches!(
+            value.kind(),
+            AttributeMetaValueKind::Literal {
+                kind: LiteralKind::Number,
+                ..
+            }
+        ));
+        assert_eq!(source.get(value.bounds()), Some(expected_value));
+    }
+}
+
+#[test]
+fn keeps_attribute_diagnostics_for_missing_values_and_unclosed_groups() {
+    let parsed = parse(
+        "#[meta(,)] struct MissingListValue;\n#[meta(=1)] struct InvalidSeparator;\n#[meta =] struct MissingNamedValue;\n#[meta((1)] struct UnclosedGroup;",
+        "2021",
+    );
+    let invalid_attributes = parsed
+        .issues()
+        .iter()
+        .filter(|issue| issue.code() == ParseIssueCode::InvalidAttribute)
+        .count();
+
+    assert_eq!(invalid_attributes, 4, "{:?}", parsed.issues());
+    assert!(parsed
+        .issues()
+        .iter()
+        .any(|issue| issue.code() == ParseIssueCode::UnclosedDelimiter));
+}
+
+#[test]
+fn parses_closure_parameters_with_generic_type_arguments() {
+    let source = r#"
+fn sort_fields() {
+    slots.sort_by(
+        |left, right, mut sort_out: Out<'_, '_, BuildError>| {
+            let left_id = ty
+                .record()
+                .fields
+                .get(*left)
+                .ok_or(BudgetError::invariant(&INDEX_SORT_INVARIANT))
+                .store_err_into(sort_out.reborrow())?;
+            let right_id = ty
+                .record()
+                .fields
+                .get(*right)
+                .ok_or(BudgetError::invariant(&INDEX_SORT_INVARIANT))
+                .store_err_into(sort_out.reborrow())?;
+            let left = fields
+                .get(left_id.index())
+                .ok_or(BudgetError::invariant(&INDEX_SORT_INVARIANT))
+                .store_err_into(sort_out.reborrow())?;
+            let right = fields
+                .get(right_id.index())
+                .ok_or(BudgetError::invariant(&INDEX_SORT_INVARIANT))
+                .store_err_into(sort_out.reborrow())?;
+            let order = execution.compare_text(
+                &left.record().name,
+                &right.record().name,
+                sort_out.reborrow(),
+            )?;
+            Ok(order)
+        },
+        out.reborrow(),
+    )?;
+}
+
+fn sort_variants() {
+    ordered.sort_by(
+        |left, right, mut sort_out: Out<'_, '_, BuildError>| {
+            let left_id = ty
+                .record()
+                .variants
+                .get(*left)
+                .ok_or(BudgetError::invariant(&VARIANT_INDEX_INVARIANT))
+                .store_err_into(sort_out.reborrow())?;
+            let right_id = ty
+                .record()
+                .variants
+                .get(*right)
+                .ok_or(BudgetError::invariant(&VARIANT_INDEX_INVARIANT))
+                .store_err_into(sort_out.reborrow())?;
+            let left = variant_records
+                .get(left_id.index())
+                .ok_or(BudgetError::invariant(&VARIANT_INDEX_INVARIANT))
+                .store_err_into(sort_out.reborrow())?;
+            let right = variant_records
+                .get(right_id.index())
+                .ok_or(BudgetError::invariant(&VARIANT_INDEX_INVARIANT))
+                .store_err_into(sort_out.reborrow())?;
+            execution.compare_text(
+                &left.record().name,
+                &right.record().name,
+                sort_out.reborrow(),
+            )
+        },
+        out.reborrow(),
+    )?;
+}
+
+fn read_schema(kind: Kind) {
+    let _ = |out: Out<'_, '_, HostError>| {
+        Err(out.fail(HostError::new(HostOperation::SchemaRead, kind)))
+    };
+}
+"#;
+    let parsed = parse(source, "2021");
+    let closures = parsed
+        .syntax_nodes()
+        .iter()
+        .filter_map(|node| node.expression_syntax())
+        .filter_map(|expression| match expression.kind() {
+            ExpressionSyntaxKind::Closure { parameters, .. } => Some(parameters.as_slice()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert!(
+        parsed
+            .issues()
+            .iter()
+            .all(|issue| issue.code() != ParseIssueCode::UnexpectedEof),
+        "{:?}",
+        parsed.issues()
+    );
+    assert_eq!(
+        closures
+            .iter()
+            .map(|parameters| parameters.len())
+            .collect::<Vec<_>>(),
+        [3, 3, 1]
+    );
+    assert_eq!(
+        closures
+            .iter()
+            .map(|parameters| {
+                parameters
+                    .last()
+                    .and_then(|parameter| parameter.ty())
+                    .and_then(|ty| source.get(ty.bounds()))
+                    .unwrap_or("")
+            })
+            .collect::<Vec<_>>(),
+        [
+            "Out<'_, '_, BuildError>",
+            "Out<'_, '_, BuildError>",
+            "Out<'_, '_, HostError>"
+        ]
+    );
+}
+
+#[test]
+fn splits_closure_parameters_after_nested_generic_closers() {
+    let source = "fn inspect() { let _ = |value: Outer<Inner<Left, Right>>, tail: u8| (); }";
+    let parsed = parse(source, "2021");
+    let parameters = parsed
+        .syntax_nodes()
+        .iter()
+        .filter_map(|node| node.expression_syntax())
+        .find_map(|expression| match expression.kind() {
+            ExpressionSyntaxKind::Closure { parameters, .. } => Some(parameters),
+            _ => None,
+        })
+        .expect("闭包参数");
+
+    assert!(parsed
+        .issues()
+        .iter()
+        .all(|issue| issue.code() != ParseIssueCode::UnexpectedEof));
+    assert_eq!(parameters.len(), 2);
+    assert_eq!(
+        parameters
+            .first()
+            .and_then(|parameter| parameter.ty())
+            .and_then(|ty| source.get(ty.bounds())),
+        Some("Outer<Inner<Left, Right>>")
     );
 }

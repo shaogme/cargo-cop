@@ -170,7 +170,9 @@ impl RustParser {
             );
             let wrapped = if attribute.path() == ["unsafe"] {
                 matches!(attribute.meta().kind(), AttributeMetaKind::List(items)
-                    if items.iter().any(|item| Self::is_unsafe_attribute_name(item.path())))
+                if items.iter().any(|item| {
+                    item.meta().is_some_and(|meta| Self::is_unsafe_attribute_name(meta.path()))
+                }))
             } else {
                 false
             };
@@ -178,9 +180,10 @@ impl RustParser {
                 && attribute.path()[0] == "cfg_attr"
                 && attribute
                     .meta()
-                    .children()
+                    .arguments()
                     .iter()
                     .skip(1)
+                    .filter_map(|argument| argument.meta())
                     .any(Self::contains_unwrapped_unsafe_attribute);
             if (!requires_unsafe || wrapped) && !unwrapped_conditional {
                 continue;
@@ -206,9 +209,10 @@ impl RustParser {
         }
         meta.name() == Some("cfg_attr")
             && meta
-                .children()
+                .arguments()
                 .iter()
                 .skip(1)
+                .filter_map(|argument| argument.meta())
                 .any(Self::contains_unwrapped_unsafe_attribute)
     }
 }

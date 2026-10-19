@@ -20,7 +20,7 @@ use crate::{
 
 pub(crate) use attribute::AttributeInput;
 pub use attribute::{Attribute, AttributeMeta, AttributeMetaValue};
-pub use attribute_kinds::{AttributeMetaKind, AttributeMetaValueKind};
+pub use attribute_kinds::{AttributeMetaArgument, AttributeMetaKind, AttributeMetaValueKind};
 pub(crate) use factory::AstFactory;
 pub(crate) use item::Item;
 pub use item::{Visibility, VisibilityKind};
