@@ -24,9 +24,30 @@ pub(super) struct TypeInput<'a> {
     pub(super) issues: &'a mut Vec<ParseIssue>,
 }
 
+pub(super) struct ParsedTypeInput<'a> {
+    pub(super) syntax: TypeSyntax,
+    pub(super) tokens: &'a [Token],
+    pub(super) parent: AstNodeId,
+    pub(super) ast_nodes: &'a mut Vec<SyntaxNode>,
+    pub(super) issues: &'a mut Vec<ParseIssue>,
+}
+
 pub(super) struct TypeParser;
 
 impl TypeParser {
+    pub(super) fn collect_parsed(input: ParsedTypeInput<'_>) -> AstNodeId {
+        let ParsedTypeInput {
+            syntax,
+            tokens,
+            parent,
+            ast_nodes,
+            issues,
+        } = input;
+        let id = Self::push_node(syntax.clone(), parent, ast_nodes);
+        Self::emit_opaque_macros(&syntax, id, tokens, ast_nodes, issues);
+        id
+    }
+
     pub(super) fn collect(input: TypeInput<'_>) -> Option<AstNodeId> {
         let TypeInput {
             tokens,

@@ -7,19 +7,31 @@ use crate::{
 
 pub(super) struct EditionParser;
 
+enum ConditionLetStatus {
+    Absent,
+    Valid(Range<usize>),
+    Invalid(Range<usize>),
+}
+
 impl EditionParser {
     pub(super) fn invalid_let_condition(
         condition: &ExpressionSyntax,
         edition: RustEdition,
     ) -> Option<Range<usize>> {
-        let (let_bounds, valid_chain) = Self::condition_let_status(condition);
         let is_single_let = matches!(condition.kind(), ExpressionSyntaxKind::Let { .. });
-        let_bounds.filter(|_| !is_single_let && (edition != RustEdition::E2024 || !valid_chain))
+        if is_single_let {
+            return None;
+        }
+        match Self::condition_let_status(condition) {
+            ConditionLetStatus::Absent => None,
+            ConditionLetStatus::Valid(bounds) => (edition != RustEdition::E2024).then_some(bounds),
+            ConditionLetStatus::Invalid(bounds) => Some(bounds),
+        }
     }
 
-    fn condition_let_status(expression: &ExpressionSyntax) -> (Option<Range<usize>>, bool) {
+    fn condition_let_status(expression: &ExpressionSyntax) -> ConditionLetStatus {
         match expression.kind() {
-            ExpressionSyntaxKind::Let { .. } => (Some(expression.bounds()), true),
+            ExpressionSyntaxKind::Let { .. } => ConditionLetStatus::Valid(expression.bounds()),
             ExpressionSyntaxKind::Group(inner) => Self::condition_let_status(inner),
             ExpressionSyntaxKind::Binary {
                 operator,
@@ -28,13 +40,48 @@ impl EditionParser {
             } => {
                 let left_status = Self::condition_let_status(left);
                 let right_status = Self::condition_let_status(right);
-                let let_bounds = left_status.0.or(right_status.0);
-                let valid_chain = operator == "&&" && left_status.1 && right_status.1;
-                (let_bounds, valid_chain)
+                Self::combine_condition_let_status(operator, left_status, right_status)
             }
-            _ => match Self::find_let_expression(expression) {
-                Some(bounds) => (Some(bounds), false),
-                None => (None, true),
+            _ => Self::find_let_expression(expression)
+                .map_or(ConditionLetStatus::Absent, ConditionLetStatus::Invalid),
+        }
+    }
+
+    fn combine_condition_let_status(
+        operator: &str,
+        left: ConditionLetStatus,
+        right: ConditionLetStatus,
+    ) -> ConditionLetStatus {
+        match (left, right) {
+            (ConditionLetStatus::Absent, ConditionLetStatus::Absent) => ConditionLetStatus::Absent,
+            (left, right) => {
+                let bounds =
+                    Self::first_let_bounds(&left, &right).expect("包含 let 的状态必须携带源码范围");
+                if operator == "&&"
+                    && !matches!(left, ConditionLetStatus::Invalid(_))
+                    && !matches!(right, ConditionLetStatus::Invalid(_))
+                {
+                    ConditionLetStatus::Valid(bounds)
+                } else {
+                    ConditionLetStatus::Invalid(bounds)
+                }
+            }
+        }
+    }
+
+    fn first_let_bounds(
+        left: &ConditionLetStatus,
+        right: &ConditionLetStatus,
+    ) -> Option<Range<usize>> {
+        match left {
+            ConditionLetStatus::Valid(bounds) | ConditionLetStatus::Invalid(bounds) => {
+                Some(bounds.clone())
+            }
+            ConditionLetStatus::Absent => match right {
+                ConditionLetStatus::Valid(bounds) | ConditionLetStatus::Invalid(bounds) => {
+                    Some(bounds.clone())
+                }
+                ConditionLetStatus::Absent => None,
             },
         }
     }

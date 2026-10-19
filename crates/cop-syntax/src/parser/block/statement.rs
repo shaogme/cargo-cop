@@ -1,6 +1,7 @@
 use std::ops::Range;
 
 use crate::{
+    ast::{ExpressionSyntax, TypeSyntax},
     parser::{
         expression::SyntaxCollector,
         patterns::PatternParser,
@@ -10,6 +11,12 @@ use crate::{
     },
     Delimiter, SourceFile, Token, TokenKind,
 };
+
+#[derive(Clone)]
+pub(super) struct ParsedTypeAnnotation {
+    pub(super) syntax: TypeSyntax,
+    pub(super) token_bounds: Range<usize>,
+}
 
 #[derive(Clone, Copy)]
 pub(super) enum StatementForm {
@@ -25,8 +32,9 @@ pub(super) struct ParsedStatement {
     pub(super) is_tail: bool,
     pub(super) block_like: bool,
     pub(super) pattern: Option<Range<usize>>,
-    pub(super) type_annotation: Option<Range<usize>>,
+    pub(super) type_annotation: Option<ParsedTypeAnnotation>,
     pub(super) expression: Option<Range<usize>>,
+    pub(super) expression_syntax: Option<ExpressionSyntax>,
     pub(super) let_else_block: Option<Range<usize>>,
 }
 
@@ -60,8 +68,11 @@ impl StatementParser {
         let pattern = Some(pattern_start..cursor.index());
         let type_annotation = if cursor.consume_punctuation(":") {
             let type_start = cursor.index();
-            TypeParser::parse(cursor)?;
-            Some(type_start..cursor.index())
+            let syntax = TypeParser::parse(cursor)?;
+            Some(ParsedTypeAnnotation {
+                syntax,
+                token_bounds: type_start..cursor.consumed_end_index(),
+            })
         } else {
             None
         };
@@ -97,6 +108,7 @@ impl StatementParser {
             pattern,
             type_annotation,
             expression,
+            expression_syntax: None,
             let_else_block,
         })
     }
@@ -114,6 +126,7 @@ impl StatementParser {
             pattern: None,
             type_annotation: None,
             expression: None,
+            expression_syntax: None,
             let_else_block: None,
         })
     }
@@ -212,6 +225,7 @@ impl StatementParser {
             pattern: None,
             type_annotation: None,
             expression: Some(expression_start..expression_end),
+            expression_syntax: Some(expression),
             let_else_block: None,
         })
     }

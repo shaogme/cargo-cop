@@ -1,13 +1,18 @@
 use std::ops::Range;
 
 use crate::{
-    ast::{AstNodeId, ParseIssue, SyntaxNode},
-    parser::types::{TypeInput, TypeParser},
+    ast::{
+        AstNodeId, ExpressionSyntax, ExpressionSyntaxKind, ParseIssue, PatternSyntax, SyntaxNode,
+    },
+    parser::types::{ParsedTypeInput, TypeParser},
     recovery::Recovery,
     RustEdition, SourceFile, Token,
 };
 
-use super::super::expression::{PatternInput, SyntaxCollector, SyntaxRequest};
+use super::{
+    super::expression::{PatternInput, SyntaxCollector, SyntaxRequest},
+    statement::ParsedTypeAnnotation,
+};
 
 pub(super) struct BlockPatternInput<'a> {
     pub(super) source: &'a SourceFile,
@@ -16,6 +21,7 @@ pub(super) struct BlockPatternInput<'a> {
     pub(super) parent: AstNodeId,
     pub(super) start: usize,
     pub(super) end: usize,
+    pub(super) expression: Option<&'a ExpressionSyntax>,
     pub(super) ast_nodes: &'a mut Vec<SyntaxNode>,
     pub(super) issues: &'a mut Vec<ParseIssue>,
 }
@@ -25,7 +31,7 @@ pub(super) struct LetPatternInput<'a> {
     pub(super) tokens: &'a [Token],
     pub(super) parent: AstNodeId,
     pub(super) pattern: Range<usize>,
-    pub(super) type_annotation: Option<Range<usize>>,
+    pub(super) type_annotation: Option<ParsedTypeAnnotation>,
     pub(super) ast_nodes: &'a mut Vec<SyntaxNode>,
     pub(super) issues: &'a mut Vec<ParseIssue>,
 }
@@ -57,9 +63,9 @@ impl PatternCollector {
             &mut *ast_nodes,
         );
         if let Some(bounds) = type_annotation {
-            TypeParser::collect(TypeInput {
+            TypeParser::collect_parsed(ParsedTypeInput {
+                syntax: bounds.syntax,
                 tokens,
-                bounds: bounds.clone(),
                 parent,
                 ast_nodes: &mut *ast_nodes,
                 issues: &mut *issues,
@@ -68,7 +74,7 @@ impl PatternCollector {
                 SyntaxRequest {
                     source,
                     tokens,
-                    bounds,
+                    bounds: bounds.token_bounds,
                     parent,
                     expression_tree: false,
                     edition: None,
@@ -85,51 +91,99 @@ impl PatternCollector {
             tokens,
             edition: _,
             parent,
-            start,
-            end,
+            expression,
             ast_nodes,
             issues,
+            ..
         } = input;
-        let Some(first) = tokens.get(start).map(|token| token.text(source)) else {
+        let Some(expression) = expression else {
             return;
         };
-        let (pattern_start_index, pattern_end_index) = match first {
-            "if" | "while" => {
-                let Some(let_index) =
-                    (start + 1..end).find(|index| Recovery::is_identifier(&tokens[*index], "let"))
-                else {
-                    return;
-                };
-                (
-                    let_index + 1,
-                    SyntaxCollector::top_level_token(tokens, let_index + 1, end, "="),
-                )
-            }
-            "for" => (
-                start + 1,
-                (start + 1..end).find(|index| Recovery::is_identifier(&tokens[*index], "in")),
-            ),
-            _ => return,
+        let pattern = match expression.kind() {
+            ExpressionSyntaxKind::If { condition, .. }
+            | ExpressionSyntaxKind::While { condition, .. } => Self::condition_pattern(condition),
+            ExpressionSyntaxKind::For { pattern, .. } => Some(pattern),
+            _ => None,
         };
-        let Some(pattern_end_index) = pattern_end_index else {
+        let Some(pattern) = pattern else {
             return;
         };
-        let Some(pattern_start) = tokens.get(pattern_start_index).map(Token::start) else {
-            return;
-        };
-        let pattern_end = tokens[pattern_end_index].start();
+        let bounds = pattern.bounds();
         let _pattern_id = SyntaxCollector::push_pattern(
             PatternInput {
                 source,
                 tokens,
                 parent,
-                start: pattern_start,
-                end: pattern_end,
+                start: bounds.start,
+                end: bounds.end,
                 bind_bare_identifiers: true,
                 issues,
             },
             ast_nodes,
         );
+    }
+
+    fn condition_pattern(expression: &ExpressionSyntax) -> Option<&PatternSyntax> {
+        match expression.kind() {
+            ExpressionSyntaxKind::Let { pattern, .. } => Some(pattern),
+            ExpressionSyntaxKind::Group(inner)
+            | ExpressionSyntaxKind::Unary { operand: inner, .. }
+            | ExpressionSyntaxKind::Await(inner)
+            | ExpressionSyntaxKind::Try(inner) => Self::condition_pattern(inner),
+            ExpressionSyntaxKind::Binary { left, right, .. }
+            | ExpressionSyntaxKind::Assignment { left, right, .. } => {
+                Self::condition_pattern(left).or_else(|| Self::condition_pattern(right))
+            }
+            ExpressionSyntaxKind::Tuple(values) | ExpressionSyntaxKind::Array(values) => {
+                values.iter().find_map(Self::condition_pattern)
+            }
+            ExpressionSyntaxKind::Repeat { value, count } => {
+                Self::condition_pattern(value).or_else(|| Self::condition_pattern(count))
+            }
+            ExpressionSyntaxKind::Struct { fields, .. } => fields
+                .iter()
+                .filter_map(|field| field.value())
+                .find_map(Self::condition_pattern),
+            ExpressionSyntaxKind::Range { start, end, .. } => start
+                .as_deref()
+                .and_then(Self::condition_pattern)
+                .or_else(|| end.as_deref().and_then(Self::condition_pattern)),
+            ExpressionSyntaxKind::Call { callee, arguments } => Self::condition_pattern(callee)
+                .or_else(|| arguments.iter().find_map(Self::condition_pattern)),
+            ExpressionSyntaxKind::MethodCall {
+                receiver,
+                arguments,
+                ..
+            } => Self::condition_pattern(receiver)
+                .or_else(|| arguments.iter().find_map(Self::condition_pattern)),
+            ExpressionSyntaxKind::Field { base, .. }
+            | ExpressionSyntaxKind::TupleField { base, .. } => Self::condition_pattern(base),
+            ExpressionSyntaxKind::Index { base, index } => {
+                Self::condition_pattern(base).or_else(|| Self::condition_pattern(index))
+            }
+            ExpressionSyntaxKind::Cast { expression, .. } => Self::condition_pattern(expression),
+            ExpressionSyntaxKind::Return(value) => {
+                value.as_deref().and_then(Self::condition_pattern)
+            }
+            ExpressionSyntaxKind::Break { value, .. } => {
+                value.as_deref().and_then(Self::condition_pattern)
+            }
+            ExpressionSyntaxKind::Literal
+            | ExpressionSyntaxKind::Path(_)
+            | ExpressionSyntaxKind::Closure { .. }
+            | ExpressionSyntaxKind::Block { .. }
+            | ExpressionSyntaxKind::LabelBlock { .. }
+            | ExpressionSyntaxKind::If { .. }
+            | ExpressionSyntaxKind::While { .. }
+            | ExpressionSyntaxKind::Match { .. }
+            | ExpressionSyntaxKind::Loop { .. }
+            | ExpressionSyntaxKind::For { .. }
+            | ExpressionSyntaxKind::Continue(_)
+            | ExpressionSyntaxKind::Underscore
+            | ExpressionSyntaxKind::Error(_)
+            | ExpressionSyntaxKind::Unsupported(_)
+            | ExpressionSyntaxKind::Macro { .. } => None,
+        }
     }
 
     pub(super) fn collect_match_pattern(input: BlockPatternInput<'_>) {
@@ -140,6 +194,7 @@ impl PatternCollector {
             parent,
             start,
             end,
+            expression: _,
             ast_nodes,
             issues,
         } = input;

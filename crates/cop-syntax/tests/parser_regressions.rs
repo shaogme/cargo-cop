@@ -95,6 +95,17 @@ fn parses_2024_let_chains_and_keeps_the_2021_edition_diagnostic() {
 }
 
 #[test]
+fn rejects_let_conditions_outside_and_chains_in_2024() {
+    let source = "fn inspect(ready: bool, visit: Visit) { if ready || let Some(field) = visit.target.field {} }";
+    let parsed = parse(source, "2024");
+    let let_start = source.find("let Some(field)").expect("let 条件位置");
+
+    assert!(unexpected_issues(&parsed)
+        .iter()
+        .any(|(start, _)| *start == let_start));
+}
+
+#[test]
 fn parses_foreign_variadics_only_as_final_parameter_markers() {
     let source = "type Callback = unsafe extern \"C\" fn(i32, ...); extern \"C\" { fn printf(format: *const i8, ...); fn malformed(..., value: i32); fn after(value: i32); } fn ordinary(..., value: i32) {} fn kept() {}";
     let parsed = parse(source, "2021");
@@ -216,4 +227,180 @@ fn retains_diagnostics_for_incomplete_let_annotations() {
         .issues()
         .iter()
         .any(|issue| issue.start() == missing_equals));
+}
+
+#[test]
+fn parses_real_world_2024_let_chain_condition() {
+    let source = r#"
+fn inspect(mut visit: Visit, context: &mut Context, mut out: Output) {
+    if visit.value.source() == ValueSource::SchemaDefault
+        && visit.target.span.is_none()
+        && let Some(field) = visit.target.field
+    {
+        visit.target.span = Some(
+            TreeSupport::schema_call(
+                &mut context.resources.schema_access_errors,
+                |schema_out| field.span(schema_out),
+                out.reborrow(),
+            )?
+            .into(),
+        );
+    }
+}
+"#;
+    let parsed = parse(source, "2024");
+
+    assert!(parsed.issues().is_empty(), "{:?}", parsed.issues());
+}
+
+#[test]
+fn parses_real_world_let_binding_with_nested_generic_type() {
+    let source = r#"
+fn inspect(errors: Errors) -> TestResult<()> {
+    let keys: Vec<_> = errors
+        .diagnostics()
+        .iter()
+        .map(|d| -> TestResult<_> {
+            d.path()
+                .test_value()?
+                .segments()
+                .last()
+                .test_value()?
+                .as_map_key()
+                .test_value()
+        })
+        .collect::<TestResult<Vec<_>>>()?;
+    let _ = keys;
+    Ok(())
+}
+"#;
+    let parsed = parse(source, "2021");
+
+    assert!(parsed.issues().is_empty(), "{:?}", parsed.issues());
+}
+
+#[test]
+fn parses_real_world_let_binding_with_explicit_path_type() {
+    let source = r#"
+fn inspect(meta: Meta) -> TestResult<()> {
+    let value: LitStr = meta.value()?.parse()?;
+    Self::validate_name(&value.value(), value.span())?;
+    result.rename = Some(value);
+    Ok(())
+}
+"#;
+    let parsed = parse(source, "2021");
+
+    assert!(parsed.issues().is_empty(), "{:?}", parsed.issues());
+}
+
+#[test]
+fn parses_explicit_let_type_inside_a_closure_if_branch() {
+    let source = r#"
+fn inspect(attribute: Attribute, result: &mut State) -> Result<()> {
+    attribute.parse_nested_meta(|meta| {
+        if meta.path.is_ident("rename") {
+            if result.rename.is_some() {
+                return Err(meta.error("rename cannot repeat"));
+            }
+            let value: LitStr = meta.value()?.parse()?;
+            Self::validate_name(&value.value(), value.span())?;
+            result.rename = Some(value);
+        }
+        Ok(())
+    })?;
+    Ok(())
+}
+"#;
+    let parsed = parse(source, "2021");
+    let colon = source.find("let value: LitStr").expect("显式类型绑定") + 9;
+    let value_statement_count = parsed
+        .syntax_nodes()
+        .iter()
+        .filter(|node| {
+            node.kind() == SyntaxNodeKind::Statement
+                && source.get(node.start()..node.end())
+                    == Some("let value: LitStr = meta.value()?.parse()?;")
+        })
+        .count();
+
+    assert!(
+        !unexpected_issues(&parsed)
+            .iter()
+            .any(|(start, end)| *start == colon && *end == colon + 1),
+        "{:?}",
+        parsed.issues()
+    );
+    assert_eq!(value_statement_count, 1, "{:?}", parsed.syntax_nodes());
+}
+
+#[test]
+fn parses_nested_generic_let_type_in_an_if_else_branch() {
+    let source = r#"
+fn map_failures_keep_source_order_and_diagnostic_budget_stops_later_reads() -> TestResult<()> {
+    let schema = compile(&ALL_TYPES)?;
+    let text = replace(&ALL_TYPES, "labels: {\"tier\": \"production\"}", "labels: {\"z\": \"\", \"a\": \"\"}")?;
+    for budget in [0, 1, 2, 3] {
+        let mut limits = ConfigLimits::default();
+        limits = limits.with_max_diagnostics(budget);
+        let mut provider = MemoryEnvironment::required(&ALL_TYPES);
+        let errors = parse(&ALL_TYPES, &schema, &text, &mut provider, &limits).test_error()?;
+        test_eq!(errors.diagnostics().len(), budget.clamp(1, 2))?;
+        if budget <= 1 {
+            assert_code(&errors, DiagnosticCode::CONFIG_VALIDATION_ERROR)?;
+            test_assert!(errors.is_truncated())?;
+            test_assert!(!provider.calls.contains_key("TYPOL_NOTIFY_TOKEN"))?;
+        } else if budget == 2 {
+            test_eq!(
+                errors.diagnostics().last().test_value()?.code(),
+                DiagnosticCode::DIAGNOSTIC_LIMIT_REACHED
+            )?;
+            test_assert!(errors.is_truncated())?;
+            test_assert!(!provider.calls.contains_key("TYPOL_NOTIFY_TOKEN"))?;
+        } else {
+            assert_code(&errors, DiagnosticCode::CONFIG_VALIDATION_ERROR)?;
+            test_assert!(!errors.is_truncated())?;
+            let keys: Vec<_> = errors
+                .diagnostics()
+                .iter()
+                .map(|d| -> TestResult<_> {
+                    d.path()
+                        .test_value()?
+                        .segments()
+                        .last()
+                        .test_value()?
+                        .as_map_key()
+                        .test_value()
+                })
+                .collect::<TestResult<Vec<_>>>()?;
+            test_eq!(keys, ["z", "a"])?;
+            let positions: Vec<_> = errors
+                .diagnostics()
+                .iter()
+                .map(|d| Ok(d.primary().test_value()?.span().start()))
+                .collect::<TestResult<Vec<_>>>()?;
+            test_assert!(TestCheck::item(&positions, 0)? < TestCheck::item(&positions, 1)?)?;
+            test_eq!(
+                provider
+                    .calls
+                    .get("TYPOL_NOTIFY_TOKEN")
+                    .copied()
+                    .test_value()?,
+                1
+            )?;
+        }
+    }
+    Ok(())
+}
+"#;
+    let parsed = parse(source, "2021");
+    let colon = source.find("let keys: Vec<_>").expect("显式类型绑定") + 8;
+
+    assert!(
+        !unexpected_issues(&parsed)
+            .iter()
+            .any(|(start, end)| *start == colon && *end == colon + 1),
+        "{:?}",
+        parsed.issues()
+    );
 }

@@ -324,6 +324,7 @@ impl BlockParser {
                         parent: node_id,
                         start: start_index,
                         end: statement_end,
+                        expression: parsed.expression_syntax.as_ref(),
                         ast_nodes: context.ast_nodes,
                         issues: context.issues,
                     });
@@ -336,6 +337,7 @@ impl BlockParser {
                         parent: node_id,
                         start: start_index,
                         end: statement_end,
+                        expression: parsed.expression_syntax.as_ref(),
                         ast_nodes: context.ast_nodes,
                         issues: context.issues,
                     });
@@ -370,7 +372,8 @@ impl BlockParser {
 
     fn parse_embedded_blocks(context: &mut BlockParseContext<'_>, first_node: usize) {
         let mut index = first_node;
-        while index < context.ast_nodes.len() {
+        let end_node = context.ast_nodes.len();
+        while index < end_node {
             let node = &context.ast_nodes[index];
             let node_kind = node.kind();
             let node_id = node.id();
