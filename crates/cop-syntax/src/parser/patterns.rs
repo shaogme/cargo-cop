@@ -13,6 +13,37 @@ use super::{
 pub(super) struct PatternParser;
 
 impl PatternParser {
+    pub(super) fn parse_receiver_range(
+        tokens: &[Token],
+        bounds: Range<usize>,
+    ) -> Result<PatternSyntax, SyntaxError> {
+        let mut cursor = TokenCursor::new(tokens, bounds)
+            .ok_or_else(|| SyntaxError::new(SyntaxErrorKind::UnexpectedToken, 0..0))?;
+        let start = cursor.offset();
+        if !cursor.consume_punctuation("&") {
+            return Self::parse_range_with_binding_mode(tokens, cursor.start()..cursor.end(), true);
+        }
+        if matches!(cursor.peek().map(Token::kind), Some(TokenKind::Lifetime(_))) {
+            cursor.consume();
+        }
+        let mutable = cursor.consume_identifier("mut");
+        let pattern = Self::parse(&mut cursor, true)?;
+        if !cursor.is_empty() {
+            return Err(PathParser::error_at(
+                &cursor,
+                SyntaxErrorKind::UnexpectedToken,
+            ));
+        }
+        Ok(PatternSyntax::new(
+            PatternSyntaxKind::Reference {
+                mutable,
+                pattern: Box::new(pattern),
+            },
+            Vec::new(),
+            start..cursor.consumed_offset(),
+        ))
+    }
+
     pub(super) fn parse_prefix(
         cursor: &mut TokenCursor<'_>,
         bind_bare_identifiers: bool,

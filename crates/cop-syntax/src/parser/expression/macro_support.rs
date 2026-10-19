@@ -7,6 +7,7 @@ use crate::{
         AstFactory, AstNodeId, CoverageStatus, MacroInputStatus, MacroInvocation, ParseIssue,
         ParseIssueKind, PathSyntax, SyntaxNode, SyntaxNodeData, SyntaxNodeKind,
     },
+    parser::{patterns::PatternParser, types::TypeParser},
     recovery::Recovery,
     Delimiter, LiteralKind, Token, TokenKind,
 };
@@ -16,7 +17,6 @@ use super::{
     tree::{EmitContext, ExpressionTree},
     MacroInputRequest, PatternInput, SyntaxRequest,
 };
-use crate::parser::{patterns::PatternParser, types::TypeParser};
 
 #[derive(Clone, Copy)]
 enum FragmentKind {

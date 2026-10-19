@@ -1,6 +1,11 @@
+use std::ops::Range;
+
+use cop_model::{LocalizedMessage, SYNTAX_PARSE_ERROR_UNEXPECTED_TOKEN};
+
 use crate::{
     ast::{
-        AstFactory, AstNodeId, Parameter, ParseIssue, SyntaxNode, SyntaxNodeData, SyntaxNodeKind,
+        AstFactory, AstNodeId, Parameter, ParseIssue, ParseIssueKind, SyntaxNode, SyntaxNodeData,
+        SyntaxNodeKind,
     },
     recovery::Recovery,
     Delimiter, SourceFile, Token, TokenKind,
@@ -21,6 +26,7 @@ pub(super) struct ParameterInput<'a> {
     pub(super) parent: AstNodeId,
     pub(super) start: usize,
     pub(super) end: usize,
+    pub(super) allow_variadic: bool,
     pub(super) ast_nodes: &'a mut Vec<SyntaxNode>,
     pub(super) issues: &'a mut Vec<ParseIssue>,
 }
@@ -97,13 +103,33 @@ impl ParameterParser {
             parent,
             start,
             end,
+            allow_variadic,
             ast_nodes,
             issues,
         } = input;
-        Recovery::split_top_level(tokens, start, end, ",")
+        let ranges = Recovery::split_top_level(tokens, start, end, ",")
             .into_iter()
             .filter(|range| range.start < range.end)
-            .map(|range| {
+            .collect::<Vec<_>>();
+        let last_parameter = ranges.len().saturating_sub(1);
+        ranges
+            .into_iter()
+            .enumerate()
+            .filter_map(|(index, range)| {
+                if Self::is_variadic_marker(tokens, &range) {
+                    if allow_variadic && index == last_parameter {
+                        return None;
+                    }
+                    if allow_variadic {
+                        let token = &tokens[range.start];
+                        issues.push(AstFactory::parse_issue(
+                            ParseIssueKind::UnexpectedToken,
+                            token.start()..token.end(),
+                            LocalizedMessage::new(SYNTAX_PARSE_ERROR_UNEXPECTED_TOKEN),
+                        ));
+                        return None;
+                    }
+                }
                 let receiver = Recovery::receiver_parameter(tokens, &range);
                 let mut cursor = range.start;
                 let attributes =
@@ -157,8 +183,15 @@ impl ParameterParser {
                     ast_nodes,
                     issues,
                 );
-                parameter
+                Some(parameter)
             })
             .collect()
+    }
+
+    fn is_variadic_marker(tokens: &[Token], range: &Range<usize>) -> bool {
+        range.end == range.start + 1
+            && tokens
+                .get(range.start)
+                .is_some_and(|token| Recovery::is_punctuation(token, "..."))
     }
 }

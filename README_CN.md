@@ -126,7 +126,7 @@ Feature 选择根据所选 package 的 Cargo feature 定义计算，处理 defau
 | `parameter_limit` | 函数、方法和闭包的参数数量最多为 5 个。 |
 | `tuple_arity` | tuple 类型和表达式最多包含 2 个元素。 |
 | `no_inline_qualified_path` | 报告代码中以外部 crate 名（含别名）或显式模块路径 `crate::`、`self::`、`super::` 为根的限定路径；使用前应导入所需名称。 |
-| `merge_common_prefix_imports` | 合并路径有共同前缀且可见性和 `cfg` 条件兼容的相邻导入。 |
+| `merge_common_prefix_imports` | 合并路径有共同前缀且可见性和有效 `cfg` 条件相同的导入；模块作用域中的导入不要求相邻。 |
 | `extern_crate_at_scope_start` | 每个模块作用域中的 `extern crate` 声明必须位于开头。 |
 | `imports_at_scope_start` | 模块作用域中的 `use` 位于外部模块声明之后、其他 item 之前；block 导入放在其他语句之前。 |
 | `out_of_line_modules_at_scope_start` | 外部模块声明位于 `extern crate` 之后、`use` 和其他 item 之前，并连续排列。 |

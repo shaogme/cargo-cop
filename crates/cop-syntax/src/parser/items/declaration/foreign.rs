@@ -20,8 +20,11 @@ use crate::{
 
 use super::ParserContext;
 
-type ParseFunction =
-    for<'source, 'state> fn(ParserContext<'source, 'state>, AstNodeId) -> Option<FunctionItem>;
+type ParseFunction = for<'source, 'state> fn(
+    ParserContext<'source, 'state>,
+    AstNodeId,
+    bool,
+) -> Option<FunctionItem>;
 
 struct ForeignFunctionInput<'source, 'state> {
     context: ParserContext<'source, 'state>,
@@ -388,6 +391,7 @@ impl ForeignItemParser {
                 ast_nodes: context.ast_nodes,
             },
             node_id,
+            true,
         ) {
             let end = context
                 .tokens

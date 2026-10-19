@@ -8,6 +8,9 @@ use cop_model::{
 use super::{
     attributes::AttributeParser,
     expression::{SyntaxCollector, SyntaxRequest},
+    token_cursor::TokenCursor,
+    types::{TypeInput, TypeParser},
+    where_clause::{WhereClauseInput, WhereClauseParser},
 };
 use crate::{
     ast::{
@@ -16,12 +19,6 @@ use crate::{
     },
     recovery::Recovery,
     Delimiter, SourceFile, Token, TokenKind,
-};
-
-use super::{
-    token_cursor::TokenCursor,
-    types::{TypeInput, TypeParser},
-    where_clause::{WhereClauseInput, WhereClauseParser},
 };
 
 pub(super) struct DeclarationParser;

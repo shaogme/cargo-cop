@@ -24,6 +24,8 @@ pub(super) struct ParsedStatement {
     pub(super) has_semicolon: bool,
     pub(super) is_tail: bool,
     pub(super) block_like: bool,
+    pub(super) pattern: Option<Range<usize>>,
+    pub(super) type_annotation: Option<Range<usize>>,
     pub(super) expression: Option<Range<usize>>,
     pub(super) let_else_block: Option<Range<usize>>,
 }
@@ -53,10 +55,16 @@ impl StatementParser {
         cursor: &mut TokenCursor<'_>,
     ) -> Result<ParsedStatement, SyntaxError> {
         cursor.consume_identifier("let");
+        let pattern_start = cursor.index();
         PatternParser::parse_prefix(cursor, true)?;
-        if cursor.consume_punctuation(":") {
+        let pattern = Some(pattern_start..cursor.index());
+        let type_annotation = if cursor.consume_punctuation(":") {
+            let type_start = cursor.index();
             TypeParser::parse(cursor)?;
-        }
+            Some(type_start..cursor.index())
+        } else {
+            None
+        };
         let mut expression = None;
         let mut let_else_block = None;
         if cursor.consume_punctuation("=") {
@@ -86,6 +94,8 @@ impl StatementParser {
             has_semicolon,
             is_tail: false,
             block_like: false,
+            pattern,
+            type_annotation,
             expression,
             let_else_block,
         })
@@ -101,6 +111,8 @@ impl StatementParser {
             has_semicolon,
             is_tail: false,
             block_like: false,
+            pattern: None,
+            type_annotation: None,
             expression: None,
             let_else_block: None,
         })
@@ -197,6 +209,8 @@ impl StatementParser {
             has_semicolon,
             is_tail,
             block_like,
+            pattern: None,
+            type_annotation: None,
             expression: Some(expression_start..expression_end),
             let_else_block: None,
         })

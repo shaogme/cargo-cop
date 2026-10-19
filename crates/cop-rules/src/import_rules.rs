@@ -17,7 +17,6 @@ pub(super) struct ImportRuleSet;
 
 struct ImportRecord<'a> {
     item: &'a SyntaxNode,
-    item_index: usize,
     leaves: Vec<UseLeaf>,
     condition: String,
 }
@@ -189,8 +188,7 @@ impl ImportRuleSet {
         let items = module.item_nodes();
         let imports = items
             .iter()
-            .enumerate()
-            .filter_map(|(item_index, item)| {
+            .filter_map(|item| {
                 if !item
                     .item_syntax()
                     .is_some_and(|data| matches!(data.kind(), ItemSyntaxKind::Use))
@@ -214,7 +212,6 @@ impl ImportRuleSet {
                 };
                 Some(ImportRecord {
                     item,
-                    item_index,
                     leaves,
                     condition,
                 })
@@ -222,7 +219,7 @@ impl ImportRuleSet {
             .collect::<Vec<_>>();
         for current_index in 1..imports.len() {
             let current = &imports[current_index];
-            for previous in &imports[..current_index] {
+            for previous in imports[..current_index].iter().rev() {
                 let same_visibility = previous
                     .item
                     .item_syntax()
@@ -230,10 +227,7 @@ impl ImportRuleSet {
                     .is_some_and(|(previous, current)| {
                         previous.visibility().kind() == current.visibility().kind()
                     });
-                if previous.item_index + 1 != current.item_index
-                    || previous.condition != current.condition
-                    || !same_visibility
-                {
+                if previous.condition != current.condition || !same_visibility {
                     continue;
                 }
                 let Some(prefix) =

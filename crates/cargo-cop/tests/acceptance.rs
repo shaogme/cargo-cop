@@ -2423,7 +2423,45 @@ fn compares_only_ordinary_leaf_pairs_in_module_imports() {
 }
 
 #[test]
-fn ignores_incompatible_or_nonadjacent_module_imports_and_false_cfg_leaves() {
+fn merges_nonadjacent_module_imports_with_a_different_root_between() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "src/lib.rs",
+        "use crate::parser::block::patterns::{PatternInput, PatternParser};\n\nuse super::super::expression::{ExpressionInput, ExpressionParser};\n\nuse crate::parser::types::{TypeInput, TypeParser};\n",
+    );
+
+    let output = fixture.run(&["--format", "json"]);
+    let diagnostics = rule_diagnostics(&output, "merge_common_prefix_imports");
+
+    assert_eq!(diagnostics.len(), 1, "{}", output.stdout);
+    assert_eq!(diagnostics[0]["start"]["line"], 5);
+    assert_eq!(diagnostics[0]["arguments"]["line"], 1);
+    assert_eq!(diagnostics[0]["arguments"]["prefix"], "crate::parser");
+}
+
+#[test]
+fn reports_each_nonadjacent_import_once_using_the_nearest_compatible_import() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "src/lib.rs",
+        "use crate::model::First;\nfn separator() {}\nuse crate::model::Second;\nuse std::fmt::Debug;\nfn another_separator() {}\nuse crate::model::Third;\n",
+    );
+
+    let output = fixture.run(&["--format", "json"]);
+    let diagnostics = rule_diagnostics(&output, "merge_common_prefix_imports");
+
+    assert_eq!(diagnostics.len(), 2, "{}", output.stdout);
+    assert_eq!(diagnostics[0]["start"]["line"], 3);
+    assert_eq!(diagnostics[0]["arguments"]["line"], 1);
+    assert_eq!(diagnostics[1]["start"]["line"], 6);
+    assert_eq!(diagnostics[1]["arguments"]["line"], 3);
+    assert_eq!(diagnostics[1]["arguments"]["prefix"], "crate::model");
+}
+
+#[test]
+fn ignores_incompatible_module_imports_and_false_cfg_leaves() {
     let fixture = Fixture::new();
     fixture.write(
         "Cargo.toml",
@@ -2884,7 +2922,7 @@ fn normalizes_stacked_cfg_conditions_before_import_grouping() {
     );
     fixture.write(
         "src/lib.rs",
-        "#[cfg(all(feature = \"a\", feature = \"b\"))]\nuse crate::module::First;\n\n#[cfg(feature = \"b\")]\n#[cfg(feature = \"a\")]\nuse crate::module::Second;\n",
+        "#[cfg(all(feature = \"a\", feature = \"b\"))]\nuse crate::module::First;\n\n#[cfg(feature = \"b\")]\n#[cfg(feature = \"a\")]\nuse core::fmt::Debug;\n\n#[cfg(feature = \"b\")]\n#[cfg(feature = \"a\")]\nuse crate::module::Second;\n",
     );
 
     let output = fixture.run(&["--format", "json", "--features", "a,b"]);
@@ -2900,7 +2938,7 @@ fn normalizes_stacked_cfg_conditions_before_import_grouping() {
         output.stdout
     );
     let diagnostics = rule_diagnostics(&output, "merge_common_prefix_imports");
-    assert_eq!(diagnostics[0]["start"]["line"], 4);
+    assert_eq!(diagnostics[0]["start"]["line"], 8);
     assert_eq!(diagnostics[0]["arguments"]["line"], 1);
     assert_eq!(diagnostics[0]["arguments"]["prefix"], "crate::module");
     assert!(!output.has_rule("cfg_use_group_spacing"));

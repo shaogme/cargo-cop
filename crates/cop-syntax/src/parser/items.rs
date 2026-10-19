@@ -538,7 +538,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_function(&mut self, parent: AstNodeId) -> Option<FunctionItem> {
-        ItemSyntaxParser::parse_function(self.context(), parent)
+        ItemSyntaxParser::parse_function(self.context(), parent, false)
     }
 
     fn parse_macro_item(&mut self) -> Option<MacroInvocation> {

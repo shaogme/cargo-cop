@@ -122,6 +122,7 @@ impl ItemSyntaxParser {
     pub(super) fn parse_function(
         mut context: ParserContext<'_, '_>,
         parent: AstNodeId,
+        allow_variadic: bool,
     ) -> Option<FunctionItem> {
         let keyword_index = Recovery::function_keyword(context.tokens, *context.cursor)?;
         *context.cursor = keyword_index + 1;
@@ -164,6 +165,7 @@ impl ItemSyntaxParser {
             parent,
             start: parameter_open + 1,
             end: parameter_close,
+            allow_variadic,
             ast_nodes: context.ast_nodes,
             issues: context.issues,
         });

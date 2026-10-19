@@ -11,7 +11,11 @@ use crate::{
         ExpressionSyntaxKind, ParseIssue, ParseIssueCode, ParseIssueKind, PatternSyntax,
         PatternSyntaxKind, SyntaxNode, SyntaxNodeData, SyntaxNodeKind, UnsupportedConstructKind,
     },
-    parser::{patterns::PatternParser, token_cursor::SyntaxErrorKind, types::TypeParser},
+    parser::{
+        patterns::PatternParser,
+        token_cursor::{SyntaxError, SyntaxErrorKind},
+        types::TypeParser,
+    },
     recovery::Recovery,
     RustEdition, SourceFile, Token, TokenKind,
 };
@@ -203,28 +207,8 @@ impl ExpressionTree {
         };
         let syntax = match parsed {
             Ok(pattern) => pattern,
-            Err(error) => {
-                let kind = if error.kind() == SyntaxErrorKind::UnclosedDelimiter {
-                    ParseIssueKind::UnclosedDelimiter
-                } else {
-                    ParseIssueKind::UnexpectedToken
-                };
-                issues.push(AstFactory::parse_issue_with_boundary(
-                    kind,
-                    error.bounds(),
-                    LocalizedMessage::new(SYNTAX_ITEM_UNSUPPORTED),
-                    error.kind() == SyntaxErrorKind::UnclosedDelimiter,
-                ));
-                return None;
-            }
+            Err(error) => return Self::push_pattern_error(error, issues),
         };
-        let pattern_id = AstFactory::push_data_node(
-            ast_nodes,
-            parent,
-            SyntaxNodeKind::Pattern,
-            syntax.bounds(),
-            SyntaxNodeData::Pattern(syntax.clone()),
-        );
         let mut context = EmitContext {
             source,
             tokens,
@@ -232,9 +216,7 @@ impl ExpressionTree {
             ast_nodes,
             issues,
         };
-        Self::set_pattern_attributes(&syntax, pattern_id, &mut context);
-        Self::emit_pattern_children(&syntax, pattern_id, &mut context);
-        Some(pattern_id)
+        Some(Self::emit_pattern_syntax(&syntax, parent, &mut context))
     }
 
     pub(super) fn collect_parameter_pattern(
@@ -257,18 +239,63 @@ impl ExpressionTree {
         };
         let pattern_end = Self::top_level_token(tokens, range.start, range.end, ":")
             .map_or(parameter.end(), |index| tokens[index].start());
-        Self::push_pattern(
-            PatternInput {
-                source,
-                tokens,
-                parent,
-                start: tokens[range.start].start(),
-                end: pattern_end,
-                bind_bare_identifiers: true,
-                issues,
-            },
+        let pattern_range = Self::token_range(tokens, tokens[range.start].start(), pattern_end)
+            .unwrap_or(range.start..range.start);
+        if pattern_range.is_empty() {
+            return;
+        }
+        let parsed = if parameter.is_receiver() {
+            PatternParser::parse_receiver_range(tokens, pattern_range)
+        } else {
+            PatternParser::parse_binding_range(tokens, pattern_range)
+        };
+        let syntax = match parsed {
+            Ok(pattern) => pattern,
+            Err(error) => {
+                Self::push_pattern_error(error, issues);
+                return;
+            }
+        };
+        let mut context = EmitContext {
+            source,
+            tokens,
+            edition: None,
             ast_nodes,
+            issues,
+        };
+        Self::emit_pattern_syntax(&syntax, parent, &mut context);
+    }
+
+    fn push_pattern_error(error: SyntaxError, issues: &mut Vec<ParseIssue>) -> Option<AstNodeId> {
+        let kind = if error.kind() == SyntaxErrorKind::UnclosedDelimiter {
+            ParseIssueKind::UnclosedDelimiter
+        } else {
+            ParseIssueKind::UnexpectedToken
+        };
+        issues.push(AstFactory::parse_issue_with_boundary(
+            kind,
+            error.bounds(),
+            LocalizedMessage::new(SYNTAX_ITEM_UNSUPPORTED),
+            error.kind() == SyntaxErrorKind::UnclosedDelimiter,
+        ));
+        None
+    }
+
+    fn emit_pattern_syntax(
+        syntax: &PatternSyntax,
+        parent: AstNodeId,
+        context: &mut EmitContext<'_>,
+    ) -> AstNodeId {
+        let pattern_id = AstFactory::push_data_node(
+            context.ast_nodes,
+            parent,
+            SyntaxNodeKind::Pattern,
+            syntax.bounds(),
+            SyntaxNodeData::Pattern(syntax.clone()),
         );
+        Self::set_pattern_attributes(syntax, pattern_id, context);
+        Self::emit_pattern_children(syntax, pattern_id, context);
+        pattern_id
     }
 
     fn emit_compatibility_nodes(

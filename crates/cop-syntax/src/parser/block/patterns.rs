@@ -1,14 +1,13 @@
+use std::ops::Range;
+
 use crate::{
     ast::{AstNodeId, ParseIssue, SyntaxNode},
+    parser::types::{TypeInput, TypeParser},
     recovery::Recovery,
     RustEdition, SourceFile, Token,
 };
 
 use super::super::expression::{PatternInput, SyntaxCollector, SyntaxRequest};
-use crate::parser::{
-    token_cursor::TokenCursor,
-    types::{TypeInput, TypeParser},
-};
 
 pub(super) struct BlockPatternInput<'a> {
     pub(super) source: &'a SourceFile,
@@ -21,9 +20,65 @@ pub(super) struct BlockPatternInput<'a> {
     pub(super) issues: &'a mut Vec<ParseIssue>,
 }
 
+pub(super) struct LetPatternInput<'a> {
+    pub(super) source: &'a SourceFile,
+    pub(super) tokens: &'a [Token],
+    pub(super) parent: AstNodeId,
+    pub(super) pattern: Range<usize>,
+    pub(super) type_annotation: Option<Range<usize>>,
+    pub(super) ast_nodes: &'a mut Vec<SyntaxNode>,
+    pub(super) issues: &'a mut Vec<ParseIssue>,
+}
+
 pub(super) struct PatternCollector;
 
 impl PatternCollector {
+    pub(super) fn collect_let(input: LetPatternInput<'_>) {
+        let LetPatternInput {
+            source,
+            tokens,
+            parent,
+            pattern,
+            type_annotation,
+            ast_nodes,
+            issues,
+        } = input;
+        let pattern_bounds = Recovery::token_bounds(tokens, pattern);
+        SyntaxCollector::push_pattern(
+            PatternInput {
+                source,
+                tokens,
+                parent,
+                start: pattern_bounds.start,
+                end: pattern_bounds.end,
+                bind_bare_identifiers: true,
+                issues: &mut *issues,
+            },
+            &mut *ast_nodes,
+        );
+        if let Some(bounds) = type_annotation {
+            TypeParser::collect(TypeInput {
+                tokens,
+                bounds: bounds.clone(),
+                parent,
+                ast_nodes: &mut *ast_nodes,
+                issues: &mut *issues,
+            });
+            SyntaxCollector::collect(
+                SyntaxRequest {
+                    source,
+                    tokens,
+                    bounds,
+                    parent,
+                    expression_tree: false,
+                    edition: None,
+                },
+                &mut *ast_nodes,
+                &mut *issues,
+            );
+        }
+    }
+
     pub(super) fn collect_statement_pattern(input: BlockPatternInput<'_>) {
         let BlockPatternInput {
             source,
@@ -39,18 +94,6 @@ impl PatternCollector {
             return;
         };
         let (pattern_start_index, pattern_end_index) = match first {
-            "let" => (
-                start + 1,
-                SyntaxCollector::top_level_token(tokens, start + 1, end, ":")
-                    .into_iter()
-                    .chain(SyntaxCollector::top_level_token(
-                        tokens,
-                        start + 1,
-                        end,
-                        "=",
-                    ))
-                    .min(),
-            ),
             "if" | "while" => {
                 let Some(let_index) =
                     (start + 1..end).find(|index| Recovery::is_identifier(&tokens[*index], "let"))
@@ -87,65 +130,6 @@ impl PatternCollector {
             },
             ast_nodes,
         );
-    }
-
-    pub(super) fn collect_let_type(input: BlockPatternInput<'_>) {
-        let BlockPatternInput {
-            source,
-            tokens,
-            edition: _,
-            parent,
-            start,
-            end,
-            ast_nodes,
-            issues,
-        } = input;
-        let Some(first) = tokens.get(start).map(|token| token.text(source)) else {
-            return;
-        };
-        let has_let_pattern = first == "let"
-            || (matches!(first, "if" | "while")
-                && (start + 1..end).any(|index| Recovery::is_identifier(&tokens[index], "let")));
-        if !has_let_pattern {
-            return;
-        }
-        let Some(statement_cursor) = TokenCursor::new(tokens, start + 1..end) else {
-            return;
-        };
-        let equals = statement_cursor
-            .find_top_level_punctuation("=")
-            .unwrap_or(end);
-        let Some(pattern_cursor) = TokenCursor::new(tokens, start + 1..equals) else {
-            return;
-        };
-        let Some(colon) = pattern_cursor.find_top_level_punctuation(":") else {
-            return;
-        };
-        let type_end = pattern_cursor
-            .find_top_level_punctuation(";")
-            .unwrap_or(equals)
-            .min(equals);
-        if colon + 1 < type_end {
-            TypeParser::collect(TypeInput {
-                tokens,
-                bounds: colon + 1..type_end,
-                parent,
-                ast_nodes,
-                issues,
-            });
-            SyntaxCollector::collect(
-                SyntaxRequest {
-                    source,
-                    tokens,
-                    bounds: colon + 1..type_end,
-                    parent,
-                    expression_tree: false,
-                    edition: None,
-                },
-                ast_nodes,
-                issues,
-            );
-        }
     }
 
     pub(super) fn collect_match_pattern(input: BlockPatternInput<'_>) {

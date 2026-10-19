@@ -26,7 +26,7 @@ use super::{
 };
 
 use self::{
-    patterns::{BlockPatternInput, PatternCollector},
+    patterns::{BlockPatternInput, LetPatternInput, PatternCollector},
     statement::{StatementForm, StatementParser},
 };
 
@@ -304,18 +304,20 @@ impl BlockParser {
                     context.issues,
                 );
             } else {
-                if kind == SyntaxNodeKind::Statement {
+                if kind == SyntaxNodeKind::Statement && matches!(parsed.form, StatementForm::Let) {
+                    if let Some(pattern) = parsed.pattern.clone() {
+                        PatternCollector::collect_let(LetPatternInput {
+                            source: context.source,
+                            tokens: context.tokens,
+                            parent: node_id,
+                            pattern,
+                            type_annotation: parsed.type_annotation.clone(),
+                            ast_nodes: context.ast_nodes,
+                            issues: context.issues,
+                        });
+                    }
+                } else if kind == SyntaxNodeKind::Statement {
                     PatternCollector::collect_statement_pattern(BlockPatternInput {
-                        source: context.source,
-                        tokens: context.tokens,
-                        edition: context.edition,
-                        parent: node_id,
-                        start: start_index,
-                        end: statement_end,
-                        ast_nodes: context.ast_nodes,
-                        issues: context.issues,
-                    });
-                    PatternCollector::collect_let_type(BlockPatternInput {
                         source: context.source,
                         tokens: context.tokens,
                         edition: context.edition,
