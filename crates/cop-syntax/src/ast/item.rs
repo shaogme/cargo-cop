@@ -63,23 +63,23 @@ impl Item {
         }
     }
 
-    pub fn attributes(&self) -> &[Attribute] {
+    pub(crate) fn attributes(&self) -> &[Attribute] {
         &self.attributes
     }
 
-    pub fn visibility(&self) -> &Visibility {
+    pub(crate) fn visibility(&self) -> &Visibility {
         &self.visibility
     }
 
-    pub fn kind(&self) -> &ItemKind {
+    pub(crate) fn kind(&self) -> &ItemKind {
         &self.kind
     }
 
-    pub fn start(&self) -> usize {
+    pub(crate) fn start(&self) -> usize {
         self.start
     }
 
-    pub fn end(&self) -> usize {
+    pub(crate) fn end(&self) -> usize {
         self.end
     }
 }

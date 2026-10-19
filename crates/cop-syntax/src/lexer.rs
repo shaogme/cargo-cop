@@ -27,12 +27,67 @@ pub enum LiteralKind {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TokenKind {
     Identifier(String),
+    EditionKeyword(String),
+    ReservedKeyword(String),
+    WeakKeyword(String),
     Lifetime(String),
     Literal(LiteralKind),
     Punctuation(String),
     OpenDelimiter(Delimiter),
     CloseDelimiter(Delimiter),
     Unknown(char),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RustEdition {
+    E2015,
+    E2018,
+    E2021,
+    E2024,
+}
+
+impl RustEdition {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "2015" => Some(Self::E2015),
+            "2018" => Some(Self::E2018),
+            "2021" => Some(Self::E2021),
+            "2024" => Some(Self::E2024),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::E2015 => "2015",
+            Self::E2018 => "2018",
+            Self::E2021 => "2021",
+            Self::E2024 => "2024",
+        }
+    }
+
+    fn has_2018_keywords(self) -> bool {
+        !matches!(self, Self::E2015)
+    }
+}
+
+impl TokenKind {
+    pub(crate) fn word(&self) -> Option<&str> {
+        match self {
+            Self::Identifier(value)
+            | Self::EditionKeyword(value)
+            | Self::ReservedKeyword(value)
+            | Self::WeakKeyword(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn identifier(&self) -> Option<&str> {
+        match self {
+            Self::Identifier(value) | Self::WeakKeyword(value) => Some(value),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -75,6 +130,7 @@ pub struct RustLexer;
 
 struct Scanner<'a> {
     source: &'a SourceFile,
+    edition: Option<RustEdition>,
     cursor: usize,
     tokens: Vec<Token>,
     pending_trivia: Vec<Trivia>,
@@ -147,8 +203,17 @@ impl LexOutput {
 
 impl RustLexer {
     pub fn lex(source: &SourceFile) -> LexOutput {
+        Self::lex_for_edition(source, Some(RustEdition::E2021))
+    }
+
+    pub fn lex_with_edition(source: &SourceFile, edition: RustEdition) -> LexOutput {
+        Self::lex_for_edition(source, Some(edition))
+    }
+
+    pub(crate) fn lex_for_edition(source: &SourceFile, edition: Option<RustEdition>) -> LexOutput {
         Scanner {
             source,
+            edition,
             cursor: 0,
             tokens: Vec::new(),
             pending_trivia: Vec::new(),
@@ -586,7 +651,18 @@ impl Scanner<'_> {
         while self.current_character().is_some_and(is_identifier_continue) {
             self.advance_character();
         }
-        TokenKind::Identifier(self.source.text()[start..self.cursor].to_owned())
+        let identifier = self.source.text()[start..self.cursor].to_owned();
+        match (self.edition, identifier.as_str()) {
+            (Some(RustEdition::E2015), "dyn") => TokenKind::WeakKeyword(identifier),
+            (Some(edition), "async" | "await" | "dyn") if edition.has_2018_keywords() => {
+                TokenKind::EditionKeyword(identifier)
+            }
+            (Some(RustEdition::E2018 | RustEdition::E2021), "try") => {
+                TokenKind::ReservedKeyword(identifier)
+            }
+            (Some(RustEdition::E2024), "try" | "gen") => TokenKind::ReservedKeyword(identifier),
+            _ => TokenKind::Identifier(identifier),
+        }
     }
 
     fn scan_raw_identifier(&mut self, start: usize) -> TokenKind {
@@ -622,8 +698,8 @@ impl Scanner<'_> {
             };
         }
         const PUNCTUATION: &[&str] = &[
-            "<<=", ">>=", "...", "..=", "::", "->", "=>", "==", "!=", "<=", ">=", "&&", "||", "+=",
-            "-=", "*=", "/=", "%=", "^=", "&=", "|=", "<<", ">>", "..", "#", "$", "!",
+            "<<=", ">>=", "...", "..=", "::", "->", "=>", "==", "!=", "<=", ">=", "&&", "||", ">>",
+            "+=", "-=", "*=", "/=", "%=", "^=", "&=", "|=", "<<", "..", "#", "$", "!",
         ];
         let remaining = &self.source.text()[self.cursor..];
         if let Some(punctuation) = PUNCTUATION

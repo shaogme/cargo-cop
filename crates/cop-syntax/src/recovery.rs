@@ -4,12 +4,46 @@ use cop_model::{LocalizedMessage, SYNTAX_DELIMITER_UNCLOSED, SYNTAX_UNMATCHED_CL
 
 use crate::{
     ast::{AstFactory, CoverageStatus, ParseIssue, ParseIssueKind},
-    lexer::{Delimiter, Token, TokenKind},
+    lexer::{Delimiter, LiteralKind, Token, TokenKind},
 };
 
 pub(crate) struct Recovery;
 
+pub(crate) struct ExternBlockHeader {
+    pub(crate) unsafe_: bool,
+    pub(crate) abi: Option<Range<usize>>,
+    pub(crate) extern_index: usize,
+    pub(crate) open_index: usize,
+}
+
 impl Recovery {
+    pub(crate) fn extern_block_header(tokens: &[Token], start: usize) -> Option<ExternBlockHeader> {
+        let unsafe_ = Self::is_identifier(tokens.get(start)?, "unsafe");
+        let extern_index = start + usize::from(unsafe_);
+        if !Self::is_identifier(tokens.get(extern_index)?, "extern") {
+            return None;
+        }
+        let mut open_index = extern_index + 1;
+        let abi = match tokens.get(open_index).map(Token::kind) {
+            Some(TokenKind::Literal(LiteralKind::String)) => {
+                let token = &tokens[open_index];
+                open_index += 1;
+                Some(token.start()..token.end())
+            }
+            _ => None,
+        };
+        matches!(
+            tokens.get(open_index).map(Token::kind),
+            Some(TokenKind::OpenDelimiter(Delimiter::Brace))
+        )
+        .then_some(ExternBlockHeader {
+            unsafe_,
+            abi,
+            extern_index,
+            open_index,
+        })
+    }
+
     pub(crate) fn function_keyword(tokens: &[Token], start: usize) -> Option<usize> {
         let mut expects_abi = false;
         for (index, token) in tokens.iter().enumerate().skip(start).take(8) {
@@ -17,11 +51,11 @@ impl Recovery {
                 return Some(index);
             }
             match token.kind() {
+                TokenKind::EditionKeyword(value) if value == "async" => {
+                    expects_abi = false;
+                }
                 TokenKind::Identifier(value)
-                    if matches!(
-                        value.as_str(),
-                        "async" | "unsafe" | "const" | "extern" | "default"
-                    ) =>
+                    if matches!(value.as_str(), "unsafe" | "const" | "extern" | "default") =>
                 {
                     expects_abi = value == "extern";
                 }
@@ -65,10 +99,10 @@ impl Recovery {
     pub(crate) fn coverage_for(issues: &[ParseIssue]) -> CoverageStatus {
         if issues.is_empty() {
             CoverageStatus::Complete
-        } else if issues.iter().any(|issue| {
-            issue.kind() == ParseIssueKind::Lexical
-                || issue.kind() == ParseIssueKind::UnclosedDelimiter
-        }) {
+        } else if issues
+            .iter()
+            .any(|issue| issue.coverage() == CoverageStatus::Incomplete)
+        {
             CoverageStatus::Incomplete
         } else {
             CoverageStatus::Partial
@@ -84,9 +118,21 @@ impl Recovery {
                 TokenKind::CloseDelimiter(delimiter) => {
                     if stack.last().is_some_and(|(open, _)| open == delimiter) {
                         stack.pop();
+                    } else if let Some(position) =
+                        stack.iter().rposition(|(open, _)| open == delimiter)
+                    {
+                        for (_, start) in &stack[position + 1..] {
+                            issues.push(AstFactory::parse_issue_with_boundary(
+                                ParseIssueKind::UnclosedDelimiter,
+                                *start..token.start(),
+                                LocalizedMessage::new(SYNTAX_DELIMITER_UNCLOSED),
+                                false,
+                            ));
+                        }
+                        stack.truncate(position);
                     } else {
                         issues.push(AstFactory::parse_issue(
-                            ParseIssueKind::UnclosedDelimiter,
+                            ParseIssueKind::UnexpectedToken,
                             token.start()..token.end(),
                             LocalizedMessage::new(SYNTAX_UNMATCHED_CLOSE_DELIMITER),
                         ));
@@ -95,11 +141,13 @@ impl Recovery {
                 _ => {}
             }
         }
+        let source_end = tokens.last().map_or(0, Token::end);
         issues.extend(stack.into_iter().map(|(_, start)| {
-            AstFactory::parse_issue(
+            AstFactory::parse_issue_with_boundary(
                 ParseIssueKind::UnclosedDelimiter,
-                start..start,
+                start..source_end,
                 LocalizedMessage::new(SYNTAX_DELIMITER_UNCLOSED),
+                true,
             )
         }));
         issues
@@ -114,12 +162,17 @@ impl Recovery {
             match token.kind() {
                 TokenKind::OpenDelimiter(delimiter) => stack.push(*delimiter),
                 TokenKind::CloseDelimiter(delimiter) => {
-                    let expected = stack.pop()?;
-                    if expected != *delimiter {
-                        return None;
-                    }
-                    if stack.is_empty() {
-                        return Some(index);
+                    if stack.last() == Some(delimiter) {
+                        stack.pop();
+                        if stack.is_empty() {
+                            return Some(index);
+                        }
+                    } else if let Some(position) = stack.iter().rposition(|open| open == delimiter)
+                    {
+                        stack.truncate(position);
+                        if stack.is_empty() {
+                            return Some(index);
+                        }
                     }
                 }
                 _ => {}
@@ -288,34 +341,6 @@ impl Recovery {
         ranges
     }
 
-    pub(crate) fn has_top_level_separator(
-        tokens: &[Token],
-        start: usize,
-        end: usize,
-        separator: &str,
-    ) -> bool {
-        let mut index = start;
-        while index < end {
-            if let Some(close_index) = Self::generic_arguments_end(tokens, index, end) {
-                index = close_index + 1;
-                continue;
-            }
-            if Self::is_punctuation(&tokens[index], separator) {
-                return true;
-            }
-            if matches!(tokens[index].kind(), TokenKind::OpenDelimiter(_)) {
-                if let Some(close_index) = Self::matching_delimiter(tokens, index) {
-                    if close_index < end {
-                        index = close_index + 1;
-                        continue;
-                    }
-                }
-            }
-            index += 1;
-        }
-        false
-    }
-
     fn generic_arguments_end(tokens: &[Token], open_index: usize, end: usize) -> Option<usize> {
         if !Self::is_punctuation(tokens.get(open_index)?, "<") {
             return None;
@@ -324,7 +349,7 @@ impl Recovery {
             .checked_sub(1)
             .and_then(|index| tokens.get(index))?;
         let turbofish = Self::is_punctuation(previous, "::");
-        if !matches!(previous.kind(), TokenKind::Identifier(_)) && !turbofish {
+        if previous.kind().identifier().is_none() && !turbofish {
             return None;
         }
         let mut depth = 1usize;
@@ -384,6 +409,6 @@ impl Recovery {
     }
 
     pub(crate) fn is_identifier(token: &Token, expected: &str) -> bool {
-        matches!(token.kind(), TokenKind::Identifier(value) if value == expected)
+        token.kind().word().is_some_and(|value| value == expected)
     }
 }

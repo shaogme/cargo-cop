@@ -10,7 +10,8 @@ use cop_model::{
     NO_PARENT_GLOB_IMPORT, NO_PARENT_PRIVATE_PATH, PRIVATE_FIELDS_FOR_BEHAVIOR_TYPE,
 };
 use cop_syntax::{
-    CoverageStatus, Delimiter, Item, ItemKind, ParseOutput, SyntaxNode, Token, TokenKind,
+    ItemSyntaxKind, PathSyntax, SyntaxNode, SyntaxNodeKind, TypeSyntax, TypeSyntaxKind,
+    VisibilityKind,
 };
 
 use crate::support::{PathReference, RuleDiagnosticAdapter, RuleReport, SyntaxSupport};
@@ -31,9 +32,7 @@ impl SemanticRuleSet {
     ) {
         let adapter = RuleDiagnosticAdapter::new(configuration);
         for module in snapshot.modules() {
-            if module.parse_output().coverage() != CoverageStatus::Complete
-                || module.is_order_only()
-            {
+            if module.is_order_only() {
                 continue;
             }
             Self::parent_private_paths(module, snapshot, diagnostics, &adapter);
@@ -52,30 +51,18 @@ impl SemanticRuleSet {
         if module.is_crate_root() {
             return;
         }
-        for item in module.items() {
-            SyntaxSupport::for_each_syntax_node(item, &mut |node| {
-                let reference = match node {
-                    SyntaxNode::Path(path) => PathReference {
-                        segments: path.segments().to_vec(),
-                        start: path.start(),
-                        end: path.end(),
-                    },
-                    SyntaxNode::Macro(invocation) => PathReference {
-                        segments: invocation.path().segments().to_vec(),
-                        start: invocation.path().start(),
-                        end: invocation.path().end(),
-                    },
-                    _ => return,
-                };
-                check_parent_path(&reference, module, snapshot, diagnostics, adapter);
+        for item in module.item_nodes() {
+            SyntaxSupport::for_each_path_reference(module, item, true, &mut |reference| {
+                check_parent_path(reference, module, snapshot, diagnostics, adapter);
             });
-            if matches!(item.kind(), ItemKind::Impl(_)) {
-                for reference in SyntaxSupport::impl_header_references(module, item) {
-                    check_parent_path(&reference, module, snapshot, diagnostics, adapter);
-                }
-            }
-            if let ItemKind::Use(use_item) = item.kind() {
-                for leaf in SyntaxSupport::use_leaves(use_item.tree()) {
+            if item
+                .item_syntax()
+                .is_some_and(|data| matches!(data.kind(), ItemSyntaxKind::Use))
+            {
+                let Some(tree) = SyntaxSupport::use_tree_node_for_item(module, item) else {
+                    continue;
+                };
+                for leaf in SyntaxSupport::use_leaves(module, tree) {
                     if leaf.glob && leaf.path.first().is_some_and(|name| name == "super") {
                         adapter.push(
                             module,
@@ -93,6 +80,7 @@ impl SemanticRuleSet {
                             segments: leaf.path,
                             start: leaf.start,
                             end: leaf.end,
+                            is_macro: false,
                         },
                         module,
                         snapshot,
@@ -110,16 +98,32 @@ impl SemanticRuleSet {
         diagnostics: &mut Vec<Diagnostic>,
         adapter: &RuleDiagnosticAdapter<'_>,
     ) {
-        for item in module.items() {
-            if !matches!(item.kind(), ItemKind::Impl(_)) {
+        for item in module.item_nodes() {
+            if !item
+                .item_syntax()
+                .is_some_and(|data| matches!(data.kind(), ItemSyntaxKind::Impl))
+            {
                 continue;
             }
             let Some(target) = parse_impl_target(module, item) else {
                 continue;
             };
-            let resolution = snapshot.symbols().resolve_path(module, &target.path);
+            let resolution = snapshot.symbols().resolve_path_at(
+                module,
+                &target.path,
+                Some(target.bounds.clone()),
+            );
             if let Some(symbol) = resolution.symbol() {
                 if is_repository_type(symbol.kind()) {
+                    let impl_condition = module
+                        .configured_ast()
+                        .condition_for_span(item.start(), item.end());
+                    if !SyntaxSupport::conditions_may_coexist(
+                        impl_condition,
+                        symbol.cfg_condition(),
+                    ) {
+                        continue;
+                    }
                     if symbol.file_path() != module.file_path() {
                         adapter.push(
                             module,
@@ -217,40 +221,69 @@ impl SemanticRuleSet {
         diagnostics: &mut Vec<Diagnostic>,
         adapter: &RuleDiagnosticAdapter<'_>,
     ) {
-        for item in module.items() {
-            let (name, kind) = match item.kind() {
-                ItemKind::Struct(declaration) => (declaration.name(), SymbolKind::Struct),
-                ItemKind::Enum(declaration) => (declaration.name(), SymbolKind::Enum),
-                ItemKind::Union(declaration) => (declaration.name(), SymbolKind::Union),
+        for item_node in module.item_nodes() {
+            let Some(item_data) = item_node.item_syntax() else {
+                continue;
+            };
+            let (name, kind) = match item_data.kind() {
+                ItemSyntaxKind::Struct(name) => (name.as_deref(), SymbolKind::Struct),
+                ItemSyntaxKind::Enum(name) => (name.as_deref(), SymbolKind::Enum),
+                ItemSyntaxKind::Union(name) => (name.as_deref(), SymbolKind::Union),
                 _ => continue,
             };
             let Some(name) = name else {
                 continue;
             };
+            let type_condition = module
+                .configured_ast()
+                .condition_for_span(item_node.start(), item_node.end());
             let has_impl = snapshot.modules().iter().any(|candidate_module| {
-                candidate_module.items().iter().any(|candidate| {
-                    let ItemKind::Impl(_) = candidate.kind() else {
+                candidate_module.item_nodes().iter().any(|candidate| {
+                    if !candidate
+                        .item_syntax()
+                        .is_some_and(|data| matches!(data.kind(), ItemSyntaxKind::Impl))
+                    {
                         return false;
-                    };
+                    }
                     let Some(target) = parse_impl_target(candidate_module, candidate) else {
                         return false;
                     };
-                    snapshot
-                        .symbols()
-                        .resolve_path(candidate_module, &target.path)
-                        .symbol()
-                        .is_some_and(|symbol| {
-                            symbol.kind() == kind
-                                && symbol.name() == name
-                                && symbol.file_path() == module.file_path()
-                                && symbol.namespace() == module.namespace()
-                        })
+                    let impl_condition = candidate_module
+                        .configured_ast()
+                        .condition_for_span(candidate.start(), candidate.end());
+                    SyntaxSupport::conditions_may_coexist(type_condition, impl_condition)
+                        && snapshot
+                            .symbols()
+                            .resolve_path_at(
+                                candidate_module,
+                                &target.path,
+                                Some(target.bounds.clone()),
+                            )
+                            .symbol()
+                            .is_some_and(|symbol| {
+                                symbol.kind() == kind
+                                    && symbol.name() == name
+                                    && symbol.file_path() == module.file_path()
+                                    && symbol.namespace() == module.namespace()
+                            })
                 })
             });
             if !has_impl {
                 continue;
             }
-            for field in public_fields(module, item) {
+            for field in public_fields(module, item_node) {
+                if !module
+                    .configured_ast()
+                    .is_enabled_range(field.start(), field.end())
+                    || !SyntaxSupport::conditions_may_coexist(
+                        type_condition,
+                        module
+                            .configured_ast()
+                            .condition_for_span(field.start(), field.end()),
+                    )
+                {
+                    continue;
+                }
                 adapter.push(
                     module,
                     diagnostics,
@@ -273,8 +306,12 @@ impl SemanticRuleSet {
         if module.is_crate_root() {
             return;
         }
-        for item in module.items() {
-            if matches!(item.kind(), ItemKind::Function(_)) && SyntaxSupport::is_non_private(item) {
+        for item in module.item_nodes() {
+            let is_public_function = item.item_syntax().is_some_and(|item_data| {
+                matches!(item_data.kind(), ItemSyntaxKind::Function { .. })
+                    && !matches!(item_data.visibility().kind(), VisibilityKind::Private)
+            });
+            if is_public_function {
                 adapter.push(
                     module,
                     diagnostics,
@@ -296,16 +333,39 @@ fn check_parent_path(
     diagnostics: &mut Vec<Diagnostic>,
     adapter: &RuleDiagnosticAdapter<'_>,
 ) {
+    if !module
+        .configured_ast()
+        .is_enabled_range(reference.start, reference.end)
+        || !module.configured_ast().is_supported_range(
+            module.parse_output(),
+            reference.start,
+            reference.end,
+        )
+    {
+        return;
+    }
     if !matches!(
         reference.segments.first().map(String::as_str),
         Some("super" | "crate")
     ) {
         return;
     }
-    let resolution = snapshot.symbols().resolve_path(module, &reference.segments);
+    let resolution = snapshot.symbols().resolve_path_at(
+        module,
+        &reference.segments,
+        Some(reference.start..reference.end),
+    );
     let Some(symbol) = resolution.symbol() else {
         return;
     };
+    if !SyntaxSupport::conditions_may_coexist(
+        module
+            .configured_ast()
+            .condition_for_span(reference.start, reference.end),
+        symbol.cfg_condition(),
+    ) {
+        return;
+    }
     if !matches!(symbol.visibility(), SymbolVisibility::Private)
         || symbol.namespace().len() >= module.namespace().len()
         || !module.namespace().starts_with(symbol.namespace())
@@ -325,119 +385,54 @@ fn check_parent_path(
     );
 }
 
-fn parse_impl_target(module: &ModuleNode, item: &Item) -> Option<ImplTarget> {
-    let output = module.parse_output();
-    let tokens = output
-        .tokens()
-        .iter()
-        .filter(|token| token.start() >= item.start() && token.end() <= item.end())
-        .collect::<Vec<_>>();
-    let impl_index = tokens
-        .iter()
-        .position(|token| token.text(output.source()) == "impl")?;
-    let body_index = tokens
-        .iter()
-        .position(|token| matches!(token.kind(), TokenKind::OpenDelimiter(Delimiter::Brace)))?;
-    let mut generic_depth = 0usize;
-    let mut trait_for = None;
-    for (index, token) in tokens
-        .iter()
-        .enumerate()
-        .take(body_index)
-        .skip(impl_index + 1)
+fn parse_impl_target(module: &ModuleNode, item: &SyntaxNode) -> Option<ImplTarget> {
+    let syntax = item.impl_syntax()?;
+    let target = syntax.self_type()?;
+    let path = impl_target_path(target)?;
+    let target_bounds = target.bounds();
+    if !module
+        .configured_ast()
+        .is_enabled_range(target_bounds.start, target_bounds.end)
+        || !module.configured_ast().is_supported_range(
+            module.parse_output(),
+            target_bounds.start,
+            target_bounds.end,
+        )
     {
-        let text = token.text(output.source());
-        match text {
-            "<" => generic_depth += 1,
-            ">" => generic_depth = generic_depth.saturating_sub(1),
-            ">>" => generic_depth = generic_depth.saturating_sub(2),
-            "for"
-                if generic_depth == 0
-                    && tokens
-                        .get(index + 1)
-                        .is_some_and(|token| token.text(output.source()) != "<") =>
-            {
-                trait_for = Some(index);
-                break;
-            }
-            _ => {}
-        }
-    }
-    let trait_impl = trait_for.is_some();
-    let mut target_start = trait_for.map_or(impl_index + 1, |index| index + 1);
-    if !trait_impl
-        && tokens
-            .get(target_start)
-            .is_some_and(|token| token.text(output.source()) == "<")
-    {
-        let mut depth = 0usize;
-        for (index, token) in tokens
-            .iter()
-            .enumerate()
-            .take(body_index)
-            .skip(target_start)
-        {
-            match token.text(output.source()) {
-                "<" => depth += 1,
-                ">" => {
-                    depth = depth.saturating_sub(1);
-                    if depth == 0 {
-                        target_start = index + 1;
-                        break;
-                    }
-                }
-                ">>" => {
-                    depth = depth.saturating_sub(2);
-                    if depth == 0 {
-                        target_start = index + 1;
-                        break;
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-    let mut path = Vec::new();
-    let mut expect_segment = true;
-    for token in tokens
-        .iter()
-        .skip(target_start)
-        .take(body_index - target_start)
-    {
-        let text = token.text(output.source());
-        if matches!(text, "<" | "(" | "&" | "*" | "mut" | "const" | "dyn") {
-            if path.is_empty() {
-                continue;
-            }
-            if text == "<" || text == "(" {
-                break;
-            }
-        }
-        match token.kind() {
-            TokenKind::Identifier(identifier)
-                if expect_segment
-                    && !matches!(identifier.as_str(), "where" | "unsafe" | "default") =>
-            {
-                path.push(identifier.clone());
-                expect_segment = false;
-            }
-            TokenKind::Punctuation(punctuation) if punctuation == "::" => {
-                expect_segment = true;
-            }
-            _ if path.is_empty() => {}
-            _ => break,
-        }
-    }
-    if path.is_empty() {
         return None;
     }
-    let start = tokens[target_start].start();
-    let end = tokens[body_index].start();
     Some(ImplTarget {
         path,
-        trait_impl,
-        bounds: start..end,
+        trait_impl: syntax.is_trait_impl(),
+        bounds: target_bounds,
     })
+}
+
+fn impl_target_path(ty: &TypeSyntax) -> Option<Vec<String>> {
+    match ty.kind() {
+        TypeSyntaxKind::Path(path) => {
+            if path.qualified_self().is_some() {
+                return None;
+            }
+            Some(path_segments(path))
+        }
+        TypeSyntaxKind::Reference { target, .. }
+        | TypeSyntaxKind::Pointer { target, .. }
+        | TypeSyntaxKind::Parenthesized(target) => impl_target_path(target),
+        _ => None,
+    }
+}
+
+fn path_segments(path: &PathSyntax) -> Vec<String> {
+    let mut segments = path
+        .segments()
+        .iter()
+        .map(|segment| segment.name().to_owned())
+        .collect::<Vec<_>>();
+    if path.has_leading_colon() {
+        segments.insert(0, "::".to_owned());
+    }
+    segments
 }
 
 fn is_repository_type(kind: SymbolKind) -> bool {
@@ -500,111 +495,29 @@ fn is_builtin_type(name: Option<&str>) -> bool {
     })
 }
 
-fn public_fields<'a>(module: &'a ModuleNode, item: &Item) -> Vec<&'a Token> {
+fn public_fields<'a>(module: &'a ModuleNode, item: &'a SyntaxNode) -> Vec<&'a SyntaxNode> {
     let output = module.parse_output();
-    let tokens = output
-        .tokens()
-        .iter()
-        .filter(|token| token.start() >= item.start() && token.end() <= item.end())
-        .collect::<Vec<_>>();
-    let Some(open_index) = field_group_open(&tokens, output) else {
-        return Vec::new();
-    };
-    let Some(close_index) = matching_group(&tokens, open_index) else {
-        return Vec::new();
-    };
-    split_field_ranges(&tokens, open_index + 1, close_index)
-        .into_iter()
-        .filter_map(|range| {
-            let mut index = range.start;
-            while index + 1 < range.end
-                && tokens[index].text(output.source()) == "#"
-                && matches!(
-                    tokens[index + 1].kind(),
-                    TokenKind::OpenDelimiter(Delimiter::Bracket)
-                )
-            {
-                index = matching_group(&tokens, index + 1)? + 1;
-            }
-            tokens
-                .get(index)
-                .copied()
-                .filter(|token| token.text(output.source()) == "pub")
-        })
-        .collect()
-}
-
-fn field_group_open(tokens: &[&Token], output: &ParseOutput) -> Option<usize> {
-    let declaration_keyword = tokens
-        .iter()
-        .position(|token| matches!(token.text(output.source()), "struct" | "enum" | "union"))?;
-    let name_index = (declaration_keyword + 1..tokens.len())
-        .find(|index| matches!(tokens[*index].kind(), TokenKind::Identifier(_)))?;
-    let mut angle_depth = 0usize;
-    let mut tuple_group = None;
-    for (index, token) in tokens.iter().enumerate().skip(name_index + 1) {
-        match token.text(output.source()) {
-            "<" => angle_depth += 1,
-            ">" => angle_depth = angle_depth.saturating_sub(1),
-            ">>" => angle_depth = angle_depth.saturating_sub(2),
-            "{" if angle_depth == 0 => return Some(index),
-            "(" if angle_depth == 0 && tuple_group.is_none() => tuple_group = Some(index),
-            _ => {}
+    let mut fields = Vec::new();
+    let mut pending = item.children().to_vec();
+    while let Some(id) = pending.pop() {
+        let Some(node) = output.node(id) else {
+            continue;
+        };
+        if node.kind() == SyntaxNodeKind::Field
+            && node.field_visibility().is_some_and(|visibility| {
+                !matches!(visibility.kind(), VisibilityKind::Private)
+                    && (visibility.start() == visibility.end()
+                        || module.configured_ast().is_supported_range(
+                            output,
+                            visibility.start(),
+                            visibility.end(),
+                        ))
+            })
+        {
+            fields.push(node);
+        } else {
+            pending.extend(node.children().iter().copied());
         }
     }
-    tuple_group
-}
-
-fn matching_group(tokens: &[&Token], open: usize) -> Option<usize> {
-    let delimiter = match tokens.get(open)?.kind() {
-        TokenKind::OpenDelimiter(delimiter) => *delimiter,
-        _ => return None,
-    };
-    let mut depth = 0usize;
-    for (index, token) in tokens.iter().enumerate().skip(open) {
-        match token.kind() {
-            TokenKind::OpenDelimiter(found) if *found == delimiter => depth += 1,
-            TokenKind::CloseDelimiter(found) if *found == delimiter => {
-                depth = depth.checked_sub(1)?;
-                if depth == 0 {
-                    return Some(index);
-                }
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
-fn split_field_ranges(tokens: &[&Token], start: usize, end: usize) -> Vec<Range<usize>> {
-    let mut ranges = Vec::new();
-    let mut field_start = start;
-    let mut delimiter_depth = 0usize;
-    let mut angle_depth = 0usize;
-    for (index, token) in tokens.iter().enumerate().take(end).skip(start) {
-        match token.kind() {
-            TokenKind::OpenDelimiter(_) => delimiter_depth += 1,
-            TokenKind::CloseDelimiter(_) => delimiter_depth = delimiter_depth.saturating_sub(1),
-            TokenKind::Punctuation(value) if value == "<" => angle_depth += 1,
-            TokenKind::Punctuation(value) if value == ">" => {
-                angle_depth = angle_depth.saturating_sub(1);
-            }
-            TokenKind::Punctuation(value) if value == ">>" => {
-                angle_depth = angle_depth.saturating_sub(2);
-            }
-            TokenKind::Punctuation(value)
-                if value == "," && delimiter_depth == 0 && angle_depth == 0 =>
-            {
-                if field_start < index {
-                    ranges.push(field_start..index);
-                }
-                field_start = index + 1;
-            }
-            _ => {}
-        }
-    }
-    if field_start < end {
-        ranges.push(field_start..end);
-    }
-    ranges
+    fields
 }

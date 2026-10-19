@@ -275,6 +275,22 @@ fn process_payload(payload: RequestPayload) {
 
 ```
 
+### 3.6 外部模块路径不得访问父目录
+
+外部模块声明（以分号结尾的 `mod name;`）上的 `#[path]` 字符串，按 Rust 字符串规则解码后，不得包含完整的 `..` 路径分量。检查时将 `/` 和 `\` 都视为路径分隔符；`foo..rs`、`.../child.rs` 等名称不属于父目录分量。即使路径归一化后仍位于原目录内，只要源码包含 `..` 分量也禁止。
+
+该约束也适用于 `cfg_attr` 中递归嵌套的 `path` 属性，不受对应 `cfg`、feature 或 target 分支是否启用影响。它不适用于 inline module（带 `{ ... }` 的 `mod name { ... }`）。
+
+```rust
+// 错误：路径包含父目录分量 / Bad: the path contains a parent-directory component
+#[path = "../shared.rs"]
+mod shared;
+
+// 正确：路径只在当前目录内解析 / Good: the path stays within the current directory
+#[path = "shared.rs"]
+mod shared;
+```
+
 ---
 
 ## 4. 类型与接口质量约束 (Type & Interface Quality)

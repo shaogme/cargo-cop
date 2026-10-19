@@ -1,29 +1,45 @@
 use std::{ops::Range, path::Path};
 
-use cop_analysis::{AnalysisSnapshot, ModuleNode};
+use cop_analysis::{AnalysisSnapshot, CfgCondition, CfgDecision, ModuleNode};
 use cop_config::ResolvedConfig;
 use cop_model::{
     Diagnostic, LocalizedMessage, RuleId, CHILD_MODULE_LINE_COUNT, CHILD_MODULE_VISIBILITY,
     ITEM_SPACING, MODULE_FILE_LAYOUT, NO_PARENT_PATH_ATTRIBUTE, OUT_OF_LINE_MODULES_AT_SCOPE_START,
 };
-use cop_syntax::{
-    CoverageStatus, Delimiter, Item, ItemKind, LiteralKind, ParseOutput, RustStringLiteral, Token,
-    TokenKind, VisibilityKind,
-};
+use cop_syntax::{ItemSyntaxKind, ParseOutput, SyntaxNode, SyntaxNodeKind, VisibilityKind};
 
 use crate::support::{RuleDiagnosticAdapter, RuleReport, SyntaxSupport};
 
 pub(super) struct ModuleRuleSet;
 
 fn check_item_spacing(
-    items: &[Item],
+    items: &[&SyntaxNode],
     module: &ModuleNode,
     diagnostics: &mut Vec<Diagnostic>,
     adapter: &RuleDiagnosticAdapter<'_>,
 ) {
-    for pair in items.windows(2) {
-        let previous = &pair[0];
-        let current = &pair[1];
+    check_item_spacing_nodes(items, module, diagnostics, adapter);
+}
+
+fn check_item_spacing_nodes(
+    nodes: &[&SyntaxNode],
+    module: &ModuleNode,
+    diagnostics: &mut Vec<Diagnostic>,
+    adapter: &RuleDiagnosticAdapter<'_>,
+) {
+    for pair in nodes.windows(2) {
+        let previous = pair[0];
+        let current = pair[1];
+        if !SyntaxSupport::conditions_may_coexist(
+            module
+                .configured_ast()
+                .condition_for_span(previous.start(), previous.end()),
+            module
+                .configured_ast()
+                .condition_for_span(current.start(), current.end()),
+        ) {
+            continue;
+        }
         let Some(expected_lines) = SyntaxSupport::expected_spacing_blank_lines(previous, current)
         else {
             continue;
@@ -47,120 +63,55 @@ fn check_item_spacing(
             );
         }
     }
-    for item in items {
-        match item.kind() {
-            ItemKind::Trait(trait_item) => {
-                check_item_spacing(trait_item.items(), module, diagnostics, adapter);
-            }
-            ItemKind::Impl(impl_item) => {
-                check_item_spacing(impl_item.items(), module, diagnostics, adapter);
-            }
-            _ => {}
+    for node in nodes {
+        if node.item_syntax().is_some_and(|item_data| {
+            matches!(
+                item_data.kind(),
+                ItemSyntaxKind::Trait(_) | ItemSyntaxKind::Impl
+            )
+        }) {
+            let children = SyntaxSupport::child_item_nodes_for_node(module, node);
+            check_item_spacing_nodes(&children, module, diagnostics, adapter);
         }
     }
 }
 
-fn for_each_test_range(items: &[Item], output: &ParseOutput, excluded: &mut Vec<Range<usize>>) {
-    for item in items {
-        if SyntaxSupport::is_cfg_test(item.attributes(), output) {
-            excluded.push(item.start()..item.end());
+fn for_each_test_range(output: &ParseOutput, excluded: &mut Vec<Range<usize>>) {
+    let Some(root) = output
+        .syntax_nodes()
+        .iter()
+        .find(|node| node.parent().is_none())
+    else {
+        return;
+    };
+    let mut pending = vec![root.id()];
+    while let Some(id) = pending.pop() {
+        let Some(node) = output.node(id) else {
+            continue;
+        };
+        if SyntaxSupport::is_cfg_test(node.attributes()) {
+            excluded.push(node.start()..node.end());
             continue;
         }
-        match item.kind() {
-            ItemKind::Module(child) => for_each_test_range(child.items(), output, excluded),
-            ItemKind::Trait(trait_item) => {
-                for_each_test_range(trait_item.items(), output, excluded);
-            }
-            ItemKind::Impl(impl_item) => for_each_test_range(impl_item.items(), output, excluded),
-            _ => {}
-        }
+        pending.extend(node.children().iter().rev().copied());
     }
-}
-
-fn check_parent_path_attribute_tokens(
-    tokens: &[&Token],
-    output: &ParseOutput,
-    depth: usize,
-) -> bool {
-    if depth > 16 {
-        return false;
-    }
-    if let [name, equals, value] = tokens {
-        if name.text(output.source()) == "path"
-            && equals.text(output.source()) == "="
-            && matches!(value.kind(), TokenKind::Literal(LiteralKind::String))
-        {
-            return RustStringLiteral::decode(value.text(output.source()))
-                .is_some_and(|path| has_parent_component(&path));
-        }
-        return false;
-    }
-    let Some((open_index, close_index)) = cfg_attr_bounds(tokens, output) else {
-        return false;
-    };
-    let Some(arguments) = split_cfg_attr_arguments(tokens, open_index, close_index) else {
-        return false;
-    };
-    arguments
-        .iter()
-        .skip(1)
-        .any(|range| check_parent_path_attribute_tokens(&tokens[range.clone()], output, depth + 1))
-}
-
-fn cfg_attr_bounds(tokens: &[&Token], output: &ParseOutput) -> Option<(usize, usize)> {
-    if tokens.len() < 3 || tokens[0].text(output.source()) != "cfg_attr" {
-        return None;
-    }
-    if !matches!(
-        tokens[1].kind(),
-        TokenKind::OpenDelimiter(Delimiter::Parenthesis)
-    ) || !matches!(
-        tokens.last()?.kind(),
-        TokenKind::CloseDelimiter(Delimiter::Parenthesis)
-    ) {
-        return None;
-    }
-    Some((1, tokens.len() - 1))
-}
-
-fn split_cfg_attr_arguments(
-    tokens: &[&Token],
-    open_index: usize,
-    close_index: usize,
-) -> Option<Vec<Range<usize>>> {
-    let mut ranges = Vec::new();
-    let mut start = open_index + 1;
-    let mut nesting = 0usize;
-    for (index, token) in tokens
-        .iter()
-        .enumerate()
-        .take(close_index)
-        .skip(open_index + 1)
-    {
-        match token.kind() {
-            TokenKind::OpenDelimiter(_) => nesting += 1,
-            TokenKind::CloseDelimiter(_) => nesting = nesting.checked_sub(1)?,
-            TokenKind::Punctuation(punctuation) if punctuation == "," && nesting == 0 => {
-                if start == index {
-                    return None;
-                }
-                ranges.push(start..index);
-                start = index + 1;
-            }
-            _ => {}
-        }
-    }
-    if nesting != 0 {
-        return None;
-    }
-    if start < close_index {
-        ranges.push(start..close_index);
-    }
-    (ranges.len() >= 2).then_some(ranges)
 }
 
 fn has_parent_component(path: &str) -> bool {
     path.split(['/', '\\']).any(|component| component == "..")
+}
+
+fn merge_condition(parent: Option<&str>, local: Option<&str>) -> Option<String> {
+    match (parent, local) {
+        (None, None) => None,
+        (Some(condition), None) | (None, Some(condition)) => Some(condition.to_owned()),
+        (Some(parent), Some(local)) => {
+            match (CfgCondition::parse(parent), CfgCondition::parse(local)) {
+                (Ok(parent), Ok(local)) => Some(CfgCondition::all([parent, local]).normalized()),
+                _ => Some(format!("all({parent}, {local})")),
+            }
+        }
+    }
 }
 
 fn check_parent_path_attributes(
@@ -168,39 +119,22 @@ fn check_parent_path_attributes(
     diagnostics: &mut Vec<Diagnostic>,
     adapter: &RuleDiagnosticAdapter<'_>,
 ) {
-    let output = module.parse_output();
-    for item in module.source_items() {
-        let ItemKind::Module(child) = item.kind() else {
+    for item in module.item_nodes() {
+        let Some(ItemSyntaxKind::Module {
+            name: _,
+            inline: false,
+        }) = item.item_syntax().map(|data| data.kind())
+        else {
             continue;
         };
-        if child.is_inline() {
+        let Some(configured) = module.configured_ast().node(item.id()) else {
             continue;
-        }
-        for attribute in item.attributes() {
-            if attribute.is_inner() || attribute.path().len() != 1 {
-                continue;
-            }
-            let attribute_name = attribute.path()[0].as_str();
-            if !matches!(attribute_name, "path" | "cfg_attr") {
-                continue;
-            }
-            let tokens = SyntaxSupport::token_range(output, attribute.start(), attribute.end())
-                .collect::<Vec<_>>();
-            let body_start = if tokens
-                .get(1)
-                .is_some_and(|token| token.text(output.source()) == "!")
-            {
-                3
-            } else {
-                2
-            };
-            let Some(body_end) = tokens.len().checked_sub(1) else {
+        };
+        for path_attribute in configured.attribute_evaluation().path_attributes() {
+            let Some(path) = path_attribute.path() else {
                 continue;
             };
-            let Some(body) = tokens.get(body_start..body_end) else {
-                continue;
-            };
-            if !check_parent_path_attribute_tokens(body, output, 0) {
+            if !has_parent_component(path) {
                 continue;
             }
             adapter.push(
@@ -209,8 +143,12 @@ fn check_parent_path_attributes(
                 RuleReport::new(
                     RuleId::NoParentPathAttribute,
                     LocalizedMessage::new(NO_PARENT_PATH_ATTRIBUTE),
-                    Some(attribute.start()..attribute.end()),
-                ),
+                    Some(path_attribute.start()..path_attribute.end()),
+                )
+                .with_cfg_condition(merge_condition(
+                    configured.effective_condition(),
+                    path_attribute.condition(),
+                )),
             );
         }
     }
@@ -224,17 +162,11 @@ impl ModuleRuleSet {
     ) {
         let adapter = RuleDiagnosticAdapter::new(configuration);
         for module in snapshot.modules() {
-            if module.parse_output().coverage() != CoverageStatus::Complete {
-                if !module.is_order_only() {
-                    Self::child_module_visibility(snapshot, module, diagnostics, &adapter);
-                }
-                continue;
-            }
-            Self::out_of_line_modules(module, diagnostics, &adapter);
             Self::no_parent_path_attribute(module, diagnostics, &adapter);
             if module.is_order_only() {
                 continue;
             }
+            Self::out_of_line_modules(module, diagnostics, &adapter);
             Self::module_layout(module, diagnostics, &adapter);
             Self::child_module_visibility(snapshot, module, diagnostics, &adapter);
             Self::item_spacing(module, diagnostics, &adapter);
@@ -274,12 +206,21 @@ impl ModuleRuleSet {
         diagnostics: &mut Vec<Diagnostic>,
         adapter: &RuleDiagnosticAdapter<'_>,
     ) {
-        let mut encountered_after_module_prefix = false;
-        for item in module.source_items() {
-            match item.kind() {
-                ItemKind::ExternCrate(_) => {}
-                ItemKind::Module(child) if !child.is_inline() => {
-                    if encountered_after_module_prefix {
+        let mut preceding_non_modules: Vec<Option<String>> = Vec::new();
+        for item in module.item_nodes() {
+            let condition = module
+                .configured_ast()
+                .condition_for_span(item.start(), item.end())
+                .map(str::to_owned);
+            match item.item_syntax().map(|data| data.kind()) {
+                Some(ItemSyntaxKind::ExternCrate { .. }) => {}
+                Some(ItemSyntaxKind::Module { inline: false, .. }) => {
+                    if preceding_non_modules.iter().any(|previous| {
+                        SyntaxSupport::conditions_may_coexist(
+                            condition.as_deref(),
+                            previous.as_deref(),
+                        )
+                    }) {
                         adapter.push(
                             module,
                             diagnostics,
@@ -291,7 +232,7 @@ impl ModuleRuleSet {
                         );
                     }
                 }
-                _ => encountered_after_module_prefix = true,
+                _ => preceding_non_modules.push(condition),
             }
         }
     }
@@ -310,21 +251,29 @@ impl ModuleRuleSet {
         diagnostics: &mut Vec<Diagnostic>,
         adapter: &RuleDiagnosticAdapter<'_>,
     ) {
-        for item in module.items() {
-            let ItemKind::Module(child) = item.kind() else {
+        for item in module.item_nodes() {
+            let Some(item_data) = item.item_syntax() else {
+                continue;
+            };
+            let ItemSyntaxKind::Module { name, inline } = item_data.kind() else {
                 continue;
             };
             if !SyntaxSupport::is_non_private(item) {
                 continue;
             }
             let visibility_allows_exception =
-                Self::visibility_allows_exception(item.visibility().kind());
+                Self::visibility_allows_exception(item_data.visibility().kind());
             let contents_are_declarative = visibility_allows_exception
                 && snapshot
-                    .child_module(module, child.name())
+                    .child_module(module, name)
                     .is_some_and(|child_module| {
-                        child_module.parse_output().coverage() == CoverageStatus::Complete
-                            && child_module.items().iter().all(Self::is_declarative_item)
+                        Self::has_declarative_coverage(
+                            child_module,
+                            inline.then_some(child_module.scope_range()),
+                        ) && child_module
+                            .item_nodes()
+                            .iter()
+                            .all(|child| Self::is_declarative_item(child))
                     });
             if contents_are_declarative {
                 continue;
@@ -334,26 +283,72 @@ impl ModuleRuleSet {
                 diagnostics,
                 RuleReport::new(
                     RuleId::ChildModuleVisibility,
-                    LocalizedMessage::new(CHILD_MODULE_VISIBILITY)
-                        .with_text("module", child.name()),
+                    LocalizedMessage::new(CHILD_MODULE_VISIBILITY).with_text("module", name),
                     Some(item.start()..item.end()),
                 ),
             );
         }
     }
 
-    fn is_declarative_item(item: &Item) -> bool {
-        match item.kind() {
-            ItemKind::Module(_)
-            | ItemKind::MacroDefinition(_)
-            | ItemKind::Struct(_)
-            | ItemKind::Enum(_)
-            | ItemKind::Union(_)
-            | ItemKind::TypeAlias(_) => true,
-            ItemKind::Trait(_) | ItemKind::Constant(_) | ItemKind::Static(_) => true,
-            ItemKind::Use(_) => {
-                matches!(item.visibility().kind(), VisibilityKind::Private)
-                    || Self::visibility_allows_exception(item.visibility().kind())
+    fn has_declarative_coverage(module: &ModuleNode, scope: Option<Range<usize>>) -> bool {
+        let output = module.parse_output();
+        let has_issues = output.issues().iter().any(|issue| {
+            scope.as_ref().map_or(true, |range| {
+                range.start <= issue.start() && issue.end() <= range.end
+            }) && module.configured_ast().is_issue_enabled(issue)
+        });
+        let has_non_declarative_opaque = output
+            .syntax_nodes()
+            .iter()
+            .filter(|node| {
+                node.kind() == SyntaxNodeKind::Opaque
+                    && scope.as_ref().map_or(true, |range| {
+                        range.start <= node.start() && node.end() <= range.end
+                    })
+                    && module
+                        .configured_ast()
+                        .node(node.id())
+                        .is_some_and(|configured| configured.decision() != CfgDecision::False)
+                    && {
+                        let issues = output.issues().iter().filter(|issue| {
+                            node.start() <= issue.start() && issue.end() <= node.end()
+                        });
+                        let mut has_issue = false;
+                        let mut has_enabled_issue = false;
+                        for issue in issues {
+                            has_issue = true;
+                            has_enabled_issue |= module.configured_ast().is_issue_enabled(issue);
+                        }
+                        !has_issue || has_enabled_issue
+                    }
+            })
+            .any(|node| {
+                node.parent()
+                    .and_then(|parent| output.node(parent))
+                    .map_or(true, |parent| {
+                        parent.kind() != SyntaxNodeKind::MacroDefinition
+                    })
+            });
+        !has_issues && !has_non_declarative_opaque
+    }
+
+    fn is_declarative_item(item: &SyntaxNode) -> bool {
+        let Some(item_data) = item.item_syntax() else {
+            return false;
+        };
+        match item_data.kind() {
+            ItemSyntaxKind::Module { .. }
+            | ItemSyntaxKind::MacroDefinition(_)
+            | ItemSyntaxKind::Struct(_)
+            | ItemSyntaxKind::Enum(_)
+            | ItemSyntaxKind::Union(_)
+            | ItemSyntaxKind::TypeAlias(_) => true,
+            ItemSyntaxKind::Trait(_) | ItemSyntaxKind::Constant(_) | ItemSyntaxKind::Static(_) => {
+                true
+            }
+            ItemSyntaxKind::Use => {
+                matches!(item_data.visibility().kind(), VisibilityKind::Private)
+                    || Self::visibility_allows_exception(item_data.visibility().kind())
             }
             _ => false,
         }
@@ -372,7 +367,8 @@ impl ModuleRuleSet {
         diagnostics: &mut Vec<Diagnostic>,
         adapter: &RuleDiagnosticAdapter<'_>,
     ) {
-        check_item_spacing(module.items(), module, diagnostics, adapter);
+        let items = module.item_nodes();
+        check_item_spacing(&items, module, diagnostics, adapter);
     }
 
     fn module_line_count(
@@ -384,15 +380,18 @@ impl ModuleRuleSet {
             return;
         }
         let output = module.parse_output();
-        let mut excluded = Vec::new();
-        for_each_test_range(output.items(), output, &mut excluded);
-        let test_module = SyntaxSupport::is_cfg_test(output.inner_attributes(), output);
+        let mut test_ranges = Vec::new();
+        for_each_test_range(output, &mut test_ranges);
+        let test_module = SyntaxSupport::is_cfg_test(output.inner_attributes());
         let mut lines = Vec::new();
         if !test_module {
             for token in output.tokens() {
-                if excluded
-                    .iter()
-                    .any(|range: &Range<usize>| range.contains(&token.start()))
+                if !module
+                    .configured_ast()
+                    .is_enabled_range(token.start(), token.end())
+                    || test_ranges
+                        .iter()
+                        .any(|range: &Range<usize>| range.contains(&token.start()))
                 {
                     continue;
                 }

@@ -5,19 +5,20 @@ use std::{
     process::Command,
 };
 
+use cop_cfg::{CfgContext, CfgDecision, CfgEvaluator, CfgExpression, CfgValue};
 use cop_model::{
     LocalizedMessage, ToolErrorKind, CARGO_CONFIG_TARGET_TYPE, CARGO_ERROR,
     CARGO_FEATURE_CONTEXT_MISSING, CARGO_FEATURE_NOT_DECLARED, CARGO_FEATURE_NOT_FOUND,
     CARGO_FEATURE_PACKAGE_NOT_SELECTED, CARGO_HOST_TRIPLE_MISSING, CARGO_NO_SCAN_PACKAGES,
     CARGO_OPERATION_ERROR, CARGO_PACKAGE_AMBIGUOUS, CARGO_PACKAGE_DUPLICATE,
-    CARGO_PACKAGE_NOT_FOUND, CARGO_TARGET_CFG_MISSING, CARGO_TARGET_CFG_QUERY_ERROR,
-    CARGO_WORKSPACE_CONFLICT, IO_ERROR,
+    CARGO_PACKAGE_NOT_FOUND, CARGO_TARGET_CFG_INVALID, CARGO_TARGET_CFG_MISSING,
+    CARGO_TARGET_CFG_QUERY_ERROR, CARGO_WORKSPACE_CONFLICT, IO_ERROR,
 };
 use toml::{from_str, Value};
 
 use crate::{
-    feature_resolver::FeatureResolver, target_cfg::TargetCfgEvaluator, CargoDiscovery, CargoError,
-    CargoPackage, CargoTarget, DependencyIndex, DependencyKind, FeatureSelection, ResolvedFeatures,
+    feature_resolver::FeatureResolver, CargoDiscovery, CargoError, CargoPackage, CargoTarget,
+    DependencyIndex, DependencyKind, FeatureSelection, ResolvedFeatures,
 };
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -28,12 +29,6 @@ pub struct CargoSelection {
     target: Option<String>,
     features: Option<FeatureSelection>,
     current_directory: Option<PathBuf>,
-}
-
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub struct CfgValue {
-    name: String,
-    value: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -195,23 +190,6 @@ impl TargetContext {
 
     pub fn cfg_test(&self) -> bool {
         self.cfg_test
-    }
-}
-
-impl CfgValue {
-    pub(crate) fn new(name: impl Into<String>, value: Option<String>) -> Self {
-        Self {
-            name: name.into(),
-            value,
-        }
-    }
-
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-
-    pub fn value(&self) -> Option<&str> {
-        self.value.as_deref()
     }
 }
 
@@ -459,10 +437,11 @@ fn resolve_workspace_features(
                     continue;
                 }
                 if let Some(condition) = dependency.target_condition() {
-                    if !TargetCfgEvaluator::matches(
+                    if !target_condition_matches(
                         condition,
                         context.target_triple,
                         context.cfg_values,
+                        states[parent_index].resolved.enabled(),
                     )? {
                         continue;
                     }
@@ -662,6 +641,27 @@ fn make_target_context(
         cfg_values: cfg_values.to_vec(),
         cfg_test,
     }
+}
+
+fn target_condition_matches(
+    condition: &str,
+    target_triple: &str,
+    values: &[CfgValue],
+    features: &BTreeSet<String>,
+) -> Result<bool, CargoError> {
+    let condition = condition.trim();
+    if !condition.starts_with("cfg(") {
+        return Ok(condition == target_triple);
+    }
+    let expression = CfgExpression::parse(condition).map_err(|_| {
+        CargoError::new(
+            ToolErrorKind::CargoMetadata,
+            LocalizedMessage::new(CARGO_TARGET_CFG_INVALID).with_text("condition", condition),
+        )
+    })?;
+    let context = CfgContext::new(values, Some(features));
+    let decision = CfgEvaluator::new(&context).evaluate(&expression);
+    Ok(decision == CfgDecision::True)
 }
 
 fn resolve_target(

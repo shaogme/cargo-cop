@@ -1,0 +1,15 @@
+[package]
+name = "cop-cfg"
+description = "Shared Rust cfg expression parsing and three-valued evaluation for cargo-cop."
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "../../README.md"
+keywords = ["cfg", "rust", "static-analysis"]
+categories.workspace = true
+
+[dependencies]

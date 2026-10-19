@@ -60,22 +60,22 @@ impl ProjectAnalyzer {
                 {
                     continue;
                 }
-                if dependency.target_condition().is_some_and(|condition| {
-                    evaluator.dependency_condition(condition) == CfgDecision::Unknown
-                }) {
-                    diagnostics.push(
-                        Diagnostic::analysis(
-                            AnalysisIssueKind::UnknownCfg,
-                            Severity::Warning,
-                            LocalizedMessage::new(CFG_DEPENDENCY_UNKNOWN)
-                                .with_text("dependency", dependency.rust_name()),
-                        )
-                        .with_package(request.package.name())
-                        .with_package_manifest_path(request.package.manifest_path())
-                        .with_target(target.name())
-                        .with_target_kind(target.kind().to_vec())
-                        .with_cfg_condition(dependency.target_condition().unwrap_or("unknown")),
-                    );
+                if let Some(condition) = dependency.target_condition() {
+                    if evaluator.dependency_condition(condition) == CfgDecision::Unknown {
+                        diagnostics.push(
+                            Diagnostic::analysis(
+                                AnalysisIssueKind::UnknownCfg,
+                                Severity::Warning,
+                                LocalizedMessage::new(CFG_DEPENDENCY_UNKNOWN)
+                                    .with_text("dependency", dependency.rust_name()),
+                            )
+                            .with_package(request.package.name())
+                            .with_package_manifest_path(request.package.manifest_path())
+                            .with_target(target.name())
+                            .with_target_kind(target.kind().to_vec())
+                            .with_cfg_condition(evaluator.normalized_condition(condition)),
+                        );
+                    }
                 }
             }
         }

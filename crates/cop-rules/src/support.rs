@@ -1,11 +1,13 @@
-use std::{collections::BTreeSet, ops::Range};
+mod path_syntax;
 
-use cop_analysis::ModuleNode;
+use std::ops::Range;
+
+use cop_analysis::{CfgCondition, CfgDecision, ModuleNode};
 use cop_config::ResolvedConfig;
 use cop_model::{Diagnostic, LocalizedMessage, RuleId, SourceSpan};
 use cop_syntax::{
-    Attribute, Delimiter, Item, ItemKind, ParseOutput, SyntaxNode, Token, TokenKind, TriviaKind,
-    UseTree, VisibilityKind,
+    AstNodeId, Attribute, ExpressionSyntax, ItemSyntaxKind, ParseOutput, SyntaxNode,
+    SyntaxNodeKind, TriviaKind, VisibilityKind, WherePredicateKind,
 };
 
 pub(super) struct RuleReport {
@@ -13,6 +15,7 @@ pub(super) struct RuleReport {
     message: LocalizedMessage,
     bounds: Option<Range<usize>>,
     span: Option<SourceSpan>,
+    cfg_condition: Option<String>,
 }
 
 pub(super) struct RuleDiagnosticAdapter<'a> {
@@ -25,12 +28,15 @@ pub(super) struct UseLeaf {
     pub(super) glob: bool,
     pub(super) start: usize,
     pub(super) end: usize,
+    pub(super) condition: Option<String>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct PathReference {
     pub(super) segments: Vec<String>,
     pub(super) start: usize,
     pub(super) end: usize,
+    pub(super) is_macro: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -47,6 +53,41 @@ enum SpacingDefinitionKind {
 
 pub(super) struct SyntaxSupport;
 
+impl SyntaxSupport {
+    pub(super) fn common_import_prefix(left: &[UseLeaf], right: &[UseLeaf]) -> Option<String> {
+        let mut best_prefix: Option<Vec<String>> = None;
+        for left_leaf in left {
+            if left_leaf.alias.is_some() || left_leaf.glob {
+                continue;
+            }
+            for right_leaf in right {
+                if right_leaf.alias.is_some() || right_leaf.glob {
+                    continue;
+                }
+                let prefix_length = Self::common_prefix_len(&left_leaf.path, &right_leaf.path);
+                if prefix_length == 0
+                    || prefix_length >= left_leaf.path.len()
+                    || prefix_length >= right_leaf.path.len()
+                    || best_prefix
+                        .as_ref()
+                        .is_some_and(|prefix| prefix.len() >= prefix_length)
+                {
+                    continue;
+                }
+                best_prefix = Some(left_leaf.path[..prefix_length].to_vec());
+            }
+        }
+        best_prefix.map(|prefix| prefix.join("::"))
+    }
+
+    fn common_prefix_len(left: &[String], right: &[String]) -> usize {
+        left.iter()
+            .zip(right)
+            .take_while(|(left_segment, right_segment)| left_segment == right_segment)
+            .count()
+    }
+}
+
 impl RuleReport {
     pub(super) fn new(
         rule_id: RuleId,
@@ -58,6 +99,7 @@ impl RuleReport {
             message,
             bounds,
             span: None,
+            cfg_condition: None,
         }
     }
 
@@ -67,7 +109,13 @@ impl RuleReport {
             message,
             bounds: None,
             span: Some(span),
+            cfg_condition: None,
         }
+    }
+
+    pub(super) fn with_cfg_condition(mut self, condition: Option<String>) -> Self {
+        self.cfg_condition = condition;
+        self
     }
 }
 
@@ -86,13 +134,37 @@ impl RuleDiagnosticAdapter<'_> {
         if !setting.enabled() {
             return;
         }
+        let explicit_condition = report.cfg_condition.clone();
+        let cfg_bounds = report
+            .bounds
+            .clone()
+            .or_else(|| report.span.as_ref().map(|span| span.byte_range()));
+        if cfg_bounds.as_ref().is_some_and(|bounds| {
+            module
+                .configured_ast()
+                .node_for_range(bounds.start, bounds.end)
+                .is_some_and(|node| node.decision() == CfgDecision::False)
+        }) {
+            return;
+        }
         let mut diagnostic = Diagnostic::rule(report.rule_id, setting.severity(), report.message)
             .with_package(module.package_name())
             .with_package_manifest_path(module.package_manifest_path())
             .with_target(module.target_name())
             .with_target_kind(module.target_kind().to_vec())
             .with_namespace(namespace_name(module.namespace()));
-        if let Some(condition) = module.cfg_condition() {
+        if let Some(condition) = explicit_condition
+            .as_deref()
+            .or_else(|| {
+                cfg_bounds.as_ref().and_then(|bounds| {
+                    module
+                        .configured_ast()
+                        .node_for_range(bounds.start, bounds.end)
+                        .and_then(|node| node.effective_condition())
+                })
+            })
+            .or(module.cfg_condition())
+        {
             diagnostic = diagnostic.with_cfg_condition(condition);
         }
         if let Some(span) = report.span {
@@ -111,9 +183,25 @@ impl RuleDiagnosticAdapter<'_> {
 }
 
 impl SyntaxSupport {
-    pub(super) fn expected_spacing_blank_lines(previous: &Item, current: &Item) -> Option<usize> {
-        let previous_kind = Self::spacing_definition_kind(previous.kind())?;
-        let current_kind = Self::spacing_definition_kind(current.kind())?;
+    pub(super) fn conditions_may_coexist(left: Option<&str>, right: Option<&str>) -> bool {
+        let Some(left) = left else {
+            return true;
+        };
+        let Some(right) = right else {
+            return true;
+        };
+        match (CfgCondition::parse(left), CfgCondition::parse(right)) {
+            (Ok(left), Ok(right)) => CfgCondition::may_coexist(&left, &right),
+            _ => true,
+        }
+    }
+
+    pub(super) fn expected_spacing_blank_lines(
+        previous: &SyntaxNode,
+        current: &SyntaxNode,
+    ) -> Option<usize> {
+        let previous_kind = Self::spacing_definition_kind(previous.item_syntax()?.kind())?;
+        let current_kind = Self::spacing_definition_kind(current.item_syntax()?.kind())?;
         Some(match (previous_kind, current_kind) {
             (SpacingDefinitionKind::Constant, SpacingDefinitionKind::Constant)
             | (SpacingDefinitionKind::Static, SpacingDefinitionKind::Static)
@@ -122,149 +210,217 @@ impl SyntaxSupport {
         })
     }
 
-    pub(super) fn is_non_private(item: &Item) -> bool {
-        !matches!(item.visibility().kind(), VisibilityKind::Private)
+    pub(super) fn is_non_private(item: &SyntaxNode) -> bool {
+        item.item_syntax()
+            .is_some_and(|data| !matches!(data.visibility().kind(), VisibilityKind::Private))
     }
 
-    pub(super) fn is_cfg_test(attributes: &[Attribute], output: &ParseOutput) -> bool {
-        attributes.iter().any(|attribute| {
-            attribute.path().last().is_some_and(|name| name == "cfg")
-                && attribute_tokens(attribute, output)
-                    .windows(6)
-                    .any(|tokens| {
-                        tokens[0] == "#"
-                            && tokens[1] == "["
-                            && tokens[2] == "cfg"
-                            && tokens[3] == "("
-                            && tokens[4] == "test"
-                            && tokens[5] == ")"
-                    })
-        })
+    pub(super) fn is_cfg_test(attributes: &[Attribute]) -> bool {
+        attributes.iter().any(Attribute::is_cfg_test)
     }
 
-    pub(super) fn has_lint_relaxation(attribute: &Attribute, output: &ParseOutput) -> bool {
-        let Some(name) = attribute.path().last() else {
-            return false;
-        };
-        if name == "allow" {
-            return true;
+    pub(super) fn for_each_path_reference(
+        module: &ModuleNode,
+        item: &SyntaxNode,
+        include_macros: bool,
+        visitor: &mut dyn FnMut(&PathReference),
+    ) {
+        if item
+            .item_syntax()
+            .is_some_and(|data| matches!(data.kind(), ItemSyntaxKind::Module { .. }))
+        {
+            return;
         }
-        name == "cfg_attr" && cfg_attr_injects_allow(&attribute_tokens(attribute, output))
-    }
-
-    pub(super) fn for_each_syntax_node(item: &Item, visitor: &mut dyn FnMut(&SyntaxNode)) {
-        match item.kind() {
-            ItemKind::Function(function) => {
-                Self::visit_nodes(function.signature_nodes(), visitor);
-                if let Some(body) = function.body() {
-                    Self::visit_nodes(body.nodes(), visitor);
+        let output = module.parse_output();
+        let mut path_references = Vec::new();
+        let mut typed_ranges = Vec::new();
+        let mut pending = vec![item.id()];
+        while let Some(id) = pending.pop() {
+            let Some(node) = output.node(id) else {
+                continue;
+            };
+            if node.id() != item.id()
+                && node
+                    .item_syntax()
+                    .is_some_and(|data| matches!(data.kind(), ItemSyntaxKind::Module { .. }))
+            {
+                continue;
+            }
+            if let Some(expression) = node.expression_syntax() {
+                typed_ranges.push(node.start()..node.end());
+                path_syntax::PathSyntaxCollector::collect_expression(
+                    expression,
+                    &mut path_references,
+                );
+            }
+            if let Some(syntax) = node.impl_syntax() {
+                if let Some(path) = syntax.trait_path() {
+                    typed_ranges.push(path.bounds());
+                    path_syntax::PathSyntaxCollector::collect_path(path, &mut path_references);
                 }
             }
-            ItemKind::Struct(declaration)
-            | ItemKind::Enum(declaration)
-            | ItemKind::Union(declaration)
-            | ItemKind::TypeAlias(declaration)
-            | ItemKind::Constant(declaration)
-            | ItemKind::Static(declaration) => {
-                Self::visit_nodes(declaration.nodes(), visitor);
+            if let Some(syntax) = node.type_syntax() {
+                typed_ranges.push(node.start()..node.end());
+                path_syntax::PathSyntaxCollector::collect_type(syntax, &mut path_references);
             }
-            ItemKind::Trait(trait_item) => {
-                for nested in trait_item.items() {
-                    Self::for_each_syntax_node(nested, visitor);
+            if let Some(syntax) = node.pattern_syntax() {
+                typed_ranges.push(node.start()..node.end());
+                path_syntax::PathSyntaxCollector::collect_pattern(syntax, &mut path_references);
+            }
+            if node.generic_parameter_syntax().is_some() {
+                typed_ranges.push(node.start()..node.end());
+                if let Some(parameter) = node.generic_parameter_syntax() {
+                    for bound in parameter.bounds() {
+                        path_syntax::PathSyntaxCollector::collect_trait_bound(
+                            bound,
+                            &mut path_references,
+                        );
+                    }
+                    if let Some(ty) = parameter.declared_type() {
+                        path_syntax::PathSyntaxCollector::collect_type(ty, &mut path_references);
+                    }
+                    if let Some(ty) = parameter.default_type() {
+                        path_syntax::PathSyntaxCollector::collect_type(ty, &mut path_references);
+                    }
                 }
             }
-            ItemKind::Impl(impl_item) => {
-                for nested in impl_item.items() {
-                    Self::for_each_syntax_node(nested, visitor);
+            if let Some(predicate) = node.where_predicate_syntax() {
+                typed_ranges.push(node.start()..node.end());
+                match predicate.kind() {
+                    WherePredicateKind::Lifetime { .. } => {}
+                    WherePredicateKind::Type {
+                        bounded_type,
+                        bounds,
+                        ..
+                    } => {
+                        path_syntax::PathSyntaxCollector::collect_type(
+                            bounded_type,
+                            &mut path_references,
+                        );
+                        for bound in bounds {
+                            path_syntax::PathSyntaxCollector::collect_trait_bound(
+                                bound,
+                                &mut path_references,
+                            );
+                        }
+                    }
                 }
             }
-            _ => {}
+            pending.extend(node.children().iter().rev().copied());
+        }
+        if include_macros {
+            for node in output.syntax_nodes().iter().filter(|node| {
+                node.kind() == SyntaxNodeKind::Macro
+                    && is_descendant_of(output, node, item.id())
+                    && !typed_ranges
+                        .iter()
+                        .any(|range| range.start <= node.start() && node.end() <= range.end)
+            }) {
+                if let Some(invocation) = node.macro_invocation() {
+                    let bounds = invocation.path().bounds();
+                    path_references.push(PathReference {
+                        segments: path_syntax::PathSyntaxCollector::path_segments(
+                            invocation.path(),
+                        ),
+                        start: bounds.start,
+                        end: bounds.end,
+                        is_macro: true,
+                    });
+                }
+            }
+        }
+        path_references.sort_unstable_by_key(|path| (path.start, path.end));
+        path_references.dedup_by(|left, right| {
+            left.start == right.start
+                && left.end == right.end
+                && left.segments == right.segments
+                && left.is_macro == right.is_macro
+        });
+        for path in &path_references {
+            if path.is_macro && !include_macros {
+                continue;
+            }
+            if module
+                .configured_ast()
+                .node_for_range(path.start, path.end)
+                .is_some_and(|node| node.decision() == CfgDecision::False)
+            {
+                continue;
+            }
+            visitor(path);
         }
     }
 
-    pub(super) fn use_leaves(tree: &UseTree) -> Vec<UseLeaf> {
+    pub(super) fn for_each_expression_syntax(
+        module: &ModuleNode,
+        item: &SyntaxNode,
+        visitor: &mut dyn FnMut(&ExpressionSyntax),
+    ) {
+        let output = module.parse_output();
+        let mut pending = vec![item.id()];
+        while let Some(id) = pending.pop() {
+            let Some(node) = output.node(id) else {
+                continue;
+            };
+            if node.id() != item.id()
+                && node
+                    .item_syntax()
+                    .is_some_and(|data| matches!(data.kind(), ItemSyntaxKind::Module { .. }))
+            {
+                continue;
+            }
+            if let Some(expression) = node.expression_syntax() {
+                let bounds = expression.bounds();
+                if !module
+                    .configured_ast()
+                    .node_for_range(bounds.start, bounds.end)
+                    .is_some_and(|configured| configured.decision() == CfgDecision::False)
+                    && module
+                        .configured_ast()
+                        .is_supported_range(output, bounds.start, bounds.end)
+                {
+                    visitor(expression);
+                }
+            }
+            pending.extend(node.children().iter().rev().copied());
+        }
+    }
+
+    pub(super) fn child_item_nodes_for_node<'a>(
+        module: &'a ModuleNode,
+        root: &SyntaxNode,
+    ) -> Vec<&'a SyntaxNode> {
+        let output = module.parse_output();
+        root.children()
+            .iter()
+            .filter_map(|id| output.node(*id))
+            .find(|node| node.kind() == SyntaxNodeKind::Scope)
+            .map(|scope| {
+                scope
+                    .children()
+                    .iter()
+                    .filter_map(|id| output.node(*id))
+                    .filter(|node| node.item_syntax().is_some())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    pub(super) fn use_leaves(module: &ModuleNode, tree: &SyntaxNode) -> Vec<UseLeaf> {
         let mut leaves = Vec::new();
-        Self::collect_use_leaves(tree, &[], &mut leaves);
+        Self::collect_use_leaves(module, tree, &[], &mut leaves);
         leaves
     }
 
-    pub(super) fn impl_header_references(module: &ModuleNode, item: &Item) -> Vec<PathReference> {
+    pub(super) fn use_tree_node_for_item<'a>(
+        module: &'a ModuleNode,
+        item: &SyntaxNode,
+    ) -> Option<&'a SyntaxNode> {
         let output = module.parse_output();
-        let tokens = Self::token_range(output, item.start(), item.end()).collect::<Vec<_>>();
-        let Some(impl_index) = tokens
+        item.children()
             .iter()
-            .position(|token| token.text(output.source()) == "impl")
-        else {
-            return Vec::new();
-        };
-        let Some(body_index) = impl_body_open(&tokens, impl_index, output) else {
-            return Vec::new();
-        };
-        let generic_parameters = impl_generic_parameters(&tokens, impl_index, body_index, output);
-        let mut references = Vec::new();
-        let mut index = impl_index + 1;
-        while index < body_index {
-            let Some(token) = tokens.get(index) else {
-                break;
-            };
-            if !matches!(token.kind(), TokenKind::Identifier(_)) {
-                index += 1;
-                continue;
-            }
-            let mut segments = vec![token.text(output.source()).to_owned()];
-            let mut end_index = index;
-            while end_index + 2 < body_index
-                && tokens[end_index + 1].text(output.source()) == "::"
-                && matches!(tokens[end_index + 2].kind(), TokenKind::Identifier(_))
-            {
-                segments.push(tokens[end_index + 2].text(output.source()).to_owned());
-                end_index += 2;
-            }
-            let first = segments.first().map(String::as_str).unwrap_or_default();
-            let rooted_keyword = matches!(first, "crate" | "self" | "super");
-            if (rooted_keyword || !is_path_keyword(first))
-                && !generic_parameters.contains(&segments[0])
-            {
-                references.push(PathReference {
-                    segments,
-                    start: token.start(),
-                    end: tokens[end_index].end(),
-                });
-                index = end_index + 1;
-            } else {
-                index += 1;
-            }
-        }
-        references
-    }
-
-    pub(super) fn effective_cfg(attributes: &[Attribute], output: &ParseOutput) -> Option<String> {
-        let mut conditions = Vec::new();
-        for attribute in attributes {
-            let Some(name) = attribute.path().last() else {
-                continue;
-            };
-            if name == "cfg_attr" {
-                return None;
-            }
-            if name != "cfg" {
-                continue;
-            }
-            let tokens = attribute_tokens(attribute, output);
-            let open = tokens.iter().position(|token| token == "(")?;
-            let close = tokens.iter().rposition(|token| token == ")")?;
-            if close <= open {
-                return None;
-            }
-            collect_cfg_conjuncts(&tokens[open + 1..close], &mut conditions)?;
-        }
-        conditions.sort();
-        conditions.dedup();
-        match conditions.len() {
-            0 => Some("true".to_owned()),
-            1 => conditions.into_iter().next(),
-            _ => Some(format!("all({})", conditions.join(","))),
-        }
+            .filter_map(|id| output.node(*id))
+            .find(|node| node.kind() == SyntaxNodeKind::UseTree)
     }
 
     pub(super) fn blank_lines_between(
@@ -315,54 +471,77 @@ impl SyntaxSupport {
             .count()
     }
 
-    pub(super) fn token_range(
-        output: &ParseOutput,
-        start: usize,
-        end: usize,
-    ) -> impl Iterator<Item = &Token> {
-        output
-            .tokens()
-            .iter()
-            .filter(move |token| token.start() >= start && token.end() <= end)
-    }
-
-    fn visit_nodes(nodes: &[SyntaxNode], visitor: &mut dyn FnMut(&SyntaxNode)) {
-        for node in nodes {
-            visitor(node);
+    fn collect_use_leaves(
+        module: &ModuleNode,
+        tree: &SyntaxNode,
+        prefix: &[String],
+        leaves: &mut Vec<UseLeaf>,
+    ) {
+        let start = tree.start();
+        let end = tree.end();
+        let Some(configured) = module.configured_ast().node(tree.id()) else {
+            return;
+        };
+        if configured.decision() == CfgDecision::False {
+            return;
         }
-    }
-
-    fn collect_use_leaves(tree: &UseTree, prefix: &[String], leaves: &mut Vec<UseLeaf>) {
+        let Some(tree_data) = tree.use_tree() else {
+            return;
+        };
         let mut path = prefix.to_vec();
-        path.extend(tree.path().iter().cloned());
-        if tree.children().is_empty() {
+        path.extend(tree_data.path().iter().cloned());
+        let children = tree
+            .children()
+            .iter()
+            .filter_map(|id| module.parse_output().node(*id))
+            .filter(|node| node.kind() == SyntaxNodeKind::UseTree)
+            .collect::<Vec<_>>();
+        if children.is_empty() {
+            if !module
+                .configured_ast()
+                .is_supported_range(module.parse_output(), start, end)
+            {
+                return;
+            }
             leaves.push(UseLeaf {
                 path,
-                alias: tree.alias().map(str::to_owned),
-                glob: tree.is_glob(),
-                start: tree.start(),
-                end: tree.end(),
+                alias: tree_data.alias().map(str::to_owned),
+                glob: tree_data.is_glob(),
+                start,
+                end,
+                condition: configured.effective_condition().map(str::to_owned),
             });
             return;
         }
-        for child in tree.children() {
-            Self::collect_use_leaves(child, &path, leaves);
+        for child in children {
+            Self::collect_use_leaves(module, child, &path, leaves);
         }
     }
 
-    fn spacing_definition_kind(kind: &ItemKind) -> Option<SpacingDefinitionKind> {
+    fn spacing_definition_kind(kind: &ItemSyntaxKind) -> Option<SpacingDefinitionKind> {
         match kind {
-            ItemKind::Struct(_) => Some(SpacingDefinitionKind::Struct),
-            ItemKind::Enum(_) => Some(SpacingDefinitionKind::Enum),
-            ItemKind::Union(_) => Some(SpacingDefinitionKind::Union),
-            ItemKind::TypeAlias(_) => Some(SpacingDefinitionKind::TypeAlias),
-            ItemKind::Trait(_) => Some(SpacingDefinitionKind::Trait),
-            ItemKind::Constant(_) => Some(SpacingDefinitionKind::Constant),
-            ItemKind::Static(_) => Some(SpacingDefinitionKind::Static),
-            ItemKind::Function(_) => Some(SpacingDefinitionKind::Function),
+            ItemSyntaxKind::Struct(_) => Some(SpacingDefinitionKind::Struct),
+            ItemSyntaxKind::Enum(_) => Some(SpacingDefinitionKind::Enum),
+            ItemSyntaxKind::Union(_) => Some(SpacingDefinitionKind::Union),
+            ItemSyntaxKind::TypeAlias(_) => Some(SpacingDefinitionKind::TypeAlias),
+            ItemSyntaxKind::Trait(_) => Some(SpacingDefinitionKind::Trait),
+            ItemSyntaxKind::Constant(_) => Some(SpacingDefinitionKind::Constant),
+            ItemSyntaxKind::Static(_) => Some(SpacingDefinitionKind::Static),
+            ItemSyntaxKind::Function { .. } => Some(SpacingDefinitionKind::Function),
             _ => None,
         }
     }
+}
+
+fn is_descendant_of(output: &ParseOutput, node: &SyntaxNode, root: AstNodeId) -> bool {
+    let mut parent = node.parent();
+    while let Some(id) = parent {
+        if id == root {
+            return true;
+        }
+        parent = output.node(id).and_then(SyntaxNode::parent);
+    }
+    node.id() == root
 }
 
 fn namespace_name(namespace: &[String]) -> String {
@@ -371,230 +550,4 @@ fn namespace_name(namespace: &[String]) -> String {
     } else {
         format!("crate::{}", namespace.join("::"))
     }
-}
-
-fn attribute_tokens(attribute: &Attribute, output: &ParseOutput) -> Vec<String> {
-    output
-        .tokens()
-        .iter()
-        .filter(|token| token.start() >= attribute.start() && token.end() <= attribute.end())
-        .map(|token| token.text(output.source()).to_owned())
-        .collect()
-}
-
-fn normalize_cfg_expression(tokens: &[String]) -> Option<String> {
-    if tokens.is_empty() {
-        return None;
-    }
-    if tokens.len() == 1 {
-        return Some(tokens[0].clone());
-    }
-    if tokens.len() >= 3 && tokens[1] == "=" {
-        return Some(tokens.join(""));
-    }
-    if tokens.len() < 3 || tokens[1] != "(" || tokens.last()? != ")" {
-        return Some(tokens.join(""));
-    }
-    let name = tokens[0].as_str();
-    if !matches!(name, "all" | "any" | "not") {
-        return Some(tokens.join(""));
-    }
-    let arguments = split_cfg_arguments(&tokens[2..tokens.len() - 1])?;
-    let mut normalized = if name == "all" {
-        let mut flattened = Vec::new();
-        for argument in &arguments {
-            collect_cfg_conjuncts(argument, &mut flattened)?;
-        }
-        flattened
-    } else {
-        arguments
-            .iter()
-            .map(|argument| normalize_cfg_expression(argument))
-            .collect::<Option<Vec<_>>>()?
-    };
-    if name == "not" && normalized.len() != 1 {
-        return None;
-    }
-    if matches!(name, "all" | "any") {
-        normalized.sort();
-    }
-    Some(format!("{name}({})", normalized.join(",")))
-}
-
-fn collect_cfg_conjuncts(tokens: &[String], conditions: &mut Vec<String>) -> Option<()> {
-    if tokens.len() >= 3 && tokens[0] == "all" && tokens[1] == "(" && tokens.last()? == ")" {
-        for argument in split_cfg_arguments(&tokens[2..tokens.len() - 1])? {
-            collect_cfg_conjuncts(&argument, conditions)?;
-        }
-    } else {
-        conditions.push(normalize_cfg_expression(tokens)?);
-    }
-    Some(())
-}
-
-fn cfg_attr_injects_allow(tokens: &[String]) -> bool {
-    let Some(open) = tokens.iter().position(|token| token == "(") else {
-        return false;
-    };
-    let Some(close) = tokens.iter().rposition(|token| token == ")") else {
-        return false;
-    };
-    let Some(arguments) = tokens.get(open + 1..close).and_then(split_cfg_arguments) else {
-        return false;
-    };
-    arguments
-        .iter()
-        .skip(1)
-        .any(|attribute| match attribute.first().map(String::as_str) {
-            Some("allow") => true,
-            Some("cfg_attr") => cfg_attr_injects_allow(attribute),
-            _ => false,
-        })
-}
-
-fn impl_body_open(tokens: &[&Token], impl_index: usize, output: &ParseOutput) -> Option<usize> {
-    let mut angle_depth = 0usize;
-    let mut nested_depth = 0usize;
-    for (index, token) in tokens.iter().enumerate().skip(impl_index + 1) {
-        match token.kind() {
-            TokenKind::OpenDelimiter(Delimiter::Parenthesis | Delimiter::Bracket) => {
-                nested_depth += 1;
-            }
-            TokenKind::CloseDelimiter(Delimiter::Parenthesis | Delimiter::Bracket) => {
-                nested_depth = nested_depth.saturating_sub(1);
-            }
-            TokenKind::OpenDelimiter(Delimiter::Brace) if angle_depth == 0 && nested_depth == 0 => {
-                return Some(index);
-            }
-            _ => {}
-        }
-        match token.text(output.source()) {
-            "<" => angle_depth += 1,
-            ">" => angle_depth = angle_depth.saturating_sub(1),
-            ">>" => angle_depth = angle_depth.saturating_sub(2),
-            _ => {}
-        }
-    }
-    None
-}
-
-fn impl_generic_parameters(
-    tokens: &[&Token],
-    impl_index: usize,
-    body_index: usize,
-    output: &ParseOutput,
-) -> BTreeSet<String> {
-    let mut names = BTreeSet::new();
-    let Some(open_index) = tokens
-        .get(impl_index + 1)
-        .filter(|token| token.text(output.source()) == "<")
-        .map(|_| impl_index + 1)
-    else {
-        return names;
-    };
-    let mut depth = 0usize;
-    for (index, token) in tokens.iter().enumerate().take(body_index).skip(open_index) {
-        let text = token.text(output.source());
-        if text == "<" {
-            depth += 1;
-            continue;
-        }
-        if text == ">" || text == ">>" {
-            depth = depth.saturating_sub(if text == ">>" { 2 } else { 1 });
-            if depth == 0 {
-                break;
-            }
-            continue;
-        }
-        if depth != 1 {
-            continue;
-        }
-        let is_parameter = index == open_index + 1
-            || tokens[index - 1].text(output.source()) == ","
-            || tokens[index - 1].text(output.source()) == "const";
-        if is_parameter {
-            if let TokenKind::Identifier(name) = token.kind() {
-                if name != "const" {
-                    names.insert(name.clone());
-                }
-            }
-        }
-    }
-    names
-}
-
-fn is_path_keyword(value: &str) -> bool {
-    matches!(
-        value,
-        "as" | "async"
-            | "await"
-            | "break"
-            | "const"
-            | "continue"
-            | "crate"
-            | "dyn"
-            | "else"
-            | "enum"
-            | "extern"
-            | "false"
-            | "fn"
-            | "for"
-            | "if"
-            | "impl"
-            | "in"
-            | "let"
-            | "loop"
-            | "match"
-            | "mod"
-            | "move"
-            | "mut"
-            | "pub"
-            | "ref"
-            | "return"
-            | "self"
-            | "static"
-            | "struct"
-            | "super"
-            | "trait"
-            | "true"
-            | "type"
-            | "union"
-            | "unsafe"
-            | "use"
-            | "where"
-            | "while"
-            | "yield"
-    )
-}
-
-fn split_cfg_arguments(tokens: &[String]) -> Option<Vec<Vec<String>>> {
-    if tokens.is_empty() {
-        return Some(Vec::new());
-    }
-    let mut arguments = Vec::new();
-    let mut start = 0usize;
-    let mut depth = 0usize;
-    for (index, token) in tokens.iter().enumerate() {
-        match token.as_str() {
-            "(" | "[" | "{" => depth += 1,
-            ")" | "]" | "}" => depth = depth.checked_sub(1)?,
-            "," if depth == 0 => {
-                if start == index {
-                    return None;
-                }
-                arguments.push(tokens[start..index].to_vec());
-                start = index + 1;
-            }
-            _ => {}
-        }
-    }
-    if depth != 0 {
-        return None;
-    }
-    if start < tokens.len() {
-        arguments.push(tokens[start..].to_vec());
-    } else if start != 0 {
-        return None;
-    }
-    Some(arguments)
 }

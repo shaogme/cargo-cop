@@ -13,6 +13,7 @@ keywords = ["analysis", "rust", "static-analysis"]
 categories.workspace = true
 
 [dependencies]
+cop-cfg.workspace = true
 cop-cargo.workspace = true
 cop-syntax.workspace = true
 cop-model.workspace = true

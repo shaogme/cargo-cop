@@ -8,14 +8,23 @@ mod source;
 mod string_literal;
 
 pub use ast::{
-    Attribute, ClosureNode, CoverageStatus, ExternCrateItem, FunctionBody, FunctionItem, ImplItem,
-    Item, ItemKind, MacroDefinition, MacroInvocation, ModuleItem, NamedDeclaration, OtherItem,
-    Parameter, ParseIssue, ParseIssueKind, ParseOutput, PathNode, SyntaxNode, TraitItem, TupleNode,
-    UseItem, UseTree, Visibility, VisibilityKind,
+    AstNodeId, Attribute, AttributeMeta, AttributeMetaKind, AttributeMetaValue,
+    AttributeMetaValueKind, ClosureParameterSyntax, CoverageStatus, ExpressionBlockKind,
+    ExpressionErrorKind, ExpressionFieldSyntax, ExpressionMatchArmSyntax, ExpressionSyntax,
+    ExpressionSyntaxKind, ExpressionUnsupportedKind, ForeignFunctionSafety, ForeignItemSyntaxData,
+    ForeignItemSyntaxKind, FunctionTraitArgumentsSyntax, GenericArgumentSyntax,
+    GenericParameterKind, GenericParameterSyntax, ImplSyntaxData, ItemSyntaxData, ItemSyntaxKind,
+    MacroDefinition, MacroInput, MacroInputStatus, MacroInvocation, MacroTokenTree, ParseIssue,
+    ParseIssueCode, ParseIssueKind, ParseOutput, PathSegmentSyntax, PathSyntax, PatternFieldSyntax,
+    PatternSyntax, PatternSyntaxKind, StatementSyntaxKind, SyntaxNode, SyntaxNodeData,
+    SyntaxNodeKind, TraitBoundKind, TraitBoundSyntax, TypeSyntax, TypeSyntaxKind,
+    UnsupportedConstructKind, UseTreeSyntaxData, Visibility, VisibilityKind, WhereClauseSyntax,
+    WherePredicateKind, WherePredicateSyntax,
 };
 pub use lexer::{
-    Delimiter, LexIssue, LexOutput, LiteralKind, RustLexer, Token, TokenKind, Trivia, TriviaKind,
+    Delimiter, LexIssue, LexOutput, LiteralKind, RustEdition, RustLexer, Token, TokenKind, Trivia,
+    TriviaKind,
 };
-pub use parser::RustParser;
+pub use parser::{ParseOptions, RustParser};
 pub use source::SourceFile;
 pub use string_literal::RustStringLiteral;

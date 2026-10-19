@@ -1,12 +1,11 @@
-use cop_analysis::{AnalysisSnapshot, ModuleNode, SymbolKind};
+use cop_analysis::{AnalysisSnapshot, CfgCondition, ModuleNode, SymbolKind};
 use cop_config::ResolvedConfig;
 use cop_model::{
     Diagnostic, LocalizedMessage, RuleId, CLOSURE_PARAMETER_LIMIT, DECLARATION_BEFORE_USE,
     FUNCTION_PARAMETER_LIMIT, NO_LINT_RELAXATION, TUPLE_ARITY,
 };
 use cop_syntax::{
-    ClosureNode, CoverageStatus, Delimiter, FunctionItem, Item, ItemKind, ParseOutput, SyntaxNode,
-    Token, TokenKind,
+    ClosureParameterSyntax, ExpressionSyntaxKind, ItemSyntaxKind, SyntaxNode, SyntaxNodeKind,
 };
 
 use crate::support::{PathReference, RuleDiagnosticAdapter, RuleReport, SyntaxSupport};
@@ -21,9 +20,7 @@ impl SyntaxRuleSet {
     ) {
         let adapter = RuleDiagnosticAdapter::new(configuration);
         for module in snapshot.modules() {
-            if module.parse_output().coverage() != CoverageStatus::Complete
-                || module.is_order_only()
-            {
+            if module.is_order_only() {
                 continue;
             }
             Self::lint_relaxation(module, diagnostics, &adapter);
@@ -37,93 +34,17 @@ impl SyntaxRuleSet {
         diagnostics: &mut Vec<Diagnostic>,
         adapter: &RuleDiagnosticAdapter<'_>,
     ) {
-        let output = module.parse_output();
-        if module.is_crate_root() || !module.is_inline() {
-            if let Some(attribute) = output
-                .inner_attributes()
-                .iter()
-                .find(|attribute| SyntaxSupport::has_lint_relaxation(attribute, output))
-            {
-                adapter.push(
-                    module,
-                    diagnostics,
-                    RuleReport::new(
-                        RuleId::NoLintRelaxation,
-                        LocalizedMessage::new(NO_LINT_RELAXATION),
-                        Some(attribute.start()..attribute.end()),
-                    ),
-                );
-            }
-        }
-        for item in module.items() {
-            Self::inspect_lint_items(item, output, module, diagnostics, adapter);
-        }
-    }
-
-    fn inspect_lint_items(
-        item: &Item,
-        output: &ParseOutput,
-        module: &ModuleNode,
-        diagnostics: &mut Vec<Diagnostic>,
-        adapter: &RuleDiagnosticAdapter<'_>,
-    ) {
-        for attribute in item.attributes() {
-            if SyntaxSupport::has_lint_relaxation(attribute, output) {
-                adapter.push(
-                    module,
-                    diagnostics,
-                    RuleReport::new(
-                        RuleId::NoLintRelaxation,
-                        LocalizedMessage::new(NO_LINT_RELAXATION),
-                        Some(attribute.start()..attribute.end()),
-                    ),
-                );
-            }
-        }
-        match item.kind() {
-            ItemKind::Module(child) => {
-                for attribute in child.inner_attributes() {
-                    if SyntaxSupport::has_lint_relaxation(attribute, output) {
-                        adapter.push(
-                            module,
-                            diagnostics,
-                            RuleReport::new(
-                                RuleId::NoLintRelaxation,
-                                LocalizedMessage::new(NO_LINT_RELAXATION),
-                                Some(attribute.start()..attribute.end()),
-                            ),
-                        );
-                    }
-                }
-            }
-            ItemKind::Trait(trait_item) => {
-                for nested in trait_item.items() {
-                    Self::inspect_lint_items(nested, output, module, diagnostics, adapter);
-                }
-            }
-            ItemKind::Impl(impl_item) => {
-                for nested in impl_item.items() {
-                    Self::inspect_lint_items(nested, output, module, diagnostics, adapter);
-                }
-            }
-            ItemKind::Function(function) => {
-                if let Some(body) = function.body() {
-                    for attribute in body.leading_attributes() {
-                        if SyntaxSupport::has_lint_relaxation(attribute, output) {
-                            adapter.push(
-                                module,
-                                diagnostics,
-                                RuleReport::new(
-                                    RuleId::NoLintRelaxation,
-                                    LocalizedMessage::new(NO_LINT_RELAXATION),
-                                    Some(attribute.start()..attribute.end()),
-                                ),
-                            );
-                        }
-                    }
-                }
-            }
-            _ => {}
+        for attribute in module.lint_relaxations() {
+            adapter.push(
+                module,
+                diagnostics,
+                RuleReport::new(
+                    RuleId::NoLintRelaxation,
+                    LocalizedMessage::new(NO_LINT_RELAXATION),
+                    Some(attribute.start()..attribute.end()),
+                )
+                .with_cfg_condition(attribute.condition().map(str::to_owned)),
+            );
         }
     }
 
@@ -132,81 +53,120 @@ impl SyntaxRuleSet {
         diagnostics: &mut Vec<Diagnostic>,
         adapter: &RuleDiagnosticAdapter<'_>,
     ) {
-        for item in module.items() {
+        for item in module.item_nodes() {
             Self::check_shapes(item, module, diagnostics, adapter);
         }
     }
 
     fn check_shapes(
-        item: &Item,
+        root: &SyntaxNode,
         module: &ModuleNode,
         diagnostics: &mut Vec<Diagnostic>,
         adapter: &RuleDiagnosticAdapter<'_>,
     ) {
-        if let ItemKind::Function(function) = item.kind() {
-            if function.parameters().len() > 5 {
-                adapter.push(
-                    module,
-                    diagnostics,
-                    RuleReport::new(
-                        RuleId::ParameterLimit,
-                        LocalizedMessage::new(FUNCTION_PARAMETER_LIMIT)
-                            .with_number("actual", function.parameters().len() as i64)
-                            .with_number("maximum", 5),
-                        Some(item.start()..item.end()),
-                    ),
-                );
-            }
+        if root
+            .item_syntax()
+            .is_some_and(|data| matches!(data.kind(), ItemSyntaxKind::Module { .. }))
+        {
+            return;
         }
-        if matches!(
-            item.kind(),
-            ItemKind::Function(_)
-                | ItemKind::Struct(_)
-                | ItemKind::Enum(_)
-                | ItemKind::Union(_)
-                | ItemKind::TypeAlias(_)
-                | ItemKind::Constant(_)
-                | ItemKind::Static(_)
-        ) {
-            SyntaxSupport::for_each_syntax_node(item, &mut |node| match node {
-                SyntaxNode::Closure(closure) if closure.parameters().len() > 5 => adapter.push(
-                    module,
-                    diagnostics,
-                    RuleReport::new(
-                        RuleId::ParameterLimit,
-                        LocalizedMessage::new(CLOSURE_PARAMETER_LIMIT)
-                            .with_number("actual", closure.parameters().len() as i64)
-                            .with_number("maximum", 5),
-                        Some(closure.start()..closure.end()),
-                    ),
-                ),
-                SyntaxNode::Tuple(tuple) if tuple.arity() > 2 => adapter.push(
-                    module,
-                    diagnostics,
-                    RuleReport::new(
-                        RuleId::TupleArity,
-                        LocalizedMessage::new(TUPLE_ARITY)
-                            .with_number("actual", tuple.arity() as i64)
-                            .with_number("maximum", 2),
-                        Some(tuple.start()..tuple.end()),
-                    ),
-                ),
-                _ => {}
-            });
-        }
-        match item.kind() {
-            ItemKind::Module(_) => {}
-            ItemKind::Trait(trait_item) => {
-                for nested in trait_item.items() {
-                    Self::check_shapes(nested, module, diagnostics, adapter);
+        SyntaxSupport::for_each_expression_syntax(module, root, &mut |expression| match expression
+            .kind()
+        {
+            ExpressionSyntaxKind::Closure { parameters, .. } => {
+                let parameter_count = parameters
+                    .iter()
+                    .filter(|parameter| {
+                        let bounds = parameter.bounds();
+                        module
+                            .configured_ast()
+                            .is_enabled_range(bounds.start, bounds.end)
+                    })
+                    .count();
+                if parameter_count > 5 {
+                    adapter.push(
+                        module,
+                        diagnostics,
+                        RuleReport::new(
+                            RuleId::ParameterLimit,
+                            LocalizedMessage::new(CLOSURE_PARAMETER_LIMIT)
+                                .with_number("actual", parameter_count as i64)
+                                .with_number("maximum", 5),
+                            Some(expression.bounds()),
+                        )
+                        .with_cfg_condition(closure_parameter_condition(module, parameters)),
+                    );
                 }
             }
-            ItemKind::Impl(impl_item) => {
-                for nested in impl_item.items() {
-                    Self::check_shapes(nested, module, diagnostics, adapter);
+            ExpressionSyntaxKind::Tuple(members) => {
+                let arity = members
+                    .iter()
+                    .filter(|member| {
+                        let bounds = member.bounds();
+                        module
+                            .configured_ast()
+                            .is_enabled_range(bounds.start, bounds.end)
+                    })
+                    .count();
+                if arity > 2 {
+                    let bounds = expression.bounds();
+                    adapter.push(
+                        module,
+                        diagnostics,
+                        RuleReport::new(
+                            RuleId::TupleArity,
+                            LocalizedMessage::new(TUPLE_ARITY)
+                                .with_number("actual", arity as i64)
+                                .with_number("maximum", 2),
+                            Some(bounds),
+                        ),
+                    );
                 }
             }
             _ => {}
+        });
+        let output = module.parse_output();
+        let mut pending = vec![root.id()];
+        while let Some(id) = pending.pop() {
+            let Some(node) = output.node(id) else {
+                continue;
+            };
+            if node.id() != root.id()
+                && node.item_syntax().is_some_and(|item_data| {
+                    matches!(item_data.kind(), ItemSyntaxKind::Module { .. })
+                })
+            {
+                continue;
+            }
+            if node.item_syntax().is_some_and(|item_data| {
+                matches!(item_data.kind(), ItemSyntaxKind::Function { .. })
+            }) {
+                let parameter_count = node
+                    .children()
+                    .iter()
+                    .filter_map(|id| output.node(*id))
+                    .filter(|parameter| {
+                        parameter.kind() == SyntaxNodeKind::Parameter
+                            && module
+                                .configured_ast()
+                                .is_enabled_range(parameter.start(), parameter.end())
+                    })
+                    .count();
+                if parameter_count > 5 {
+                    adapter.push(
+                        module,
+                        diagnostics,
+                        RuleReport::new(
+                            RuleId::ParameterLimit,
+                            LocalizedMessage::new(FUNCTION_PARAMETER_LIMIT)
+                                .with_number("actual", parameter_count as i64)
+                                .with_number("maximum", 5),
+                            Some(node.start()..node.end()),
+                        ),
+                    );
+                }
+            }
+            pending.extend(node.children().iter().rev().copied());
         }
     }
 
@@ -216,36 +176,25 @@ impl SyntaxRuleSet {
         diagnostics: &mut Vec<Diagnostic>,
         adapter: &RuleDiagnosticAdapter<'_>,
     ) {
-        for item in module.items() {
-            SyntaxSupport::for_each_syntax_node(item, &mut |node| {
-                let SyntaxNode::Path(path) = node else {
-                    return;
-                };
-                check_ordered_path(
-                    &PathReference {
-                        segments: path.segments().to_vec(),
-                        start: path.start(),
-                        end: path.end(),
-                    },
-                    module,
-                    snapshot,
-                    diagnostics,
-                    adapter,
-                );
+        for item in module.item_nodes() {
+            SyntaxSupport::for_each_path_reference(module, item, false, &mut |reference| {
+                check_ordered_path(reference, module, snapshot, diagnostics, adapter);
             });
-            if matches!(item.kind(), ItemKind::Impl(_)) {
-                for reference in SyntaxSupport::impl_header_references(module, item) {
-                    check_ordered_path(&reference, module, snapshot, diagnostics, adapter);
-                }
-            }
-            if let ItemKind::Use(use_item) = item.kind() {
-                for leaf in SyntaxSupport::use_leaves(use_item.tree()) {
+            if item
+                .item_syntax()
+                .is_some_and(|data| matches!(data.kind(), ItemSyntaxKind::Use))
+            {
+                let Some(tree) = SyntaxSupport::use_tree_node_for_item(module, item) else {
+                    continue;
+                };
+                for leaf in SyntaxSupport::use_leaves(module, tree) {
                     if !leaf.glob {
                         check_ordered_path(
                             &PathReference {
                                 segments: leaf.path,
                                 start: leaf.start,
                                 end: leaf.end,
+                                is_macro: false,
                             },
                             module,
                             snapshot,
@@ -259,6 +208,48 @@ impl SyntaxRuleSet {
     }
 }
 
+fn closure_parameter_condition(
+    module: &ModuleNode,
+    parameters: &[ClosureParameterSyntax],
+) -> Option<String> {
+    let mut unconditional = 0usize;
+    let mut conditions = Vec::new();
+    for parameter in parameters {
+        let bounds = parameter.bounds();
+        if !module
+            .configured_ast()
+            .is_enabled_range(bounds.start, bounds.end)
+        {
+            continue;
+        }
+        match module
+            .configured_ast()
+            .condition_for_span(bounds.start, bounds.end)
+        {
+            Some(condition) => conditions.push(CfgCondition::parse(condition).ok()?),
+            None => unconditional += 1,
+        }
+    }
+    let required = 6usize.saturating_sub(unconditional);
+    if required == 0 {
+        return None;
+    }
+    if conditions.len() < required || conditions.len() > 12 {
+        return None;
+    }
+    let mut at_least = vec![CfgCondition::any([]); required + 1];
+    at_least[0] = CfgCondition::all([]);
+    for condition in conditions {
+        for count in (1..=required).rev() {
+            at_least[count] = CfgCondition::any([
+                at_least[count].clone(),
+                CfgCondition::all([at_least[count - 1].clone(), condition.clone()]),
+            ]);
+        }
+    }
+    at_least.get(required).map(CfgCondition::normalized)
+}
+
 fn check_ordered_path(
     reference: &PathReference,
     module: &ModuleNode,
@@ -266,37 +257,31 @@ fn check_ordered_path(
     diagnostics: &mut Vec<Diagnostic>,
     adapter: &RuleDiagnosticAdapter<'_>,
 ) {
-    if is_binding_position(module, reference.start)
-        || is_parameter_binding_position(module, reference)
-        || is_shadowed_by_local_binding(module, reference)
+    if !module
+        .configured_ast()
+        .is_enabled_range(reference.start, reference.end)
+        || !module.configured_ast().is_supported_range(
+            module.parse_output(),
+            reference.start,
+            reference.end,
+        )
     {
         return;
     }
-    let candidate = if reference.segments.len() == 1 {
-        snapshot
-            .symbols()
-            .symbols()
-            .iter()
-            .find(|symbol| {
-                symbol.target_name() == module.target_name()
-                    && symbol.namespace() == module.namespace()
-                    && symbol.file_path() == module.file_path()
-                    && identifier_name(symbol.name()) == identifier_name(&reference.segments[0])
-                    && is_ordered_declaration(symbol.kind())
-            })
-            .cloned()
-    } else {
-        let resolution = snapshot.symbols().resolve_path(module, &reference.segments);
-        resolution
-            .symbol()
-            .filter(|symbol| {
-                symbol.namespace() == module.namespace()
-                    && symbol.file_path() == module.file_path()
-                    && is_ordered_declaration(symbol.kind())
-            })
-            .cloned()
-    };
-    let Some(symbol) = candidate else {
+    let reference_condition = module
+        .configured_ast()
+        .condition_for_span(reference.start, reference.end);
+    let resolution = snapshot.symbols().resolve_path_at(
+        module,
+        &reference.segments,
+        Some(reference.start..reference.end),
+    );
+    let Some(symbol) = resolution.symbol().filter(|symbol| {
+        symbol.namespace() == module.namespace()
+            && symbol.file_path() == module.file_path()
+            && is_ordered_declaration(symbol.kind())
+            && SyntaxSupport::conditions_may_coexist(reference_condition, symbol.cfg_condition())
+    }) else {
         return;
     };
     let Some(declaration_span) = symbol.span() else {
@@ -327,289 +312,4 @@ fn is_ordered_declaration(kind: SymbolKind) -> bool {
             | SymbolKind::Constant
             | SymbolKind::Static
     )
-}
-
-fn is_binding_position(module: &ModuleNode, start: usize) -> bool {
-    let previous = module
-        .parse_output()
-        .tokens()
-        .iter()
-        .rev()
-        .find(|token| token.end() <= start);
-    previous.is_some_and(|token| {
-        matches!(
-            token.kind(),
-            TokenKind::Identifier(identifier)
-                if matches!(identifier.as_str(), "let" | "fn" | "struct" | "enum" | "type" | "const" | "static" | "trait")
-        )
-    })
-}
-
-struct LocalBinding {
-    name: String,
-    scope: Vec<usize>,
-    token_start: usize,
-    visible_from: usize,
-}
-
-fn is_parameter_binding_position(module: &ModuleNode, reference: &PathReference) -> bool {
-    let Some(name) = reference.segments.first() else {
-        return false;
-    };
-    module
-        .items()
-        .iter()
-        .any(|item| parameter_binding_in_item(item, module.parse_output(), reference.start, name))
-}
-
-fn parameter_binding_in_item(item: &Item, output: &ParseOutput, start: usize, name: &str) -> bool {
-    match item.kind() {
-        ItemKind::Function(function) => function.parameters().iter().any(|parameter| {
-            parameter.start() <= start
-                && start < parameter.end()
-                && pattern_binding(output, parameter.start(), parameter.end(), name) == Some(start)
-        }),
-        ItemKind::Trait(trait_item) => trait_item
-            .items()
-            .iter()
-            .any(|nested| parameter_binding_in_item(nested, output, start, name)),
-        ItemKind::Impl(impl_item) => impl_item
-            .items()
-            .iter()
-            .any(|nested| parameter_binding_in_item(nested, output, start, name)),
-        _ => false,
-    }
-}
-
-fn is_shadowed_by_local_binding(module: &ModuleNode, reference: &PathReference) -> bool {
-    let Some(name) = reference.segments.first() else {
-        return false;
-    };
-    let Some(function) = function_containing(module.items(), reference.start) else {
-        return false;
-    };
-    if function.parameters().iter().any(|parameter| {
-        pattern_binding(
-            module.parse_output(),
-            parameter.start(),
-            parameter.end(),
-            name,
-        )
-        .is_some()
-    }) {
-        return true;
-    }
-    let Some(body) = function.body() else {
-        return false;
-    };
-    let output = module.parse_output();
-    if closure_binding_shadows(body.nodes(), reference.start, name, output) {
-        return true;
-    }
-    let tokens = output.tokens();
-    let mut scope = Vec::new();
-    let mut bindings = Vec::new();
-    let Some(mut index) = tokens
-        .iter()
-        .position(|token| token.start() == body.start())
-    else {
-        return false;
-    };
-    while index < tokens.len() && tokens[index].start() <= reference.start {
-        if token_text(&tokens[index], output) == "!"
-            && index > 0
-            && is_macro_path_token(&tokens[index - 1], output)
-        {
-            if let Some(close) = macro_group_end(tokens, index + 1) {
-                index = close + 1;
-                continue;
-            }
-        }
-        if token_text(&tokens[index], output) == "let" {
-            if let Some(token_start) =
-                pattern_binding(output, tokens[index].end(), body.end(), name)
-            {
-                bindings.push(LocalBinding {
-                    name: name.to_owned(),
-                    scope: scope.clone(),
-                    token_start,
-                    visible_from: let_statement_end(tokens, index + 1, body.end(), output),
-                });
-            }
-        }
-        match tokens[index].kind() {
-            TokenKind::OpenDelimiter(Delimiter::Brace) => scope.push(index),
-            TokenKind::CloseDelimiter(Delimiter::Brace) => {
-                scope.pop();
-            }
-            _ => {}
-        }
-        index += 1;
-    }
-    bindings.into_iter().any(|binding| {
-        (binding.token_start == reference.start || binding.visible_from <= reference.start)
-            && identifier_name(&binding.name) == identifier_name(name)
-            && scope.starts_with(&binding.scope)
-    })
-}
-
-fn closure_binding_shadows(
-    nodes: &[SyntaxNode],
-    offset: usize,
-    name: &str,
-    output: &ParseOutput,
-) -> bool {
-    nodes.iter().any(|node| {
-        let SyntaxNode::Closure(closure) = node else {
-            return false;
-        };
-        closure_parameter_shadows(closure, offset, name, output)
-    })
-}
-
-fn closure_parameter_shadows(
-    closure: &ClosureNode,
-    offset: usize,
-    name: &str,
-    output: &ParseOutput,
-) -> bool {
-    if offset < closure.start() || offset >= closure.end() {
-        return false;
-    }
-    let has_binding = closure.parameters().iter().any(|parameter| {
-        pattern_binding(output, parameter.start(), parameter.end(), name).is_some()
-    });
-    if !has_binding {
-        return false;
-    }
-    if closure.parameters().iter().any(|parameter| {
-        pattern_binding(output, parameter.start(), parameter.end(), name) == Some(offset)
-    }) {
-        return true;
-    }
-    let parameters_end = closure
-        .parameters()
-        .last()
-        .map_or(closure.start(), |parameter| parameter.end());
-    offset > parameters_end
-}
-
-fn let_statement_end(
-    tokens: &[Token],
-    start: usize,
-    fallback: usize,
-    output: &ParseOutput,
-) -> usize {
-    let mut delimiters = Vec::new();
-    for token in tokens.iter().skip(start) {
-        if token.start() >= fallback {
-            break;
-        }
-        match token.kind() {
-            TokenKind::OpenDelimiter(delimiter) => delimiters.push(*delimiter),
-            TokenKind::CloseDelimiter(delimiter) if delimiters.last() == Some(delimiter) => {
-                delimiters.pop();
-            }
-            _ if token_text(token, output) == ";" && delimiters.is_empty() => {
-                return token.end();
-            }
-            _ => {}
-        }
-    }
-    fallback
-}
-
-fn function_containing(items: &[Item], offset: usize) -> Option<&FunctionItem> {
-    for item in items {
-        match item.kind() {
-            ItemKind::Function(function)
-                if function
-                    .body()
-                    .is_some_and(|body| body.start() <= offset && offset < body.end()) =>
-            {
-                return Some(function);
-            }
-            ItemKind::Trait(trait_item) => {
-                if let Some(function) = function_containing(trait_item.items(), offset) {
-                    return Some(function);
-                }
-            }
-            ItemKind::Impl(impl_item) => {
-                if let Some(function) = function_containing(impl_item.items(), offset) {
-                    return Some(function);
-                }
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
-fn pattern_binding(output: &ParseOutput, start: usize, end: usize, name: &str) -> Option<usize> {
-    let tokens = output
-        .tokens()
-        .iter()
-        .filter(|token| token.start() >= start && token.end() <= end)
-        .collect::<Vec<_>>();
-    let mut delimiters = Vec::new();
-    for (index, token) in tokens.iter().enumerate() {
-        let text = token_text(token, output);
-        if delimiters.is_empty() && matches!(text, ":" | "=") {
-            break;
-        }
-        if let TokenKind::Identifier(binding) = token.kind() {
-            let previous_is_path = index > 0 && token_text(tokens[index - 1], output) == "::";
-            let next_text = tokens.get(index + 1).map(|next| token_text(next, output));
-            let is_field_name =
-                next_text == Some(":") && delimiters.last() == Some(&Delimiter::Brace);
-            let is_path_or_constructor = matches!(next_text, Some("::" | "(" | "{" | "!"));
-            if binding != "self"
-                && identifier_name(binding) == identifier_name(name)
-                && !previous_is_path
-                && !is_field_name
-                && !is_path_or_constructor
-            {
-                return Some(token.start());
-            }
-        }
-        match token.kind() {
-            TokenKind::OpenDelimiter(delimiter) => delimiters.push(*delimiter),
-            TokenKind::CloseDelimiter(delimiter) if delimiters.last() == Some(delimiter) => {
-                delimiters.pop();
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
-fn is_macro_path_token(token: &Token, output: &ParseOutput) -> bool {
-    matches!(token.kind(), TokenKind::Identifier(_)) || token_text(token, output) == "::"
-}
-
-fn macro_group_end(tokens: &[Token], open: usize) -> Option<usize> {
-    let mut stack = Vec::new();
-    for (index, token) in tokens.iter().enumerate().skip(open) {
-        match token.kind() {
-            TokenKind::OpenDelimiter(delimiter) => stack.push(*delimiter),
-            TokenKind::CloseDelimiter(delimiter) => {
-                if stack.pop()? != *delimiter {
-                    return None;
-                }
-                if stack.is_empty() {
-                    return Some(index);
-                }
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
-fn token_text<'a>(token: &Token, output: &'a ParseOutput) -> &'a str {
-    token.text(output.source())
-}
-
-fn identifier_name(name: &str) -> &str {
-    name.strip_prefix("r#").unwrap_or(name)
 }

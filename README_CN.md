@@ -177,6 +177,7 @@ Workspace 将命令行应用与分析流程分层：
 | `cargo-cop` | CLI、配置与扫描流程编排、退出码。 |
 | `cop-config` | TOML schema 校验、配置发现、CLI 覆盖解析。 |
 | `cop-cargo` | Cargo 元数据、package 和 target 选择、features、依赖和 target `cfg`。 |
+| `cop-cfg` | 共享 `cfg` 表达式解析、规范化和三态求值。 |
 | `cop-syntax` | 自有 Rust 词法分析器、语法树、解析器和解析覆盖状态。 |
 | `cop-analysis` | `cfg` 求值、模块图发现、符号和路径解析、分析状态。 |
 | `cop-rules` | 20 条源码规范检查规则。 |

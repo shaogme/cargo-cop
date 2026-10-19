@@ -1,20 +1,13 @@
 use std::{collections::BTreeSet, ops::Range};
 
-use cop_analysis::ModuleNode;
+use cop_analysis::{CfgDecision, ModuleNode};
 use cop_model::{
     Diagnostic, LocalizedMessage, RuleId, BLOCK_USE_AT_SCOPE_START, CFG_INSIDE_USE_TREE,
     CFG_USE_GROUP_SPACING, CFG_USE_GROUP_SPLIT, MERGE_BLOCK_IMPORT_PREFIX,
 };
-use cop_syntax::{
-    Delimiter, FunctionBody, Item, ItemKind, ParseOutput, RustParser, SourceFile, Token, TokenKind,
-};
+use cop_syntax::{ItemSyntaxKind, ParseOutput, SyntaxNode, SyntaxNodeKind};
 
 use crate::support::{RuleDiagnosticAdapter, RuleReport, SyntaxSupport, UseLeaf};
-
-struct BlockScope {
-    open_index: usize,
-    close_index: usize,
-}
 
 struct BlockImportRecord {
     start: usize,
@@ -27,268 +20,214 @@ pub(super) struct BlockImportRuleSet;
 
 impl BlockImportRuleSet {
     pub(super) fn check_item(
-        item: &Item,
+        item: &SyntaxNode,
         module: &ModuleNode,
         diagnostics: &mut Vec<Diagnostic>,
         adapter: &RuleDiagnosticAdapter<'_>,
     ) -> Vec<Range<usize>> {
-        match item.kind() {
-            ItemKind::Function(function) => {
-                if let Some(body) = function.body() {
-                    check_function_blocks(body, module, diagnostics, adapter)
-                } else {
-                    Vec::new()
-                }
-            }
-            ItemKind::Trait(trait_item) => trait_item
-                .items()
-                .iter()
-                .flat_map(|nested| Self::check_item(nested, module, diagnostics, adapter))
-                .collect(),
-            ItemKind::Impl(impl_item) => impl_item
-                .items()
-                .iter()
-                .flat_map(|nested| Self::check_item(nested, module, diagnostics, adapter))
-                .collect(),
-            _ => Vec::new(),
-        }
+        check_item_node(item, module, diagnostics, adapter)
     }
 }
 
-fn check_function_blocks(
-    body: &FunctionBody,
+fn check_item_node(
+    item: &SyntaxNode,
     module: &ModuleNode,
     diagnostics: &mut Vec<Diagnostic>,
     adapter: &RuleDiagnosticAdapter<'_>,
 ) -> Vec<Range<usize>> {
-    let output = module.parse_output();
-    let tokens = output.tokens();
-    let Some(open_index) = tokens.iter().position(|token| {
-        token.start() == body.start()
-            && matches!(token.kind(), TokenKind::OpenDelimiter(Delimiter::Brace))
-    }) else {
+    if !node_is_potentially_enabled(module, item) {
         return Vec::new();
-    };
-    let Some(close_index) = matching_delimiter(tokens, open_index) else {
-        return Vec::new();
-    };
-    let mut scopes = vec![BlockScope {
-        open_index,
-        close_index,
-    }];
-    collect_nested_blocks(tokens, output, open_index, close_index, &mut scopes);
-    let mut use_tree_ranges = Vec::new();
-    for scope in scopes {
-        let (imports, scope_use_tree_ranges) =
-            check_block_imports(&scope, tokens, module, diagnostics, adapter);
-        use_tree_ranges.extend(scope_use_tree_ranges);
-        check_block_common_prefixes(&imports, module, diagnostics, adapter);
-        check_block_cfg_spacing(&imports, module, diagnostics, adapter);
     }
-    use_tree_ranges
-}
-
-fn collect_nested_blocks(
-    tokens: &[Token],
-    output: &ParseOutput,
-    open_index: usize,
-    close_index: usize,
-    scopes: &mut Vec<BlockScope>,
-) {
-    let mut index = open_index + 1;
-    while index < close_index {
-        if tokens[index].text(output.source()) == "#"
-            && tokens.get(index + 1).is_some_and(|token| {
-                matches!(token.kind(), TokenKind::OpenDelimiter(Delimiter::Bracket))
+    match item.item_syntax().map(|data| data.kind()) {
+        Some(ItemSyntaxKind::Function { .. }) => {
+            let body = item
+                .children()
+                .iter()
+                .filter_map(|id| module.parse_output().node(*id))
+                .find(|node| node.kind() == SyntaxNodeKind::Block);
+            body.map_or_else(Vec::new, |body| {
+                check_function_blocks(body, module, diagnostics, adapter)
             })
-        {
-            if let Some(attribute_end) = matching_delimiter(tokens, index + 1) {
-                index = attribute_end + 1;
-                continue;
-            }
         }
-        if tokens[index].text(output.source()) == "!"
-            && tokens
-                .get(index + 1)
-                .is_some_and(|token| matches!(token.kind(), TokenKind::OpenDelimiter(_)))
-        {
-            if let Some(macro_end) = matching_delimiter(tokens, index + 1) {
-                index = macro_end + 1;
-                continue;
-            }
-        }
-        if matches!(
-            tokens[index].kind(),
-            TokenKind::OpenDelimiter(Delimiter::Brace)
-        ) {
-            let Some(nested_close) = matching_delimiter(tokens, index) else {
-                index += 1;
-                continue;
+        Some(ItemSyntaxKind::Trait(_) | ItemSyntaxKind::Impl) => {
+            let output = module.parse_output();
+            let Some(scope) = item
+                .children()
+                .iter()
+                .filter_map(|id| output.node(*id))
+                .find(|node| node.kind() == SyntaxNodeKind::Scope)
+            else {
+                return Vec::new();
             };
-            if nested_close >= close_index {
-                index += 1;
-                continue;
-            }
-            scopes.push(BlockScope {
-                open_index: index,
-                close_index: nested_close,
-            });
-            collect_nested_blocks(tokens, output, index, nested_close, scopes);
-            index = nested_close + 1;
-            continue;
+            scope
+                .children()
+                .iter()
+                .filter_map(|id| output.node(*id))
+                .filter(|node| node.item_syntax().is_some())
+                .flat_map(|nested| check_item_node(nested, module, diagnostics, adapter))
+                .collect()
         }
-        index += 1;
+        _ => Vec::new(),
     }
 }
 
-fn check_block_imports(
-    scope: &BlockScope,
-    tokens: &[Token],
+fn check_function_blocks(
+    body: &SyntaxNode,
     module: &ModuleNode,
     diagnostics: &mut Vec<Diagnostic>,
     adapter: &RuleDiagnosticAdapter<'_>,
-) -> (Vec<BlockImportRecord>, Vec<Range<usize>>) {
-    let output = module.parse_output();
-    let mut seen_non_import = false;
-    let mut statement_start = true;
-    let mut inside_use = false;
-    let mut pending_attribute_start = None;
-    let mut imports = Vec::new();
+) -> Vec<Range<usize>> {
+    let mut pending = vec![body.id()];
     let mut use_tree_ranges = Vec::new();
-    let mut index = scope.open_index + 1;
-    while index < scope.close_index {
-        let token = &tokens[index];
-        if token.text(output.source()) == "#"
-            && tokens.get(index + 1).is_some_and(|next| {
-                matches!(next.kind(), TokenKind::OpenDelimiter(Delimiter::Bracket))
-            })
+    while let Some(id) = pending.pop() {
+        let Some(node) = module.parse_output().node(id) else {
+            continue;
+        };
+        if !node_is_potentially_enabled(module, node) {
+            continue;
+        }
+        if node.kind() == SyntaxNodeKind::Block {
+            use_tree_ranges.extend(check_block_scope(node, module, diagnostics, adapter));
+        }
+        if node.kind() == SyntaxNodeKind::Opaque
+            || node.kind() == SyntaxNodeKind::Macro
+            || node
+                .item_syntax()
+                .is_some_and(|data| matches!(data.kind(), ItemSyntaxKind::Module { .. }))
         {
-            if let Some(close) = matching_delimiter(tokens, index + 1) {
-                if statement_start && pending_attribute_start.is_none() {
-                    pending_attribute_start = Some(token.start());
-                }
-                index = close + 1;
-                continue;
-            }
+            continue;
         }
-        if token.text(output.source()) == "!"
-            && tokens
-                .get(index + 1)
-                .is_some_and(|next| matches!(next.kind(), TokenKind::OpenDelimiter(_)))
-        {
-            if let Some(close) = matching_delimiter(tokens, index + 1) {
-                if !inside_use {
-                    seen_non_import = true;
-                    statement_start = false;
-                }
-                index = close + 1;
-                continue;
-            }
-        }
-        if matches!(token.kind(), TokenKind::OpenDelimiter(Delimiter::Brace)) {
-            if let Some(close) = matching_delimiter(tokens, index) {
-                if !inside_use {
-                    seen_non_import = true;
-                    statement_start = true;
-                }
-                index = close + 1;
-                continue;
-            }
-        }
-        if matches!(
-            token.kind(),
-            TokenKind::OpenDelimiter(Delimiter::Parenthesis | Delimiter::Bracket)
-        ) {
-            if let Some(close) = matching_delimiter(tokens, index) {
-                index = close + 1;
-                continue;
-            }
-        }
-        let text = token.text(output.source());
-        if text == ";" {
-            statement_start = true;
-            inside_use = false;
-            pending_attribute_start = None;
-        } else if text == "use" && statement_start {
-            if seen_non_import {
-                adapter.push(
-                    module,
-                    diagnostics,
-                    RuleReport::new(
-                        RuleId::ImportsAtScopeStart,
-                        LocalizedMessage::new(BLOCK_USE_AT_SCOPE_START),
-                        Some(token.start()..token.end()),
-                    ),
-                );
-            }
-            if let Some(cfg_bounds) = nested_cfg_attribute(tokens, index, scope.close_index, output)
-            {
-                adapter.push(
-                    module,
-                    diagnostics,
-                    RuleReport::new(
-                        RuleId::CfgInsideUseTree,
-                        LocalizedMessage::new(CFG_INSIDE_USE_TREE),
-                        Some(cfg_bounds),
-                    ),
-                );
-            }
-            if let Some(end_index) = use_semicolon(tokens, index, scope.close_index, output) {
-                let start = pending_attribute_start.unwrap_or(token.start());
-                let end = tokens[end_index].end();
-                use_tree_ranges.push(start..end);
-                if !seen_non_import {
-                    if let Some(import) = parse_block_import(module, start, end) {
-                        imports.push(import);
-                    }
-                }
-            }
-            statement_start = false;
-            inside_use = true;
-        } else if statement_start {
-            statement_start = false;
-            seen_non_import = true;
-            pending_attribute_start = None;
-        }
-        index += 1;
+        pending.extend(node.children().iter().rev().copied());
     }
-    (imports, use_tree_ranges)
+    use_tree_ranges.sort_unstable_by_key(|range| range.start);
+    use_tree_ranges
 }
 
-fn parse_block_import(module: &ModuleNode, start: usize, end: usize) -> Option<BlockImportRecord> {
-    let source = module.parse_output().source();
-    let snippet = source.slice(start, end)?.to_owned();
-    let parsed = RustParser::parse(SourceFile::new(source.path().to_path_buf(), snippet));
-    let item = parsed.items().first()?;
-    let ItemKind::Use(use_item) = item.kind() else {
+fn check_block_scope(
+    scope: &SyntaxNode,
+    module: &ModuleNode,
+    diagnostics: &mut Vec<Diagnostic>,
+    adapter: &RuleDiagnosticAdapter<'_>,
+) -> Vec<Range<usize>> {
+    let mut preceding_non_imports = Vec::new();
+    let mut imports = Vec::new();
+    let mut use_tree_ranges = Vec::new();
+    for child in scope
+        .children()
+        .iter()
+        .filter_map(|id| module.parse_output().node(*id))
+    {
+        if !node_is_potentially_enabled(module, child) {
+            continue;
+        }
+        let condition = configured_condition(module, child);
+        let tree = (child.kind() == SyntaxNodeKind::Statement)
+            .then(|| {
+                child
+                    .children()
+                    .iter()
+                    .filter_map(|id| module.parse_output().node(*id))
+                    .find(|node| node.kind() == SyntaxNodeKind::UseTree)
+            })
+            .flatten();
+        let Some(tree) = tree else {
+            preceding_non_imports.push(condition);
+            continue;
+        };
+        if preceding_non_imports.iter().any(|previous| {
+            SyntaxSupport::conditions_may_coexist(condition.as_deref(), previous.as_deref())
+        }) {
+            adapter.push(
+                module,
+                diagnostics,
+                RuleReport::new(
+                    RuleId::ImportsAtScopeStart,
+                    LocalizedMessage::new(BLOCK_USE_AT_SCOPE_START),
+                    Some(child.start()..child.end()),
+                ),
+            );
+        }
+        use_tree_ranges.push(child.start()..child.end());
+        if let Some(bounds) = nested_cfg_attribute(module, tree) {
+            adapter.push(
+                module,
+                diagnostics,
+                RuleReport::new(
+                    RuleId::CfgInsideUseTree,
+                    LocalizedMessage::new(CFG_INSIDE_USE_TREE),
+                    Some(bounds),
+                ),
+            );
+        }
+        let import_is_at_scope_start = !preceding_non_imports.iter().any(|previous| {
+            SyntaxSupport::conditions_may_coexist(condition.as_deref(), previous.as_deref())
+        });
+        if import_is_at_scope_start {
+            if let Some(import) = parse_block_import(module, child, tree) {
+                imports.push(import);
+            }
+        }
+    }
+    check_block_common_prefixes(&imports, module, diagnostics, adapter);
+    check_block_cfg_spacing(&imports, module, diagnostics, adapter);
+    use_tree_ranges
+}
+
+fn parse_block_import(
+    module: &ModuleNode,
+    statement: &SyntaxNode,
+    tree: &SyntaxNode,
+) -> Option<BlockImportRecord> {
+    if !module.configured_ast().is_supported_range(
+        module.parse_output(),
+        statement.start(),
+        statement.end(),
+    ) {
         return None;
-    };
+    }
+    let leaves = SyntaxSupport::use_leaves(module, tree);
+    if leaves.is_empty() {
+        return None;
+    }
+    let statement_condition = configured_condition(module, statement);
+    let condition = if leaves.len() == 1 {
+        leaves[0].condition.clone().or(statement_condition)
+    } else {
+        statement_condition
+    }
+    .unwrap_or_else(|| "all()".to_owned());
     Some(BlockImportRecord {
-        start,
-        end,
-        condition: SyntaxSupport::effective_cfg(item.attributes(), &parsed),
-        leaves: SyntaxSupport::use_leaves(use_item.tree()),
+        start: statement.start(),
+        end: statement.end(),
+        condition: Some(condition),
+        leaves,
     })
 }
 
-fn use_semicolon(
-    tokens: &[Token],
-    use_index: usize,
-    scope_end: usize,
-    output: &ParseOutput,
-) -> Option<usize> {
-    let mut index = use_index + 1;
-    while index < scope_end {
-        if tokens[index].text(output.source()) == ";" {
-            return Some(index);
-        }
-        if matches!(tokens[index].kind(), TokenKind::OpenDelimiter(_)) {
-            index = matching_delimiter(tokens, index)? + 1;
-        } else {
-            index += 1;
-        }
+fn nested_cfg_attribute(module: &ModuleNode, tree: &SyntaxNode) -> Option<Range<usize>> {
+    tree.children()
+        .iter()
+        .filter_map(|id| module.parse_output().node(*id))
+        .filter(|child| child.kind() == SyntaxNodeKind::UseTree)
+        .find_map(|child| nested_cfg_in_tree(module, child))
+}
+
+fn nested_cfg_in_tree(module: &ModuleNode, tree: &SyntaxNode) -> Option<Range<usize>> {
+    if !node_is_potentially_enabled(module, tree) {
+        return None;
     }
-    None
+    if let Some(attribute) = tree
+        .attributes()
+        .iter()
+        .find(|attribute| attribute.path() == ["cfg"])
+    {
+        return Some(attribute.start()..attribute.end());
+    }
+    tree.children()
+        .iter()
+        .filter_map(|id| module.parse_output().node(*id))
+        .filter(|child| child.kind() == SyntaxNodeKind::UseTree)
+        .find_map(|child| nested_cfg_in_tree(module, child))
 }
 
 fn check_block_common_prefixes(
@@ -299,31 +238,18 @@ fn check_block_common_prefixes(
 ) {
     for current_index in 1..imports.len() {
         let current = &imports[current_index];
-        if current.leaves.len() != 1 {
-            continue;
-        }
-        let current_leaf = &current.leaves[0];
-        if current_leaf.alias.is_some() || current_leaf.glob {
-            continue;
-        }
         let Some(condition) = current.condition.as_ref() else {
             continue;
         };
         for previous in &imports[..current_index] {
-            if previous.leaves.len() != 1 || previous.condition.as_ref() != Some(condition) {
+            if previous.condition.as_ref() != Some(condition) {
                 continue;
             }
-            let previous_leaf = &previous.leaves[0];
-            if previous_leaf.alias.is_some() || previous_leaf.glob {
+            let Some(prefix) =
+                SyntaxSupport::common_import_prefix(&previous.leaves, &current.leaves)
+            else {
                 continue;
-            }
-            let prefix_length = common_prefix_len(&previous_leaf.path, &current_leaf.path);
-            if prefix_length == 0
-                || prefix_length >= previous_leaf.path.len()
-                || prefix_length >= current_leaf.path.len()
-            {
-                continue;
-            }
+            };
             adapter.push(
                 module,
                 diagnostics,
@@ -334,7 +260,7 @@ fn check_block_common_prefixes(
                             "line",
                             line_of(module.parse_output(), previous.start) as i64,
                         )
-                        .with_text("prefix", previous_leaf.path[..prefix_length].join("::")),
+                        .with_text("prefix", prefix),
                     Some(current.start..current.end),
                 ),
             );
@@ -407,79 +333,20 @@ fn check_block_cfg_spacing(
     }
 }
 
-fn matching_delimiter(tokens: &[Token], open: usize) -> Option<usize> {
-    let delimiter = match tokens.get(open)?.kind() {
-        TokenKind::OpenDelimiter(delimiter) => *delimiter,
-        _ => return None,
-    };
-    let mut depth = 0usize;
-    for (index, token) in tokens.iter().enumerate().skip(open) {
-        match token.kind() {
-            TokenKind::OpenDelimiter(found) if *found == delimiter => depth += 1,
-            TokenKind::CloseDelimiter(found) if *found == delimiter => {
-                depth = depth.checked_sub(1)?;
-                if depth == 0 {
-                    return Some(index);
-                }
-            }
-            _ => {}
-        }
-    }
-    None
+fn configured_condition(module: &ModuleNode, node: &SyntaxNode) -> Option<String> {
+    module
+        .configured_ast()
+        .node(node.id())
+        .filter(|configured| configured.decision() != CfgDecision::False)
+        .and_then(|configured| configured.effective_condition())
+        .map(str::to_owned)
 }
 
-fn nested_cfg_attribute(
-    tokens: &[Token],
-    use_index: usize,
-    scope_end: usize,
-    output: &ParseOutput,
-) -> Option<Range<usize>> {
-    let mut index = use_index + 1;
-    let mut brace_depth = 0usize;
-    while index < scope_end {
-        let token = &tokens[index];
-        if token.text(output.source()) == ";" && brace_depth == 0 {
-            return None;
-        }
-        match token.kind() {
-            TokenKind::OpenDelimiter(Delimiter::Brace) => brace_depth += 1,
-            TokenKind::CloseDelimiter(Delimiter::Brace) => {
-                brace_depth = brace_depth.saturating_sub(1);
-            }
-            TokenKind::OpenDelimiter(Delimiter::Parenthesis | Delimiter::Bracket) => {
-                if let Some(close) = matching_delimiter(tokens, index) {
-                    if brace_depth == 0 {
-                        index = close + 1;
-                        continue;
-                    }
-                }
-            }
-            _ => {}
-        }
-        if brace_depth > 0
-            && token.text(output.source()) == "#"
-            && tokens.get(index + 1).is_some_and(|next| {
-                matches!(next.kind(), TokenKind::OpenDelimiter(Delimiter::Bracket))
-            })
-        {
-            let close = matching_delimiter(tokens, index + 1)?;
-            if tokens
-                .get(index + 2)
-                .is_some_and(|attribute_name| attribute_name.text(output.source()) == "cfg")
-            {
-                return Some(token.start()..tokens[close].end());
-            }
-        }
-        index += 1;
-    }
-    None
-}
-
-fn common_prefix_len(left: &[String], right: &[String]) -> usize {
-    left.iter()
-        .zip(right)
-        .take_while(|(left_segment, right_segment)| left_segment == right_segment)
-        .count()
+fn node_is_potentially_enabled(module: &ModuleNode, node: &SyntaxNode) -> bool {
+    module
+        .configured_ast()
+        .node(node.id())
+        .is_some_and(|configured| configured.decision() != CfgDecision::False)
 }
 
 fn line_of(output: &ParseOutput, offset: usize) -> u32 {

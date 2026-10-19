@@ -1,7 +1,12 @@
+mod lint_attributes;
+mod macro_scan;
+mod scope;
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     io::ErrorKind,
+    ops::Range,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -14,11 +19,17 @@ use cop_model::{
     PATH_MODULE_MISSING, UNKNOWN_CFG,
 };
 use cop_syntax::{
-    Attribute, CoverageStatus, FunctionBody, Item, ItemKind, MacroInvocation, ModuleItem,
-    NamedDeclaration, ParseIssueKind, ParseOutput, RustParser, SourceFile, SyntaxNode,
+    AstNodeId, Attribute, CoverageStatus, ItemSyntaxKind, ParseIssueCode, ParseOptions,
+    ParseOutput, RustParser, SourceFile, SyntaxNode, SyntaxNodeKind,
 };
 
-use crate::cfg_eval::{AttributeEffects, CfgDecision, CfgEvaluator};
+pub use self::lint_attributes::ConfiguredAttribute;
+use self::{
+    lint_attributes::LintAttributeCollector,
+    macro_scan::MacroScanner,
+    scope::{IssueRequest, ModulePathRequest, ModuleScope, ModuleVisit, ScopeSupport},
+};
+use crate::{cfg_eval::CfgDecision, ConfiguredAst, ConfiguredAstIssueKind};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ModuleNode {
@@ -36,8 +47,9 @@ pub struct ModuleNode {
     crate_root: bool,
     inline: bool,
     order_only: bool,
-    items: Vec<Item>,
-    source_items: Vec<Item>,
+    scope_id: AstNodeId,
+    lint_relaxations: Vec<ConfiguredAttribute>,
+    configured_ast: ConfiguredAst,
     source: Arc<ParseOutput>,
 }
 
@@ -54,6 +66,27 @@ struct ParseIssueKey {
     end: usize,
 }
 
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct UnknownIssueKey {
+    path: PathBuf,
+    start: usize,
+    end: usize,
+    condition: String,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct MalformedIssueKey {
+    path: PathBuf,
+    start: usize,
+    end: usize,
+}
+
+struct ConfiguredIssueDetails {
+    kind: AnalysisIssueKind,
+    severity: Severity,
+    message: LocalizedMessage,
+}
+
 struct GraphBuilder<'a> {
     package: &'a SelectedPackage,
     target: &'a TargetContext,
@@ -62,45 +95,9 @@ struct GraphBuilder<'a> {
     diagnostics: Vec<Diagnostic>,
     parsed: BTreeMap<PathBuf, Arc<ParseOutput>>,
     reported_parse: BTreeSet<ParseIssueKey>,
+    reported_unknown: BTreeSet<UnknownIssueKey>,
+    reported_malformed: BTreeSet<MalformedIssueKey>,
     active_files: BTreeSet<PathBuf>,
-}
-
-struct ModuleScope {
-    file_path: PathBuf,
-    module_dir: PathBuf,
-    namespace: Vec<String>,
-    inline_path: Vec<String>,
-    declared_at: Option<SourceSpan>,
-    cfg_condition: Option<String>,
-    is_root: bool,
-    source_is_root: bool,
-    is_inline: bool,
-    active: bool,
-    items: Vec<Item>,
-    inner_attributes: Vec<Attribute>,
-    source: Arc<ParseOutput>,
-}
-
-struct ModuleVisit<'a> {
-    scope: &'a ModuleScope,
-    item: &'a Item,
-    module: &'a ModuleItem,
-    effects: AttributeEffects,
-}
-
-struct ModulePathRequest<'a> {
-    name: &'a str,
-    effects: &'a AttributeEffects,
-    declaration_span: Option<SourceSpan>,
-}
-
-struct IssueRequest {
-    kind: AnalysisIssueKind,
-    severity: Severity,
-    message: LocalizedMessage,
-    span: Option<SourceSpan>,
-    namespace: Option<String>,
-    cfg_condition: Option<String>,
 }
 
 impl ModuleNode {
@@ -160,12 +157,43 @@ impl ModuleNode {
         self.order_only
     }
 
-    pub fn items(&self) -> &[Item] {
-        &self.items
+    pub fn item_nodes(&self) -> Vec<&SyntaxNode> {
+        let Some(scope) = self.source.node(self.scope_id) else {
+            return Vec::new();
+        };
+        scope
+            .children()
+            .iter()
+            .filter_map(|id| self.source.node(*id))
+            .filter(|node| {
+                node.item_syntax().is_some()
+                    && self
+                        .configured_ast
+                        .node(node.id())
+                        .is_some_and(|configured| configured.decision() != CfgDecision::False)
+            })
+            .collect()
     }
 
-    pub fn source_items(&self) -> &[Item] {
-        &self.source_items
+    pub fn scope_inner_attributes(&self) -> &[Attribute] {
+        self.source
+            .node(self.scope_id)
+            .map_or(&[], SyntaxNode::attributes)
+    }
+
+    pub fn scope_range(&self) -> Range<usize> {
+        self.source
+            .node(self.scope_id)
+            .map(|node| node.start()..node.end())
+            .unwrap_or(0..0)
+    }
+
+    pub fn lint_relaxations(&self) -> &[ConfiguredAttribute] {
+        &self.lint_relaxations
+    }
+
+    pub fn configured_ast(&self) -> &ConfiguredAst {
+        &self.configured_ast
     }
 
     pub fn parse_output(&self) -> &ParseOutput {
@@ -187,6 +215,8 @@ impl ModuleGraph {
             diagnostics: Vec::new(),
             parsed: BTreeMap::new(),
             reported_parse: BTreeSet::new(),
+            reported_unknown: BTreeSet::new(),
+            reported_malformed: BTreeSet::new(),
             active_files: BTreeSet::new(),
         }
         .build()
@@ -199,13 +229,19 @@ impl ModuleGraph {
 
 impl GraphBuilder<'_> {
     fn build(mut self) -> ModuleGraph {
-        let root = normalize_path(self.target.crate_root());
+        let root = ScopeSupport::normalize_path(self.target.crate_root());
         let Some(source) = self.load_source(root.clone()) else {
             return ModuleGraph {
                 nodes: self.nodes,
                 diagnostics: self.diagnostics,
             };
         };
+        let root_scope_id = source
+            .syntax_nodes()
+            .iter()
+            .find(|node| node.kind() == SyntaxNodeKind::Crate)
+            .map(SyntaxNode::id)
+            .expect("解析结果包含 crate 根节点");
         let root_scope = ModuleScope {
             file_path: root.clone(),
             module_dir: root.parent().unwrap_or(Path::new(".")).to_path_buf(),
@@ -213,12 +249,12 @@ impl GraphBuilder<'_> {
             inline_path: Vec::new(),
             declared_at: None,
             cfg_condition: None,
+            source_cfg_condition: None,
             is_root: true,
             source_is_root: true,
             is_inline: false,
             active: true,
-            items: source.items().to_vec(),
-            inner_attributes: source.inner_attributes().to_vec(),
+            scope_id: root_scope_id,
             source,
         };
         self.active_files.insert(root);
@@ -230,47 +266,71 @@ impl GraphBuilder<'_> {
     }
 
     fn walk_scope(&mut self, mut scope: ModuleScope) {
-        let evaluator = CfgEvaluator::new(self.target);
-        let scope_effects =
-            evaluator.evaluate_attributes(&scope.inner_attributes, scope.source.source());
-        if scope.active {
-            self.report_effects(&scope, &scope.inner_attributes, &scope_effects);
-        }
-        scope.active &= scope_effects.decision != Some(CfgDecision::False);
-        scope.cfg_condition = merge_conditions(scope.cfg_condition, &scope_effects.conditions);
-        let mut active_items = Vec::new();
         let source = scope.source.clone();
-        for item in &scope.items {
+        let configured_ast =
+            ConfiguredAst::project(&source, self.target, scope.source_cfg_condition.as_deref());
+        let Some(scope_node) = source.node(scope.scope_id) else {
+            return;
+        };
+        let scope_effects = configured_ast
+            .node(scope_node.id())
+            .map(|node| node.attribute_evaluation().clone())
+            .unwrap_or_default();
+        let scope_condition = configured_ast
+            .node(scope_node.id())
+            .and_then(|node| node.effective_condition())
+            .map(str::to_owned);
+        scope.active &= scope_effects.decision() != Some(CfgDecision::False);
+        scope.active &= configured_ast
+            .node(scope_node.id())
+            .is_some_and(|node| node.decision() != CfgDecision::False);
+        scope.cfg_condition = scope_condition;
+        self.report_parse_issues(&scope.file_path, &source, &configured_ast);
+        self.report_configured_ast_issues(&scope, &configured_ast);
+        for item in ScopeSupport::scope_children(&source, scope.scope_id) {
+            let Some(item_data) = item.item_syntax() else {
+                continue;
+            };
+            let configured_item = configured_ast.node(item.id());
+            let effects = configured_item
+                .map(|node| node.attribute_evaluation().clone())
+                .unwrap_or_default();
+            let effective_condition = configured_item
+                .and_then(|node| node.effective_condition())
+                .map(str::to_owned);
+            let item_enabled =
+                configured_item.is_some_and(|node| node.decision() != CfgDecision::False);
             if !scope.active {
-                if let ItemKind::Module(module) = item.kind() {
-                    if module.is_inline() {
+                if let ItemSyntaxKind::Module { name, inline } = item_data.kind() {
+                    if *inline {
                         self.visit_module(ModuleVisit {
                             scope: &scope,
                             item,
-                            module,
-                            effects: AttributeEffects::default(),
-                        });
-                    }
-                }
-                continue;
-            }
-            let effects = evaluator.evaluate_attributes(item.attributes(), source.source());
-            self.report_effects(&scope, item.attributes(), &effects);
-            if effects.decision == Some(CfgDecision::False) {
-                if let ItemKind::Module(module) = item.kind() {
-                    if module.is_inline() {
-                        self.visit_module(ModuleVisit {
-                            scope: &scope,
-                            item,
-                            module,
+                            name,
+                            inline: *inline,
                             effects,
+                            effective_condition,
                         });
                     }
                 }
                 continue;
             }
-            active_items.push(item.clone());
-            for invocation in item_include_macros(item) {
+            if !item_enabled {
+                if let ItemSyntaxKind::Module { name, inline } = item_data.kind() {
+                    if *inline {
+                        self.visit_module(ModuleVisit {
+                            scope: &scope,
+                            item,
+                            name,
+                            inline: *inline,
+                            effects,
+                            effective_condition,
+                        });
+                    }
+                }
+                continue;
+            }
+            for invocation in MacroScanner::include_invocations(item, &source, &configured_ast) {
                 self.report(IssueRequest {
                     kind: AnalysisIssueKind::DynamicInput,
                     severity: Severity::Warning,
@@ -279,23 +339,25 @@ impl GraphBuilder<'_> {
                         .source()
                         .span(invocation.start(), invocation.end())
                         .ok(),
-                    namespace: Some(namespace_string(&scope.namespace)),
+                    namespace: Some(ScopeSupport::module_namespace(&scope.namespace)),
                     cfg_condition: scope.cfg_condition.clone(),
                 });
             }
-            if let ItemKind::Module(module) = item.kind() {
+            if let ItemSyntaxKind::Module { name, inline } = item_data.kind() {
                 self.visit_module(ModuleVisit {
                     scope: &scope,
                     item,
-                    module,
+                    name,
+                    inline: *inline,
                     effects,
+                    effective_condition,
                 });
-            } else if let ItemKind::Macro(invocation) = item.kind() {
+            } else if let ItemSyntaxKind::Macro(invocation) = item_data.kind() {
                 let macro_name = invocation
                     .path()
                     .segments()
                     .last()
-                    .map(String::as_str)
+                    .map(|segment| segment.name())
                     .unwrap_or("");
                 let issue_kind = if macro_name == "include" {
                     continue;
@@ -311,11 +373,14 @@ impl GraphBuilder<'_> {
                         .source()
                         .span(invocation.start(), invocation.end())
                         .ok(),
-                    namespace: Some(namespace_string(&scope.namespace)),
+                    namespace: Some(ScopeSupport::module_namespace(&scope.namespace)),
                     cfg_condition: scope.cfg_condition.clone(),
                 });
             }
         }
+        let mut lint_relaxations = LintAttributeCollector::collect(&configured_ast);
+        lint_relaxations
+            .retain(|attribute| ScopeSupport::lint_attribute_belongs_to_scope(&scope, attribute));
         let node = ModuleNode {
             context_index: self.context_index,
             package_name: self.package.name().to_owned(),
@@ -323,7 +388,10 @@ impl GraphBuilder<'_> {
             target_name: self.target.name().to_owned(),
             target_kind: self.target.kind().to_vec(),
             file_path: scope.file_path.clone(),
-            display_path: relative_display(self.package.package_root(), &scope.file_path),
+            display_path: ScopeSupport::relative_display(
+                self.package.package_root(),
+                &scope.file_path,
+            ),
             parent_namespace: scope.namespace[..scope.namespace.len().saturating_sub(1)].to_vec(),
             namespace: scope.namespace,
             declared_at: scope.declared_at,
@@ -331,8 +399,9 @@ impl GraphBuilder<'_> {
             crate_root: scope.is_root,
             inline: scope.is_inline,
             order_only: !scope.active,
-            items: active_items,
-            source_items: scope.items,
+            scope_id: scope.scope_id,
+            lint_relaxations,
+            configured_ast,
             source: scope.source,
         };
         self.nodes.push(node);
@@ -342,29 +411,40 @@ impl GraphBuilder<'_> {
         let ModuleVisit {
             scope,
             item,
-            module,
+            name,
+            inline,
             effects,
+            effective_condition,
         } = visit;
         let mut namespace = scope.namespace.clone();
-        namespace.push(module.name().to_owned());
+        namespace.push(name.to_owned());
         let declared_at = scope.source.source().span(item.start(), item.end()).ok();
-        let cfg_condition = merge_conditions(scope.cfg_condition.clone(), &effects.conditions);
-        if module.is_inline() {
+        let cfg_condition = effective_condition;
+        if inline {
+            let Some(inline_scope) = item
+                .children()
+                .iter()
+                .filter_map(|id| scope.source.node(*id))
+                .find(|node| node.kind() == SyntaxNodeKind::Scope)
+            else {
+                return;
+            };
             let mut inline_path = scope.inline_path.clone();
-            inline_path.push(module.name().to_owned());
+            inline_path.push(name.to_owned());
+            let source_cfg_condition = scope.source_cfg_condition.clone();
             self.walk_scope(ModuleScope {
                 file_path: scope.file_path.clone(),
-                module_dir: scope.module_dir.join(module.name()),
+                module_dir: scope.module_dir.join(name),
                 namespace,
                 inline_path,
                 declared_at,
                 cfg_condition,
+                source_cfg_condition,
                 is_root: false,
                 source_is_root: scope.source_is_root,
                 is_inline: true,
-                active: scope.active && effects.decision != Some(CfgDecision::False),
-                items: module.items().to_vec(),
-                inner_attributes: module.inner_attributes().to_vec(),
+                active: scope.active && effects.decision() != Some(CfgDecision::False),
+                scope_id: inline_scope.id(),
                 source: scope.source.clone(),
             });
             return;
@@ -372,9 +452,10 @@ impl GraphBuilder<'_> {
         let Some(path) = self.module_path(
             scope,
             ModulePathRequest {
-                name: module.name(),
+                name,
                 effects: &effects,
                 declaration_span: declared_at.clone(),
+                cfg_condition: cfg_condition.clone(),
             },
         ) else {
             return;
@@ -383,9 +464,9 @@ impl GraphBuilder<'_> {
             self.report(IssueRequest {
                 kind: AnalysisIssueKind::ModuleCycle,
                 severity: Severity::Error,
-                message: LocalizedMessage::new(MODULE_CYCLE).with_text("name", module.name()),
+                message: LocalizedMessage::new(MODULE_CYCLE).with_text("name", name),
                 span: declared_at,
-                namespace: Some(namespace_string(&namespace)),
+                namespace: Some(ScopeSupport::module_namespace(&namespace)),
                 cfg_condition,
             });
             return;
@@ -395,19 +476,25 @@ impl GraphBuilder<'_> {
             self.active_files.remove(&path);
             return;
         };
+        let source_cfg_condition = cfg_condition.clone();
         self.walk_scope(ModuleScope {
             file_path: path.clone(),
-            module_dir: scope.module_dir.join(module.name()),
+            module_dir: scope.module_dir.join(name),
             namespace,
             inline_path: Vec::new(),
             declared_at,
             cfg_condition,
+            source_cfg_condition,
             is_root: false,
             source_is_root: false,
             is_inline: false,
             active: true,
-            items: source.items().to_vec(),
-            inner_attributes: source.inner_attributes().to_vec(),
+            scope_id: source
+                .syntax_nodes()
+                .iter()
+                .find(|node| node.kind() == SyntaxNodeKind::Crate)
+                .map(SyntaxNode::id)
+                .expect("解析结果包含 crate 根节点"),
             source,
         });
         self.active_files.remove(&path);
@@ -418,12 +505,12 @@ impl GraphBuilder<'_> {
         scope: &ModuleScope,
         request: ModulePathRequest<'_>,
     ) -> Option<PathBuf> {
-        if request.effects.path_unknown {
+        if request.effects.path_unknown() {
             return None;
         }
-        if let Some(path) = &request.effects.path {
-            let base = path_attribute_base(scope);
-            let candidate = normalize_path(&base.join(path));
+        if let Some(path) = request.effects.path() {
+            let base = ScopeSupport::path_attribute_base(scope);
+            let candidate = ScopeSupport::normalize_path(&base.join(path));
             if self.source_file_exists(&candidate)? {
                 return Some(candidate);
             }
@@ -432,8 +519,8 @@ impl GraphBuilder<'_> {
                 severity: Severity::Error,
                 message: LocalizedMessage::new(PATH_MODULE_MISSING),
                 span: request.declaration_span,
-                namespace: Some(namespace_string(&scope.namespace)),
-                cfg_condition: scope.cfg_condition.clone(),
+                namespace: Some(ScopeSupport::module_namespace(&scope.namespace)),
+                cfg_condition: request.cfg_condition.clone(),
             });
             return None;
         }
@@ -449,21 +536,21 @@ impl GraphBuilder<'_> {
                     message: LocalizedMessage::new(MODULE_LAYOUT_AMBIGUOUS)
                         .with_text("name", request.name),
                     span: request.declaration_span,
-                    namespace: Some(namespace_string(&scope.namespace)),
-                    cfg_condition: scope.cfg_condition.clone(),
+                    namespace: Some(ScopeSupport::module_namespace(&scope.namespace)),
+                    cfg_condition: request.cfg_condition,
                 });
                 None
             }
-            (true, false) => Some(normalize_path(&first)),
-            (false, true) => Some(normalize_path(&second)),
+            (true, false) => Some(ScopeSupport::normalize_path(&first)),
+            (false, true) => Some(ScopeSupport::normalize_path(&second)),
             (false, false) => {
                 self.report(IssueRequest {
                     kind: AnalysisIssueKind::MissingModule,
                     severity: Severity::Error,
                     message: LocalizedMessage::new(MODULE_MISSING).with_text("name", request.name),
                     span: request.declaration_span,
-                    namespace: Some(namespace_string(&scope.namespace)),
-                    cfg_condition: scope.cfg_condition.clone(),
+                    namespace: Some(ScopeSupport::module_namespace(&scope.namespace)),
+                    cfg_condition: request.cfg_condition,
                 });
                 None
             }
@@ -471,7 +558,7 @@ impl GraphBuilder<'_> {
     }
 
     fn load_source(&mut self, path: PathBuf) -> Option<Arc<ParseOutput>> {
-        let path = normalize_path(&path);
+        let path = ScopeSupport::normalize_path(&path);
         if let Some(source) = self.parsed.get(&path) {
             return Some(source.clone());
         }
@@ -493,8 +580,10 @@ impl GraphBuilder<'_> {
                 return None;
             }
         };
-        let output = Arc::new(RustParser::parse(SourceFile::new(path.clone(), text)));
-        self.report_parse_issues(&path, &output);
+        let output = Arc::new(RustParser::parse(
+            SourceFile::new(path.clone(), text),
+            ParseOptions::new(self.target.edition()),
+        ));
         self.parsed.insert(path, output.clone());
         Some(output)
     }
@@ -521,11 +610,35 @@ impl GraphBuilder<'_> {
         }
     }
 
-    fn report_parse_issues(&mut self, path: &Path, output: &ParseOutput) {
+    fn report_parse_issues(
+        &mut self,
+        path: &Path,
+        output: &ParseOutput,
+        configured_ast: &ConfiguredAst,
+    ) {
         if output.coverage() == CoverageStatus::Complete {
             return;
         }
         for issue in output.issues() {
+            if !configured_ast.is_issue_enabled(issue) {
+                continue;
+            }
+            if issue.code() == ParseIssueCode::OpaqueMacroInput
+                && output.syntax_nodes().iter().any(|node| {
+                    node.kind() == SyntaxNodeKind::Macro
+                        && node.start() <= issue.start()
+                        && issue.end() <= node.end()
+                        && node.macro_invocation().is_some_and(|invocation| {
+                            invocation
+                                .path()
+                                .segments()
+                                .last()
+                                .is_some_and(|segment| segment.name() == "include")
+                        })
+                })
+            {
+                continue;
+            }
             let key = ParseIssueKey {
                 path: path.to_path_buf(),
                 start: issue.start(),
@@ -536,11 +649,16 @@ impl GraphBuilder<'_> {
             }
             self.report(IssueRequest {
                 kind: AnalysisIssueKind::ParserCoverage,
-                severity: match issue.kind() {
-                    ParseIssueKind::UnsupportedSyntax => Severity::Warning,
-                    ParseIssueKind::Lexical
-                    | ParseIssueKind::UnexpectedToken
-                    | ParseIssueKind::UnclosedDelimiter => Severity::Error,
+                severity: match issue.code() {
+                    ParseIssueCode::UnsupportedSyntax(_) | ParseIssueCode::OpaqueMacroInput => {
+                        Severity::Warning
+                    }
+                    ParseIssueCode::LexicalError
+                    | ParseIssueCode::UnexpectedToken
+                    | ParseIssueCode::UnexpectedEof
+                    | ParseIssueCode::UnclosedDelimiter
+                    | ParseIssueCode::InvalidAttribute
+                    | ParseIssueCode::UnsupportedEdition => Severity::Error,
                 },
                 message: issue.message().clone(),
                 span: output.source().span(issue.start(), issue.end()).ok(),
@@ -550,37 +668,55 @@ impl GraphBuilder<'_> {
         }
     }
 
-    fn report_effects(
+    fn report_configured_ast_issues(
         &mut self,
         scope: &ModuleScope,
-        attrs: &[Attribute],
-        effects: &AttributeEffects,
+        configured_ast: &ConfiguredAst,
     ) {
-        if effects.malformed {
+        for issue in configured_ast.issues() {
+            if !ScopeSupport::issue_belongs_to_scope(scope, issue) {
+                continue;
+            }
+            let kind = match issue.kind() {
+                ConfiguredAstIssueKind::UnknownCfg => {
+                    let condition = issue.condition().unwrap_or_default();
+                    if !self.reported_unknown.insert(UnknownIssueKey {
+                        path: scope.file_path.clone(),
+                        start: issue.start(),
+                        end: issue.end(),
+                        condition: condition.to_owned(),
+                    }) {
+                        continue;
+                    }
+                    ConfiguredIssueDetails {
+                        kind: AnalysisIssueKind::UnknownCfg,
+                        severity: Severity::Warning,
+                        message: LocalizedMessage::new(UNKNOWN_CFG)
+                            .with_text("condition", condition),
+                    }
+                }
+                ConfiguredAstIssueKind::MalformedAttribute => {
+                    if !self.reported_malformed.insert(MalformedIssueKey {
+                        path: scope.file_path.clone(),
+                        start: issue.start(),
+                        end: issue.end(),
+                    }) {
+                        continue;
+                    }
+                    ConfiguredIssueDetails {
+                        kind: AnalysisIssueKind::ParserCoverage,
+                        severity: Severity::Error,
+                        message: LocalizedMessage::new(MALFORMED_CFG_ATTRIBUTE),
+                    }
+                }
+            };
             self.report(IssueRequest {
-                kind: AnalysisIssueKind::ParserCoverage,
-                severity: Severity::Error,
-                message: LocalizedMessage::new(MALFORMED_CFG_ATTRIBUTE),
-                span: attrs
-                    .first()
-                    .and_then(|attr| scope.source.source().span(attr.start(), attr.end()).ok()),
-                namespace: Some(namespace_string(&scope.namespace)),
-                cfg_condition: scope.cfg_condition.clone(),
-            });
-        }
-        for condition in &effects.unknown {
-            self.report(IssueRequest {
-                kind: AnalysisIssueKind::UnknownCfg,
-                severity: Severity::Warning,
-                message: LocalizedMessage::new(UNKNOWN_CFG)
-                    .with_text("condition", &condition.condition),
-                span: scope
-                    .source
-                    .source()
-                    .span(condition.start, condition.end)
-                    .ok(),
-                namespace: Some(namespace_string(&scope.namespace)),
-                cfg_condition: Some(condition.condition.clone()),
+                kind: kind.kind,
+                severity: kind.severity,
+                message: kind.message,
+                span: scope.source.source().span(issue.start(), issue.end()).ok(),
+                namespace: Some(ScopeSupport::module_namespace(&scope.namespace)),
+                cfg_condition: issue.effective_condition().map(str::to_owned),
             });
         }
     }
@@ -602,112 +738,4 @@ impl GraphBuilder<'_> {
         }
         self.diagnostics.push(diagnostic);
     }
-}
-
-fn normalize_path(path: &Path) -> PathBuf {
-    fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
-}
-
-fn relative_display(root: &Path, path: &Path) -> PathBuf {
-    path.strip_prefix(root)
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|_| path.to_path_buf())
-}
-
-fn namespace_string(namespace: &[String]) -> String {
-    if namespace.is_empty() {
-        "crate".to_owned()
-    } else {
-        format!("crate::{}", namespace.join("::"))
-    }
-}
-
-fn merge_conditions(parent: Option<String>, conditions: &[String]) -> Option<String> {
-    let mut all = parent.into_iter().collect::<Vec<_>>();
-    all.extend(conditions.iter().cloned());
-    (!all.is_empty()).then(|| all.join(" && "))
-}
-
-fn item_include_macros(item: &Item) -> Vec<MacroInvocation> {
-    let mut invocations = Vec::new();
-    match item.kind() {
-        ItemKind::Macro(invocation) => collect_include(invocation, &mut invocations),
-        ItemKind::Function(function) => {
-            collect_syntax_macros(function.signature_nodes(), &mut invocations);
-            if let Some(body) = function.body() {
-                collect_body_macros(body, &mut invocations);
-            }
-        }
-        ItemKind::Struct(declaration)
-        | ItemKind::Enum(declaration)
-        | ItemKind::Union(declaration)
-        | ItemKind::TypeAlias(declaration)
-        | ItemKind::Constant(declaration)
-        | ItemKind::Static(declaration) => {
-            collect_named_macros(declaration, &mut invocations);
-        }
-        ItemKind::Trait(trait_item) => {
-            for nested in trait_item.items() {
-                invocations.extend(item_include_macros(nested));
-            }
-        }
-        ItemKind::Impl(impl_item) => {
-            for nested in impl_item.items() {
-                invocations.extend(item_include_macros(nested));
-            }
-        }
-        ItemKind::Module(_)
-        | ItemKind::MacroDefinition(_)
-        | ItemKind::Use(_)
-        | ItemKind::ExternCrate(_)
-        | ItemKind::Other(_) => {}
-    }
-    invocations
-}
-
-fn collect_body_macros(body: &FunctionBody, invocations: &mut Vec<MacroInvocation>) {
-    collect_syntax_macros(body.nodes(), invocations);
-}
-
-fn collect_named_macros(declaration: &NamedDeclaration, invocations: &mut Vec<MacroInvocation>) {
-    collect_syntax_macros(declaration.nodes(), invocations);
-}
-
-fn collect_syntax_macros(nodes: &[SyntaxNode], invocations: &mut Vec<MacroInvocation>) {
-    for node in nodes {
-        if let SyntaxNode::Macro(invocation) = node {
-            collect_include(invocation, invocations);
-        }
-    }
-}
-
-fn collect_include(invocation: &MacroInvocation, invocations: &mut Vec<MacroInvocation>) {
-    if invocation
-        .path()
-        .segments()
-        .last()
-        .is_some_and(|segment| segment == "include")
-    {
-        invocations.push(invocation.clone());
-    }
-}
-
-fn path_attribute_base(scope: &ModuleScope) -> PathBuf {
-    let mut base = scope
-        .file_path
-        .parent()
-        .unwrap_or(Path::new("."))
-        .to_path_buf();
-    if !scope.source_is_root
-        && scope
-            .file_path
-            .file_name()
-            .is_some_and(|name| name.to_string_lossy() != "mod.rs")
-    {
-        if let Some(stem) = scope.file_path.file_stem() {
-            base.push(stem);
-        }
-    }
-    base.extend(scope.inline_path.iter());
-    base
 }

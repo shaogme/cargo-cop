@@ -2,25 +2,23 @@ mod block_imports;
 
 use std::{collections::BTreeSet, ops::Range};
 
-use cop_analysis::{AnalysisSnapshot, ModuleNode, PathResolutionKind};
+use cop_analysis::{AnalysisSnapshot, CfgDecision, ModuleNode, PathResolutionKind};
 use cop_config::ResolvedConfig;
 use cop_model::{
     Diagnostic, LocalizedMessage, RuleId, CFG_INSIDE_USE_TREE, CFG_USE_GROUP_SPACING,
     CFG_USE_GROUP_SPLIT, EXTERN_CRATE_AT_SCOPE_START, MERGE_IMPORT_PREFIX,
     NO_INLINE_QUALIFIED_PATH, USE_AT_SCOPE_START,
 };
-use cop_syntax::{
-    CoverageStatus, Delimiter, Item, ItemKind, ParseOutput, SyntaxNode, Token, TokenKind,
-};
+use cop_syntax::{ItemSyntaxKind, ParseOutput, SyntaxNode, SyntaxNodeKind};
 
 use crate::support::{PathReference, RuleDiagnosticAdapter, RuleReport, SyntaxSupport, UseLeaf};
 
 pub(super) struct ImportRuleSet;
 
 struct ImportRecord<'a> {
-    item: &'a Item,
+    item: &'a SyntaxNode,
     item_index: usize,
-    leaf: UseLeaf,
+    leaves: Vec<UseLeaf>,
     condition: String,
 }
 
@@ -32,14 +30,11 @@ impl ImportRuleSet {
     ) {
         let adapter = RuleDiagnosticAdapter::new(configuration);
         for module in snapshot.modules() {
-            if module.parse_output().coverage() != CoverageStatus::Complete {
+            if module.is_order_only() {
                 continue;
             }
             Self::extern_crate_at_scope_start(module, diagnostics, &adapter);
             let use_tree_ranges = Self::imports_at_scope_start(module, diagnostics, &adapter);
-            if module.is_order_only() {
-                continue;
-            }
             Self::inline_qualified_paths(module, snapshot, &use_tree_ranges, diagnostics, &adapter);
             Self::common_prefixes(module, diagnostics, &adapter);
             Self::cfg_group_spacing(module, diagnostics, &adapter);
@@ -54,31 +49,13 @@ impl ImportRuleSet {
         diagnostics: &mut Vec<Diagnostic>,
         adapter: &RuleDiagnosticAdapter<'_>,
     ) {
-        for item in module.items() {
-            SyntaxSupport::for_each_syntax_node(item, &mut |node| {
-                let reference = match node {
-                    SyntaxNode::Path(path) => PathReference {
-                        segments: path.segments().to_vec(),
-                        start: path.start(),
-                        end: path.end(),
-                    },
-                    SyntaxNode::Macro(invocation) => PathReference {
-                        segments: invocation.path().segments().to_vec(),
-                        start: invocation.path().start(),
-                        end: invocation.path().end(),
-                    },
-                    _ => return,
-                };
+        for item in module.item_nodes() {
+            SyntaxSupport::for_each_path_reference(module, item, true, &mut |reference| {
                 if is_inside_use_tree(reference.start, use_tree_ranges) {
                     return;
                 }
-                Self::check_qualified_path(&reference, module, snapshot, diagnostics, adapter);
+                Self::check_qualified_path(reference, module, snapshot, diagnostics, adapter);
             });
-            if matches!(item.kind(), ItemKind::Impl(_)) {
-                for reference in SyntaxSupport::impl_header_references(module, item) {
-                    Self::check_qualified_path(&reference, module, snapshot, diagnostics, adapter);
-                }
-            }
         }
     }
 
@@ -100,7 +77,7 @@ impl ImportRuleSet {
             let resolution = snapshot.symbols().resolve_path_at(
                 module,
                 &reference.segments,
-                Some(reference.start),
+                Some(reference.start..reference.end),
             );
             if resolution.kind() != PathResolutionKind::ExternalCrate
                 || resolution.external_crate().is_none()
@@ -126,13 +103,22 @@ impl ImportRuleSet {
         diagnostics: &mut Vec<Diagnostic>,
         adapter: &RuleDiagnosticAdapter<'_>,
     ) -> Vec<Range<usize>> {
-        let mut encountered_other_item = false;
-        for item in module.source_items() {
-            match item.kind() {
-                ItemKind::ExternCrate(_) => {}
-                ItemKind::Module(child) if !child.is_inline() => {}
-                ItemKind::Use(_) => {
-                    if encountered_other_item {
+        let mut preceding_non_imports: Vec<Option<String>> = Vec::new();
+        for item in module.item_nodes() {
+            let condition = module
+                .configured_ast()
+                .condition_for_span(item.start(), item.end())
+                .map(str::to_owned);
+            match item.item_syntax().map(|data| data.kind()) {
+                Some(ItemSyntaxKind::ExternCrate { .. }) => {}
+                Some(ItemSyntaxKind::Module { inline: false, .. }) => {}
+                Some(ItemSyntaxKind::Use) => {
+                    if preceding_non_imports.iter().any(|previous| {
+                        SyntaxSupport::conditions_may_coexist(
+                            condition.as_deref(),
+                            previous.as_deref(),
+                        )
+                    }) {
                         adapter.push(
                             module,
                             diagnostics,
@@ -144,13 +130,11 @@ impl ImportRuleSet {
                         );
                     }
                 }
-                _ => {
-                    encountered_other_item = true;
-                }
+                _ => preceding_non_imports.push(condition),
             }
         }
         let mut use_tree_ranges = Vec::new();
-        for item in module.items() {
+        for item in module.item_nodes() {
             use_tree_ranges.extend(block_imports::BlockImportRuleSet::check_item(
                 item,
                 module,
@@ -167,10 +151,19 @@ impl ImportRuleSet {
         diagnostics: &mut Vec<Diagnostic>,
         adapter: &RuleDiagnosticAdapter<'_>,
     ) {
-        let mut encountered_non_extern_crate = false;
-        for item in module.source_items() {
-            if matches!(item.kind(), ItemKind::ExternCrate(_)) {
-                if encountered_non_extern_crate {
+        let mut preceding_non_extern_crates: Vec<Option<String>> = Vec::new();
+        for item in module.item_nodes() {
+            let condition = module
+                .configured_ast()
+                .condition_for_span(item.start(), item.end())
+                .map(str::to_owned);
+            if item
+                .item_syntax()
+                .is_some_and(|data| matches!(data.kind(), ItemSyntaxKind::ExternCrate { .. }))
+            {
+                if preceding_non_extern_crates.iter().any(|previous| {
+                    SyntaxSupport::conditions_may_coexist(condition.as_deref(), previous.as_deref())
+                }) {
                     adapter.push(
                         module,
                         diagnostics,
@@ -182,7 +175,7 @@ impl ImportRuleSet {
                     );
                 }
             } else {
-                encountered_non_extern_crate = true;
+                preceding_non_extern_crates.push(condition);
             }
         }
     }
@@ -193,49 +186,61 @@ impl ImportRuleSet {
         adapter: &RuleDiagnosticAdapter<'_>,
     ) {
         let output = module.parse_output();
-        let imports = module
-            .items()
+        let items = module.item_nodes();
+        let imports = items
             .iter()
             .enumerate()
             .filter_map(|(item_index, item)| {
-                let ItemKind::Use(use_item) = item.kind() else {
-                    return None;
-                };
-                let mut leaves = SyntaxSupport::use_leaves(use_item.tree());
-                let condition = SyntaxSupport::effective_cfg(item.attributes(), output)?;
-                if leaves.len() != 1 {
+                if !item
+                    .item_syntax()
+                    .is_some_and(|data| matches!(data.kind(), ItemSyntaxKind::Use))
+                {
                     return None;
                 }
+                let tree = SyntaxSupport::use_tree_node_for_item(module, item)?;
+                let leaves = SyntaxSupport::use_leaves(module, tree);
+                let condition = module
+                    .configured_ast()
+                    .condition_for_span(item.start(), item.end())
+                    .unwrap_or("all()")
+                    .to_owned();
+                if leaves.is_empty() {
+                    return None;
+                }
+                let condition = if leaves.len() == 1 {
+                    leaves[0].condition.clone().unwrap_or(condition)
+                } else {
+                    condition
+                };
                 Some(ImportRecord {
                     item,
                     item_index,
-                    leaf: leaves.remove(0),
+                    leaves,
                     condition,
                 })
             })
             .collect::<Vec<_>>();
         for current_index in 1..imports.len() {
             let current = &imports[current_index];
-            if current.leaf.alias.is_some() || current.leaf.glob {
-                continue;
-            }
             for previous in &imports[..current_index] {
-                if previous.leaf.alias.is_some()
-                    || previous.leaf.glob
-                    || previous.item_index + 1 != current.item_index
+                let same_visibility = previous
+                    .item
+                    .item_syntax()
+                    .zip(current.item.item_syntax())
+                    .is_some_and(|(previous, current)| {
+                        previous.visibility().kind() == current.visibility().kind()
+                    });
+                if previous.item_index + 1 != current.item_index
                     || previous.condition != current.condition
-                    || previous.item.visibility().kind() != current.item.visibility().kind()
+                    || !same_visibility
                 {
                     continue;
                 }
-                let prefix_length = common_prefix_len(&previous.leaf.path, &current.leaf.path);
-                if prefix_length == 0
-                    || prefix_length >= previous.leaf.path.len()
-                    || prefix_length >= current.leaf.path.len()
-                {
+                let Some(prefix) =
+                    SyntaxSupport::common_import_prefix(&previous.leaves, &current.leaves)
+                else {
                     continue;
-                }
-                let prefix = previous.leaf.path[..prefix_length].join("::");
+                };
                 adapter.push(
                     module,
                     diagnostics,
@@ -258,20 +263,23 @@ impl ImportRuleSet {
         adapter: &RuleDiagnosticAdapter<'_>,
     ) {
         let output = module.parse_output();
-        let mut previous: Option<(&Item, String)> = None;
+        let mut previous: Option<(&SyntaxNode, String)> = None;
         let mut completed_groups = BTreeSet::new();
-        for item in module.items() {
-            if !matches!(item.kind(), ItemKind::Use(_)) {
+        for item in module.item_nodes() {
+            if !item
+                .item_syntax()
+                .is_some_and(|data| matches!(data.kind(), ItemSyntaxKind::Use))
+            {
                 if let Some((_, previous_condition)) = previous.take() {
                     completed_groups.insert(previous_condition);
                 }
                 continue;
             }
-            let Some(condition) = SyntaxSupport::effective_cfg(item.attributes(), output) else {
-                previous = None;
-                completed_groups.clear();
-                continue;
-            };
+            let condition = module
+                .configured_ast()
+                .condition_for_span(item.start(), item.end())
+                .unwrap_or("all()")
+                .to_owned();
             if previous.is_none() && completed_groups.contains(&condition) {
                 adapter.push(
                     module,
@@ -327,47 +335,24 @@ impl ImportRuleSet {
         diagnostics: &mut Vec<Diagnostic>,
         adapter: &RuleDiagnosticAdapter<'_>,
     ) {
-        let output = module.parse_output();
-        for item in module.items() {
-            let ItemKind::Use(use_item) = item.kind() else {
+        for item in module.item_nodes() {
+            if !item
+                .item_syntax()
+                .is_some_and(|data| matches!(data.kind(), ItemSyntaxKind::Use))
+            {
+                continue;
+            }
+            let Some(tree) = SyntaxSupport::use_tree_node_for_item(module, item) else {
                 continue;
             };
-            let tree = use_item.tree();
-            let tokens =
-                SyntaxSupport::token_range(output, tree.start(), tree.end()).collect::<Vec<_>>();
-            let mut brace_depth = 0usize;
-            for (index, token) in tokens.iter().enumerate() {
-                match token.kind() {
-                    TokenKind::OpenDelimiter(Delimiter::Brace) => brace_depth += 1,
-                    TokenKind::CloseDelimiter(Delimiter::Brace) => {
-                        brace_depth = brace_depth.saturating_sub(1);
-                    }
-                    _ => {}
-                }
-                if brace_depth == 0 || token.text(output.source()) != "#" {
-                    continue;
-                }
-                if !tokens.get(index + 1).is_some_and(|next| {
-                    matches!(next.kind(), TokenKind::OpenDelimiter(Delimiter::Bracket))
-                }) {
-                    continue;
-                }
-                let Some(close) = matching_token(tokens.as_slice(), index + 1) else {
-                    continue;
-                };
-                let has_cfg = tokens
-                    .get(index + 2)
-                    .is_some_and(|nested| nested.text(output.source()) == "cfg");
-                if !has_cfg {
-                    continue;
-                }
+            if let Some(bounds) = nested_cfg_in_use_tree(module, tree) {
                 adapter.push(
                     module,
                     diagnostics,
                     RuleReport::new(
                         RuleId::CfgInsideUseTree,
                         LocalizedMessage::new(CFG_INSIDE_USE_TREE),
-                        Some(token.start()..tokens[close].end()),
+                        Some(bounds),
                     ),
                 );
             }
@@ -375,11 +360,38 @@ impl ImportRuleSet {
     }
 }
 
-fn common_prefix_len(left: &[String], right: &[String]) -> usize {
-    left.iter()
-        .zip(right)
-        .take_while(|(left_segment, right_segment)| left_segment == right_segment)
-        .count()
+fn nested_cfg_in_use_tree(module: &ModuleNode, tree: &SyntaxNode) -> Option<Range<usize>> {
+    for child in tree
+        .children()
+        .iter()
+        .filter_map(|id| module.parse_output().node(*id))
+        .filter(|node| node.kind() == SyntaxNodeKind::UseTree)
+    {
+        if !module
+            .configured_ast()
+            .node(child.id())
+            .is_some_and(|configured| configured.decision() != CfgDecision::False)
+        {
+            continue;
+        }
+        if let Some(attribute) = child
+            .attributes()
+            .iter()
+            .find(|attribute| attribute.path() == ["cfg"])
+        {
+            if module.configured_ast().is_supported_range(
+                module.parse_output(),
+                attribute.start(),
+                attribute.end(),
+            ) {
+                return Some(attribute.start()..attribute.end());
+            }
+        }
+        if let Some(bounds) = nested_cfg_in_use_tree(module, child) {
+            return Some(bounds);
+        }
+    }
+    None
 }
 
 fn is_inside_use_tree(offset: usize, use_tree_ranges: &[Range<usize>]) -> bool {
@@ -402,25 +414,4 @@ fn line_of(output: &ParseOutput, offset: usize) -> u32 {
         .source()
         .line_column(offset)
         .map_or(1, |(line, _)| line)
-}
-
-fn matching_token(tokens: &[&Token], open: usize) -> Option<usize> {
-    let delimiter = match tokens.get(open)?.kind() {
-        TokenKind::OpenDelimiter(delimiter) => *delimiter,
-        _ => return None,
-    };
-    let mut depth = 0usize;
-    for (index, token) in tokens.iter().enumerate().skip(open) {
-        match token.kind() {
-            TokenKind::OpenDelimiter(found) if *found == delimiter => depth += 1,
-            TokenKind::CloseDelimiter(found) if *found == delimiter => {
-                depth = depth.checked_sub(1)?;
-                if depth == 0 {
-                    return Some(index);
-                }
-            }
-            _ => {}
-        }
-    }
-    None
 }

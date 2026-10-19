@@ -1,16 +1,33 @@
-use cop_cargo::TargetContext;
-use cop_syntax::{Attribute, RustStringLiteral, SourceFile};
+use std::ops::Range;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CfgDecision {
-    True,
-    False,
-    Unknown,
-}
+use cop_cargo::TargetContext;
+use cop_cfg::{CfgCondition, CfgContext, CfgEvaluator as SharedCfgEvaluator, CfgExpression};
+use cop_syntax::{
+    Attribute, AttributeMeta, AttributeMetaKind, AttributeMetaValueKind, LiteralKind, SourceFile,
+};
+
+pub use cop_cfg::CfgDecision;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct UnknownCondition {
     pub(crate) condition: String,
+    pub(crate) start: usize,
+    pub(crate) end: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ConditionalAttribute {
+    pub(crate) condition: Option<String>,
+    pub(crate) decision: CfgDecision,
+    pub(crate) start: usize,
+    pub(crate) end: usize,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ConditionalPathAttribute {
+    pub(crate) condition: Option<String>,
+    pub(crate) decision: CfgDecision,
+    pub(crate) path: Option<String>,
     pub(crate) start: usize,
     pub(crate) end: usize,
 }
@@ -22,43 +39,21 @@ pub(crate) struct AttributeEffects {
     pub(crate) path_unknown: bool,
     pub(crate) conditions: Vec<String>,
     pub(crate) unknown: Vec<UnknownCondition>,
+    pub(crate) lint_relaxations: Vec<ConditionalAttribute>,
+    pub(crate) path_attributes: Vec<ConditionalPathAttribute>,
     pub(crate) malformed: bool,
+    pub(crate) malformed_ranges: Vec<Range<usize>>,
+}
+
+struct AttributeParseContext<'a> {
+    effects: &'a mut AttributeEffects,
+    guards: Vec<CfgCondition>,
+    depth: usize,
+    path_only: bool,
 }
 
 pub(crate) struct CfgEvaluator<'a> {
     target: &'a TargetContext,
-}
-
-struct PredicateParser<'a, 'e, 't> {
-    source: &'a str,
-    cursor: usize,
-    evaluator: &'e CfgEvaluator<'t>,
-}
-
-impl CfgDecision {
-    pub(crate) fn and(self, other: Self) -> Self {
-        match (self, other) {
-            (Self::False, _) | (_, Self::False) => Self::False,
-            (Self::True, Self::True) => Self::True,
-            _ => Self::Unknown,
-        }
-    }
-
-    fn or(self, other: Self) -> Self {
-        match (self, other) {
-            (Self::True, _) | (_, Self::True) => Self::True,
-            (Self::False, Self::False) => Self::False,
-            _ => Self::Unknown,
-        }
-    }
-
-    fn negate(self) -> Self {
-        match self {
-            Self::True => Self::False,
-            Self::False => Self::True,
-            Self::Unknown => Self::Unknown,
-        }
-    }
 }
 
 impl<'a> CfgEvaluator<'a> {
@@ -67,20 +62,17 @@ impl<'a> CfgEvaluator<'a> {
     }
 
     pub(crate) fn evaluate_condition(&self, condition: &str) -> CfgDecision {
-        let trimmed = condition.trim();
-        let expression = trimmed
-            .strip_prefix("cfg(")
-            .and_then(|value| value.strip_suffix(')'))
-            .unwrap_or(trimmed);
-        let mut parser = PredicateParser {
-            source: expression,
-            cursor: 0,
-            evaluator: self,
+        let Ok(expression) = CfgExpression::parse(condition) else {
+            return CfgDecision::Unknown;
         };
-        match parser.parse_expression() {
-            Ok(decision) if parser.finished() => decision,
-            _ => CfgDecision::Unknown,
-        }
+        let context = self.cfg_context();
+        SharedCfgEvaluator::new(&context).evaluate(&expression)
+    }
+
+    pub(crate) fn normalized_condition(&self, condition: &str) -> String {
+        CfgExpression::parse(condition)
+            .map(|expression| expression.normalized())
+            .unwrap_or_else(|_| condition.trim().to_owned())
     }
 
     pub(crate) fn evaluate_attributes(
@@ -90,19 +82,17 @@ impl<'a> CfgEvaluator<'a> {
     ) -> AttributeEffects {
         let mut effects = AttributeEffects::default();
         for attribute in attributes {
-            let Some(raw) = source.slice(attribute.start(), attribute.end()) else {
-                effects.malformed = true;
+            if source.slice(attribute.start(), attribute.end()).is_none() {
+                record_malformed(&mut effects, attribute.start()..attribute.end());
                 continue;
+            }
+            let mut context = AttributeParseContext {
+                effects: &mut effects,
+                guards: Vec::new(),
+                depth: 0,
+                path_only: false,
             };
-            let Some(body) = raw
-                .strip_prefix("#![")
-                .or_else(|| raw.strip_prefix("#["))
-                .and_then(|value| value.strip_suffix(']'))
-            else {
-                effects.malformed = true;
-                continue;
-            };
-            self.apply_attribute(body.trim(), attribute, &mut effects, 0);
+            self.apply_attribute(attribute.meta(), &mut context);
         }
         effects
     }
@@ -119,349 +109,252 @@ impl<'a> CfgEvaluator<'a> {
         self.evaluate_condition(condition)
     }
 
-    fn apply_attribute(
-        &self,
-        source: &str,
-        attribute: &Attribute,
-        effects: &mut AttributeEffects,
-        depth: usize,
-    ) {
-        if depth > 16 {
-            effects.malformed = true;
+    fn apply_attribute(&self, meta: &AttributeMeta, context: &mut AttributeParseContext<'_>) {
+        let bounds = meta.bounds();
+        if context.depth > 16 {
+            record_malformed(context.effects, bounds);
             return;
         }
-        let Some((name, arguments)) = split_attribute(source) else {
-            effects.malformed = true;
+        let name = meta.path().join("::");
+        if context.path_only && !matches!(name.as_str(), "cfg_attr" | "path") {
             return;
-        };
-        match name {
+        }
+        match name.as_str() {
             "cfg" => {
-                let decision = self.evaluate_condition(arguments);
-                effects.decision =
-                    Some(effects.decision.unwrap_or(CfgDecision::True).and(decision));
-                effects.conditions.push(arguments.trim().to_owned());
+                let Some(expression) = cfg_attribute_expression(meta) else {
+                    record_malformed(context.effects, bounds);
+                    return;
+                };
+                let condition =
+                    guarded_condition(&context.guards, CfgCondition::from_expression(expression));
+                let condition_text = condition.normalized();
+                let decision = self.evaluate_cfg_condition(&condition);
+                context.effects.decision = Some(
+                    context
+                        .effects
+                        .decision
+                        .unwrap_or(CfgDecision::True)
+                        .and(decision),
+                );
+                context.effects.conditions.push(condition_text.clone());
                 if decision == CfgDecision::Unknown {
-                    effects.unknown.push(UnknownCondition {
-                        condition: arguments.trim().to_owned(),
-                        start: attribute.start(),
-                        end: attribute.end(),
+                    context.effects.unknown.push(UnknownCondition {
+                        condition: condition_text,
+                        start: bounds.start,
+                        end: bounds.end,
                     });
                 }
             }
-            "cfg_attr" => self.apply_cfg_attr(arguments, attribute, effects, depth),
-            "path" => match parse_string_value(arguments) {
-                Some(path) if effects.path.is_none() => effects.path = Some(path),
-                Some(_) => effects.malformed = true,
-                None => effects.malformed = true,
-            },
+            "cfg_attr" => self.apply_cfg_attr(meta, context),
+            "path" => {
+                let decision = self.evaluate_guards(&context.guards);
+                let path = string_value(meta);
+                context
+                    .effects
+                    .path_attributes
+                    .push(ConditionalPathAttribute {
+                        condition: guard_condition(&context.guards)
+                            .map(|condition| condition.normalized()),
+                        decision,
+                        path: path.clone(),
+                        start: bounds.start,
+                        end: bounds.end,
+                    });
+                match (decision, path) {
+                    (CfgDecision::True, Some(path)) if context.effects.path.is_none() => {
+                        context.effects.path = Some(path);
+                    }
+                    (CfgDecision::True, Some(_)) | (CfgDecision::True, None) => {
+                        record_malformed(context.effects, bounds);
+                    }
+                    (CfgDecision::False, _) => {}
+                    (CfgDecision::Unknown, Some(_)) => {
+                        context.effects.path_unknown = true;
+                        self.record_unknown_guard(&context.guards, bounds, context.effects);
+                    }
+                    (CfgDecision::Unknown, None) => {
+                        record_malformed(context.effects, bounds);
+                    }
+                }
+            }
+            "allow" => {
+                let decision = self.evaluate_guards(&context.guards);
+                if decision != CfgDecision::False {
+                    context.effects.lint_relaxations.push(ConditionalAttribute {
+                        condition: guard_condition(&context.guards).map(|value| value.normalized()),
+                        decision,
+                        start: bounds.start,
+                        end: bounds.end,
+                    });
+                    if decision == CfgDecision::Unknown {
+                        self.record_unknown_guard(&context.guards, bounds, context.effects);
+                    }
+                }
+            }
             _ => {}
         }
     }
 
-    fn apply_cfg_attr(
-        &self,
-        arguments: &str,
-        attribute: &Attribute,
-        effects: &mut AttributeEffects,
-        depth: usize,
-    ) {
-        let parts = split_top_level(arguments, ',');
-        let Some(predicate) = parts.first() else {
-            effects.malformed = true;
+    fn apply_cfg_attr(&self, meta: &AttributeMeta, context: &mut AttributeParseContext<'_>) {
+        let AttributeMetaKind::List(arguments) = meta.kind() else {
+            if !context.path_only {
+                record_malformed(context.effects, meta.bounds());
+            }
             return;
         };
-        if predicate.is_empty() || parts.len() < 2 {
-            effects.malformed = true;
+        let Some(predicate) = arguments.first() else {
+            if !context.path_only {
+                record_malformed(context.effects, meta.bounds());
+            }
+            return;
+        };
+        if arguments.len() < 2 {
+            if !context.path_only {
+                record_malformed(context.effects, meta.bounds());
+            }
             return;
         }
-        let decision = self.evaluate_condition(predicate);
-        match decision {
-            CfgDecision::False => {}
-            CfgDecision::True => {
-                let previous_condition_count = effects.conditions.len();
-                let had_path = effects.path.is_some();
-                for nested in parts.iter().skip(1) {
-                    if !nested.is_empty() {
-                        self.apply_attribute(nested.trim(), attribute, effects, depth + 1);
-                    }
-                }
-                if effects.conditions.len() > previous_condition_count
-                    || (!had_path && effects.path.is_some())
-                {
-                    effects.conditions.push(predicate.trim().to_owned());
-                }
+        let Some(predicate_expression) = cfg_expression(predicate) else {
+            if !context.path_only {
+                record_malformed(context.effects, predicate.bounds());
             }
-            CfgDecision::Unknown => {
-                let mut conditional = AttributeEffects::default();
-                for nested in parts.iter().skip(1) {
-                    if !nested.is_empty() {
-                        self.apply_attribute(nested.trim(), attribute, &mut conditional, depth + 1);
-                    }
-                }
-                let conditional_decision = match conditional.decision {
-                    None | Some(CfgDecision::True) => CfgDecision::True,
-                    Some(CfgDecision::False | CfgDecision::Unknown) => CfgDecision::Unknown,
-                };
-                effects.decision = Some(
-                    effects
-                        .decision
-                        .unwrap_or(CfgDecision::True)
-                        .and(conditional_decision),
-                );
-                let path_unknown = conditional.path_unknown || conditional.path.is_some();
-                if conditional_decision == CfgDecision::Unknown || path_unknown {
-                    effects
-                        .conditions
-                        .push(format!("cfg_attr({})", predicate.trim()));
-                    effects.unknown.push(UnknownCondition {
-                        condition: predicate.trim().to_owned(),
-                        start: attribute.start(),
-                        end: attribute.end(),
-                    });
-                }
-                effects.path_unknown |= path_unknown;
-                effects.unknown.extend(conditional.unknown);
-                effects.malformed |= conditional.malformed;
-            }
+            return;
+        };
+        let mut nested_guards = context.guards.clone();
+        nested_guards.push(CfgCondition::from_expression(predicate_expression));
+        let path_only =
+            context.path_only || self.evaluate_guards(&nested_guards) == CfgDecision::False;
+        let mut nested_context = AttributeParseContext {
+            effects: &mut *context.effects,
+            guards: nested_guards,
+            depth: context.depth + 1,
+            path_only,
+        };
+        for nested in arguments.iter().skip(1) {
+            self.apply_attribute(nested, &mut nested_context);
         }
     }
 
-    fn evaluate_atom(&self, name: &str, value: Option<&str>) -> CfgDecision {
-        if name == "feature" {
-            return match value {
-                Some(feature) if self.target.features().contains(feature) => CfgDecision::True,
-                Some(_) => CfgDecision::False,
-                None => CfgDecision::Unknown,
-            };
-        }
-        if name == "test" {
-            return match value {
-                None if self.target.cfg_test() => CfgDecision::True,
-                None => CfgDecision::False,
-                Some(_) => CfgDecision::False,
-            };
-        }
-        if name == "proc_macro" {
-            return if value.is_none()
-                && self
-                    .target
-                    .crate_types()
-                    .iter()
-                    .any(|kind| kind == "proc-macro")
-            {
-                CfgDecision::True
-            } else {
-                CfgDecision::False
-            };
-        }
-        let values = self.target.cfg_values();
-        let known = values.iter().any(|candidate| candidate.name() == name)
-            || matches!(
+    fn cfg_context(&self) -> CfgContext<'_> {
+        CfgContext::new(
+            self.target.cfg_values(),
+            Some(self.target.features().enabled()),
+        )
+        .with_test(Some(self.target.cfg_test()))
+        .with_proc_macro(Some(
+            self.target
+                .crate_types()
+                .iter()
+                .any(|kind| kind == "proc-macro"),
+        ))
+    }
+
+    fn evaluate_cfg_condition(&self, condition: &CfgCondition) -> CfgDecision {
+        SharedCfgEvaluator::new(&self.cfg_context()).evaluate_condition(condition)
+    }
+
+    fn evaluate_guards(&self, guards: &[CfgCondition]) -> CfgDecision {
+        guard_condition(guards)
+            .as_ref()
+            .map_or(CfgDecision::True, |condition| {
+                self.evaluate_cfg_condition(condition)
+            })
+    }
+
+    fn record_unknown_guard(
+        &self,
+        guards: &[CfgCondition],
+        bounds: Range<usize>,
+        effects: &mut AttributeEffects,
+    ) {
+        let Some(condition) = guard_condition(guards) else {
+            return;
+        };
+        effects.unknown.push(UnknownCondition {
+            condition: condition.normalized(),
+            start: bounds.start,
+            end: bounds.end,
+        });
+    }
+}
+
+fn cfg_attribute_expression(meta: &AttributeMeta) -> Option<CfgExpression> {
+    let AttributeMetaKind::List(arguments) = meta.kind() else {
+        return None;
+    };
+    let [expression] = arguments.as_slice() else {
+        return None;
+    };
+    cfg_expression(expression)
+}
+
+fn cfg_expression(meta: &AttributeMeta) -> Option<CfgExpression> {
+    let name = meta.path().join("::");
+    let range = meta.bounds();
+    match meta.kind() {
+        AttributeMetaKind::Word => Some(CfgExpression::Flag { name, range }),
+        AttributeMetaKind::NameValue(value) => match value.kind() {
+            AttributeMetaValueKind::Literal {
+                kind: LiteralKind::String,
+                decoded_string: Some(value),
+                ..
+            } => Some(CfgExpression::KeyValue {
                 name,
-                "target_arch"
-                    | "target_os"
-                    | "target_env"
-                    | "target_family"
-                    | "target_endian"
-                    | "target_pointer_width"
-                    | "target_vendor"
-                    | "target_abi"
-                    | "target_feature"
-                    | "target_has_atomic"
-                    | "target_has_atomic_equal_alignment"
-                    | "target_has_atomic_load_store"
-                    | "target_has_atomic_primitive_alignment"
-                    | "target_thread_local"
-                    | "panic"
-                    | "debug_assertions"
-                    | "unix"
-                    | "windows"
-            );
-        if !known {
-            return CfgDecision::Unknown;
-        }
-        let present = values
-            .iter()
-            .any(|candidate| candidate.name() == name && candidate.value() == value);
-        if present {
-            CfgDecision::True
-        } else {
-            CfgDecision::False
+                value: value.clone(),
+                range,
+            }),
+            _ => None,
+        },
+        AttributeMetaKind::List(arguments) => {
+            let expressions = arguments
+                .iter()
+                .map(cfg_expression)
+                .collect::<Option<Vec<_>>>()?;
+            match (name.as_str(), expressions.len()) {
+                ("all", _) => Some(CfgExpression::All { expressions, range }),
+                ("any", _) => Some(CfgExpression::Any { expressions, range }),
+                ("not", 1) => Some(CfgExpression::Not {
+                    expression: Box::new(expressions.into_iter().next()?),
+                    range,
+                }),
+                _ => None,
+            }
         }
     }
 }
 
-impl PredicateParser<'_, '_, '_> {
-    fn parse_expression(&mut self) -> Result<CfgDecision, ()> {
-        self.skip_space();
-        let name = self.identifier()?;
-        self.skip_space();
-        if self.consume(b'(') {
-            let arguments = self.parse_arguments()?;
-            return match (name.as_str(), arguments.as_slice()) {
-                ("all", values) => Ok(values
-                    .iter()
-                    .copied()
-                    .fold(CfgDecision::True, CfgDecision::and)),
-                ("any", values) => Ok(values
-                    .iter()
-                    .copied()
-                    .fold(CfgDecision::False, CfgDecision::or)),
-                ("not", [value]) => Ok(value.negate()),
-                ("not", _) => Err(()),
-                _ => Err(()),
-            };
-        }
-        if self.consume(b'=') {
-            self.skip_space();
-            let value = self.string_literal()?;
-            return Ok(self.evaluator.evaluate_atom(&name, Some(&value)));
-        }
-        Ok(self.evaluator.evaluate_atom(&name, None))
-    }
-
-    fn parse_arguments(&mut self) -> Result<Vec<CfgDecision>, ()> {
-        let mut values = Vec::new();
-        self.skip_space();
-        if self.consume(b')') {
-            return Ok(values);
-        }
-        loop {
-            values.push(self.parse_expression()?);
-            self.skip_space();
-            if self.consume(b')') {
-                return Ok(values);
-            }
-            if !self.consume(b',') {
-                return Err(());
-            }
-            self.skip_space();
-            if self.consume(b')') {
-                return Ok(values);
-            }
-        }
-    }
-
-    fn identifier(&mut self) -> Result<String, ()> {
-        let start = self.cursor;
-        while self
-            .source
-            .as_bytes()
-            .get(self.cursor)
-            .is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_' || *byte == b'-')
-        {
-            self.cursor += 1;
-        }
-        (start < self.cursor)
-            .then(|| self.source[start..self.cursor].to_owned())
-            .ok_or(())
-    }
-
-    fn string_literal(&mut self) -> Result<String, ()> {
-        let start = self.cursor;
-        if !self.consume(b'"') {
-            return Err(());
-        }
-        let mut escaped = false;
-        while let Some(character) = self
-            .source
-            .get(self.cursor..)
-            .and_then(|remaining| remaining.chars().next())
-        {
-            self.cursor += character.len_utf8();
-            if escaped {
-                escaped = false;
-                continue;
-            }
-            match character {
-                '\\' => escaped = true,
-                '"' => {
-                    return RustStringLiteral::decode(&self.source[start..self.cursor]).ok_or(());
-                }
-                _ => {}
-            }
-        }
-        Err(())
-    }
-
-    fn skip_space(&mut self) {
-        while self
-            .source
-            .as_bytes()
-            .get(self.cursor)
-            .is_some_and(u8::is_ascii_whitespace)
-        {
-            self.cursor += 1;
-        }
-    }
-
-    fn consume(&mut self, byte: u8) -> bool {
-        if self.source.as_bytes().get(self.cursor) == Some(&byte) {
-            self.cursor += 1;
-            true
-        } else {
-            false
-        }
-    }
-
-    fn finished(&mut self) -> bool {
-        self.skip_space();
-        self.cursor == self.source.len()
+fn string_value(meta: &AttributeMeta) -> Option<String> {
+    let AttributeMetaKind::NameValue(value) = meta.kind() else {
+        return None;
+    };
+    match value.kind() {
+        AttributeMetaValueKind::Literal {
+            kind: LiteralKind::String,
+            decoded_string: Some(value),
+            ..
+        } => Some(value.clone()),
+        _ => None,
     }
 }
 
-fn split_attribute(source: &str) -> Option<(&str, &str)> {
-    let open = source.find('(');
-    let equals = source.find('=');
-    if let Some(open) = open.filter(|open| equals.map_or(true, |equals| *open < equals)) {
-        let name = source[..open].trim();
-        if name.is_empty() {
-            return None;
-        }
-        let arguments = source[open + 1..].strip_suffix(')')?;
-        return Some((name, arguments));
+fn record_malformed(effects: &mut AttributeEffects, bounds: Range<usize>) {
+    effects.malformed = true;
+    if !effects.malformed_ranges.contains(&bounds) {
+        effects.malformed_ranges.push(bounds);
     }
-    if let Some(equals) = equals {
-        let name = source[..equals].trim();
-        return (!name.is_empty()).then_some((name, &source[equals..]));
-    }
-    let name = source.trim();
-    (!name.is_empty()).then_some((name, ""))
 }
 
-fn split_top_level(source: &str, separator: char) -> Vec<&str> {
-    let mut pieces = Vec::new();
-    let mut start = 0;
-    let mut depth = 0usize;
-    let mut quoted = false;
-    let mut escaped = false;
-    for (index, character) in source.char_indices() {
-        if quoted {
-            if escaped {
-                escaped = false;
-            } else if character == '\\' {
-                escaped = true;
-            } else if character == '"' {
-                quoted = false;
-            }
-        } else {
-            match character {
-                '"' => quoted = true,
-                '(' | '[' | '{' => depth += 1,
-                ')' | ']' | '}' => depth = depth.saturating_sub(1),
-                value if value == separator && depth == 0 => {
-                    pieces.push(source[start..index].trim());
-                    start = index + character.len_utf8();
-                }
-                _ => {}
-            }
-        }
-    }
-    pieces.push(source[start..].trim());
-    pieces
+fn guarded_condition(guards: &[CfgCondition], condition: CfgCondition) -> CfgCondition {
+    let Some(guard) = guard_condition(guards) else {
+        return condition;
+    };
+    CfgCondition::any([guard.negate(), condition])
 }
 
-fn parse_string_value(source: &str) -> Option<String> {
-    let value = source.trim().strip_prefix('=')?.trim();
-    RustStringLiteral::decode(value)
+fn guard_condition(guards: &[CfgCondition]) -> Option<CfgCondition> {
+    match guards {
+        [] => None,
+        [guard] => Some(guard.clone()),
+        _ => Some(CfgCondition::all(guards.iter().cloned())),
+    }
 }

@@ -1,14 +1,18 @@
 use std::ops::Range;
 
 use cop_model::{
-    LocalizedMessage, MessageId, SYNTAX_ATTRIBUTE_UNCLOSED, SYNTAX_EXPECT_ATTRIBUTE_BRACKET,
-    SYNTAX_VISIBILITY_UNCLOSED,
+    LocalizedMessage, MessageId, SYNTAX_ATTRIBUTE_INVALID, SYNTAX_ATTRIBUTE_UNCLOSED,
+    SYNTAX_EXPECT_ATTRIBUTE_BRACKET, SYNTAX_VISIBILITY_UNCLOSED,
 };
 
 use crate::{
-    ast::{AstFactory, Attribute, ParseIssue, ParseIssueKind, Visibility, VisibilityKind},
+    ast::{
+        AstFactory, Attribute, AttributeInput, AttributeMeta, AttributeMetaKind,
+        AttributeMetaValue, AttributeMetaValueKind, ParseIssue, ParseIssueKind, Visibility,
+        VisibilityKind,
+    },
     recovery::Recovery,
-    Delimiter, SourceFile, Token, TokenKind,
+    Delimiter, LiteralKind, RustStringLiteral, SourceFile, Token, TokenKind,
 };
 
 pub(super) struct AttributeParser;
@@ -35,7 +39,7 @@ impl AttributeParser {
             ) {
                 Self::push_issue(
                     issues,
-                    ParseIssueKind::UnexpectedToken,
+                    ParseIssueKind::InvalidAttribute,
                     start..Self::current_end(source, tokens, *cursor),
                     SYNTAX_EXPECT_ATTRIBUTE_BRACKET,
                 );
@@ -52,9 +56,43 @@ impl AttributeParser {
                 *cursor = tokens.len();
                 break;
             };
-            let path = Self::read_attribute_path(tokens, open_index + 1, close_index);
+            let mut meta_cursor = open_index + 1;
+            let meta = match Self::parse_meta_item(source, tokens, &mut meta_cursor, close_index) {
+                Ok(meta) if meta_cursor == close_index => meta,
+                Ok(_) => {
+                    let token = &tokens[meta_cursor];
+                    Self::push_issue(
+                        issues,
+                        ParseIssueKind::InvalidAttribute,
+                        token.start()..token.end(),
+                        SYNTAX_ATTRIBUTE_INVALID,
+                    );
+                    Self::fallback_meta(tokens, open_index, close_index, token.start()..token.end())
+                }
+                Err(bounds) => {
+                    Self::push_issue(
+                        issues,
+                        ParseIssueKind::InvalidAttribute,
+                        bounds.clone(),
+                        SYNTAX_ATTRIBUTE_INVALID,
+                    );
+                    Self::fallback_meta(tokens, open_index, close_index, bounds)
+                }
+            };
+            let path = meta.path().to_vec();
             let end = tokens[close_index].end();
-            attributes.push(AstFactory::attribute(path, inner, start..end));
+            let cfg_test = path.as_slice() == ["cfg"]
+                && matches!(meta.kind(), AttributeMetaKind::List(values)
+                    if values.len() == 1
+                        && values[0].path() == ["test"]
+                        && matches!(values[0].kind(), AttributeMetaKind::Word));
+            attributes.push(AstFactory::attribute(AttributeInput {
+                path,
+                inner,
+                cfg_test,
+                meta,
+                bounds: start..end,
+            }));
             *cursor = close_index + 1;
         }
         attributes
@@ -97,20 +135,157 @@ impl AttributeParser {
         AstFactory::visibility(VisibilityKind::Public, start..end)
     }
 
-    fn read_attribute_path(tokens: &[Token], mut index: usize, end: usize) -> Vec<String> {
+    fn parse_meta_item(
+        source: &SourceFile,
+        tokens: &[Token],
+        cursor: &mut usize,
+        end: usize,
+    ) -> Result<AttributeMeta, Range<usize>> {
+        let start = tokens.get(*cursor).map_or_else(
+            || tokens.get(end.saturating_sub(1)).map_or(0, Token::end),
+            Token::start,
+        );
         let mut path = Vec::new();
-        while index < end {
-            if let TokenKind::Identifier(identifier) = tokens[index].kind() {
-                path.push(identifier.clone());
-                index += 1;
-                if index < end && Recovery::is_punctuation(&tokens[index], "::") {
-                    index += 1;
+        while *cursor < end {
+            if let Some(identifier) = tokens[*cursor].kind().word() {
+                path.push(identifier.to_owned());
+                *cursor += 1;
+                if *cursor < end && Recovery::is_punctuation(&tokens[*cursor], "::") {
+                    if *cursor + 1 >= end || tokens[*cursor + 1].kind().word().is_none() {
+                        return Err(tokens[*cursor].start()..tokens[*cursor].end());
+                    }
+                    *cursor += 1;
                     continue;
                 }
+                break;
             }
-            break;
+            let bounds = tokens
+                .get(*cursor)
+                .map_or(start..start, |token| token.start()..token.end());
+            return Err(bounds);
         }
-        path
+        if path.is_empty() {
+            return Err(start..tokens.get(*cursor).map_or(start, Token::end));
+        }
+        let path_end = tokens[*cursor - 1].end();
+        let kind = if *cursor < end && Recovery::is_punctuation(&tokens[*cursor], "=") {
+            *cursor += 1;
+            let value_start = *cursor;
+            let value_end = Self::meta_value_end(tokens, value_start, end)?;
+            if value_start == value_end {
+                return Err(path_end..tokens[*cursor - 1].end());
+            }
+            let first = &tokens[value_start];
+            let last = &tokens[value_end - 1];
+            *cursor = value_end;
+            let value_kind = match first.kind() {
+                TokenKind::Literal(kind) if value_end == value_start + 1 => {
+                    let text = first.text(source).to_owned();
+                    let decoded_string = (*kind == LiteralKind::String)
+                        .then(|| RustStringLiteral::decode(&text))
+                        .flatten();
+                    AttributeMetaValueKind::Literal {
+                        kind: *kind,
+                        text,
+                        decoded_string,
+                    }
+                }
+                TokenKind::Identifier(value)
+                    if value_end == value_start + 1
+                        && matches!(value.as_str(), "true" | "false") =>
+                {
+                    AttributeMetaValueKind::Boolean(value == "true")
+                }
+                _ => AttributeMetaValueKind::Expression(first.start()..last.end()),
+            };
+            AttributeMetaKind::NameValue(AttributeMetaValue::new(
+                value_kind,
+                first.start()..last.end(),
+            ))
+        } else if matches!(
+            tokens.get(*cursor).map(Token::kind),
+            Some(TokenKind::OpenDelimiter(Delimiter::Parenthesis))
+        ) {
+            let open = *cursor;
+            let close = Recovery::matching_delimiter(tokens, open)
+                .filter(|close| *close < end)
+                .ok_or_else(|| tokens[open].start()..tokens[end - 1].end())?;
+            let mut children = Vec::new();
+            let mut child_cursor = open + 1;
+            while child_cursor < close {
+                children.push(Self::parse_meta_item(
+                    source,
+                    tokens,
+                    &mut child_cursor,
+                    close,
+                )?);
+                if child_cursor == close {
+                    break;
+                }
+                if !Recovery::is_punctuation(&tokens[child_cursor], ",") {
+                    return Err(tokens[child_cursor].start()..tokens[child_cursor].end());
+                }
+                child_cursor += 1;
+            }
+            *cursor = close + 1;
+            AttributeMetaKind::List(children)
+        } else {
+            AttributeMetaKind::Word
+        };
+        let finish = tokens
+            .get(cursor.saturating_sub(1))
+            .map_or(path_end, Token::end);
+        Ok(AttributeMeta::new(path, kind, start..finish))
+    }
+
+    fn meta_value_end(tokens: &[Token], start: usize, end: usize) -> Result<usize, Range<usize>> {
+        let mut cursor = start;
+        while cursor < end {
+            if matches!(tokens[cursor].kind(), TokenKind::OpenDelimiter(_)) {
+                cursor = Recovery::matching_delimiter(tokens, cursor)
+                    .filter(|close| *close < end)
+                    .map_or(end, |close| close + 1);
+                continue;
+            }
+            if Recovery::is_punctuation(&tokens[cursor], ",") {
+                break;
+            }
+            cursor += 1;
+        }
+        if cursor == start {
+            return Err(tokens
+                .get(start)
+                .map_or(0..0, |token| token.start()..token.end()));
+        }
+        Ok(cursor)
+    }
+
+    fn fallback_meta(
+        tokens: &[Token],
+        open: usize,
+        close: usize,
+        bounds: Range<usize>,
+    ) -> AttributeMeta {
+        let mut cursor = open + 1;
+        let path = Self::read_path(tokens, &mut cursor, close).unwrap_or_default();
+        AttributeMeta::new(path, AttributeMetaKind::Word, bounds)
+    }
+
+    fn read_path(tokens: &[Token], cursor: &mut usize, end: usize) -> Option<Vec<String>> {
+        let mut path = Vec::new();
+        while *cursor < end {
+            path.push(tokens[*cursor].kind().word()?.to_owned());
+            *cursor += 1;
+            if *cursor < end && Recovery::is_punctuation(&tokens[*cursor], "::") {
+                *cursor += 1;
+                if *cursor >= end || tokens[*cursor].kind().word().is_none() {
+                    return None;
+                }
+            } else {
+                break;
+            }
+        }
+        (!path.is_empty()).then_some(path)
     }
 
     fn consume_identifier(tokens: &[Token], cursor: &mut usize, expected: &str) -> bool {

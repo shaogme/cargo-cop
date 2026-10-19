@@ -1,40 +1,31 @@
 use std::ops::Range;
 
-use crate::ast::{Attribute, Item};
+use crate::{
+    ast::{Attribute, MacroInput, MacroInputStatus, PathSyntax, TypeSyntax},
+    Token,
+};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Parameter {
+pub(crate) struct Parameter {
+    attributes: Vec<Attribute>,
     start: usize,
     end: usize,
     receiver: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PathNode {
-    segments: Vec<String>,
-    start: usize,
-    end: usize,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct TupleNode {
-    arity: usize,
-    start: usize,
-    end: usize,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ClosureNode {
-    parameters: Vec<Parameter>,
-    start: usize,
-    end: usize,
+pub struct ImplSyntaxData {
+    self_type: Option<TypeSyntax>,
+    trait_path: Option<PathSyntax>,
+    trait_impl: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MacroInvocation {
-    path: PathNode,
+    path: PathSyntax,
     start: usize,
     end: usize,
+    input: MacroInput,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -44,89 +35,47 @@ pub struct MacroDefinition {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum SyntaxNode {
-    Path(PathNode),
-    Tuple(TupleNode),
-    Closure(ClosureNode),
-    Macro(MacroInvocation),
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct FunctionBody {
-    start: usize,
-    end: usize,
-    leading_attributes: Vec<Attribute>,
-    nodes: Vec<SyntaxNode>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct FunctionItem {
+pub(crate) struct FunctionItem {
     name: Option<String>,
-    parameters: Vec<Parameter>,
-    body: Option<FunctionBody>,
-    signature_nodes: Vec<SyntaxNode>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ModuleItem {
+pub(crate) struct ModuleItem {
     name: String,
     inline: bool,
-    inner_attributes: Vec<Attribute>,
-    items: Vec<Item>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct UseTree {
-    path: Vec<String>,
-    alias: Option<String>,
-    glob: bool,
-    children: Vec<UseTree>,
-    start: usize,
-    end: usize,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct UseItem {
-    tree: UseTree,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ExternCrateItem {
+pub(crate) struct ExternCrateItem {
     name: Option<String>,
     alias: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct NamedDeclaration {
+pub(crate) struct ExternBlockItem {
+    unsafe_: bool,
+    abi: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct NamedDeclaration {
     name: Option<String>,
-    nodes: Vec<SyntaxNode>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct TraitItem {
+pub(crate) struct TraitItem {
     name: Option<String>,
-    inner_attributes: Vec<Attribute>,
-    items: Vec<Item>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ImplItem {
-    target: String,
-    inner_attributes: Vec<Attribute>,
-    items: Vec<Item>,
-}
+pub(crate) struct ImplItem {}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct OtherItem {
-    start: usize,
-    end: usize,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ItemKind {
+pub(crate) enum ItemKind {
     Module(ModuleItem),
-    Use(UseItem),
+    Use,
     ExternCrate(ExternCrateItem),
+    ExternBlock(ExternBlockItem),
     Struct(NamedDeclaration),
     Enum(NamedDeclaration),
     Union(NamedDeclaration),
@@ -138,22 +87,12 @@ pub enum ItemKind {
     Impl(ImplItem),
     Macro(MacroInvocation),
     MacroDefinition(MacroDefinition),
-    Other(OtherItem),
+    Other,
 }
 
 impl ModuleItem {
-    pub(crate) fn new(
-        name: String,
-        inline: bool,
-        inner_attributes: Vec<Attribute>,
-        items: Vec<Item>,
-    ) -> Self {
-        Self {
-            name,
-            inline,
-            inner_attributes,
-            items,
-        }
+    pub(crate) fn new(name: String, inline: bool) -> Self {
+        Self { name, inline }
     }
 
     pub fn name(&self) -> &str {
@@ -162,24 +101,6 @@ impl ModuleItem {
 
     pub fn is_inline(&self) -> bool {
         self.inline
-    }
-
-    pub fn inner_attributes(&self) -> &[Attribute] {
-        &self.inner_attributes
-    }
-
-    pub fn items(&self) -> &[Item] {
-        &self.items
-    }
-}
-
-impl UseItem {
-    pub(crate) fn new(tree: UseTree) -> Self {
-        Self { tree }
-    }
-
-    pub fn tree(&self) -> &UseTree {
-        &self.tree
     }
 }
 
@@ -197,272 +118,120 @@ impl ExternCrateItem {
     }
 }
 
-impl UseTree {
-    pub(crate) fn new(
-        path: Vec<String>,
-        alias: Option<String>,
-        glob: bool,
-        children: Vec<Self>,
-        bounds: Range<usize>,
-    ) -> Self {
-        Self {
-            path,
-            alias,
-            glob,
-            children,
-            start: bounds.start,
-            end: bounds.end,
-        }
+impl ExternBlockItem {
+    pub(crate) fn new(unsafe_: bool, abi: Option<String>) -> Self {
+        Self { unsafe_, abi }
     }
 
-    pub fn path(&self) -> &[String] {
-        &self.path
+    pub fn is_unsafe(&self) -> bool {
+        self.unsafe_
     }
 
-    pub fn alias(&self) -> Option<&str> {
-        self.alias.as_deref()
-    }
-
-    pub fn is_glob(&self) -> bool {
-        self.glob
-    }
-
-    pub fn children(&self) -> &[UseTree] {
-        &self.children
-    }
-
-    pub fn start(&self) -> usize {
-        self.start
-    }
-
-    pub fn end(&self) -> usize {
-        self.end
+    pub fn abi(&self) -> Option<&str> {
+        self.abi.as_deref()
     }
 }
 
 impl NamedDeclaration {
-    pub(crate) fn new(name: Option<String>, nodes: Vec<SyntaxNode>) -> Self {
-        Self { name, nodes }
+    pub(crate) fn new(name: Option<String>) -> Self {
+        Self { name }
     }
 
     pub fn name(&self) -> Option<&str> {
         self.name.as_deref()
-    }
-
-    pub fn nodes(&self) -> &[SyntaxNode] {
-        &self.nodes
     }
 }
 
 impl TraitItem {
-    pub(crate) fn new(
-        name: Option<String>,
-        inner_attributes: Vec<Attribute>,
-        items: Vec<Item>,
-    ) -> Self {
-        Self {
-            name,
-            inner_attributes,
-            items,
-        }
+    pub(crate) fn new(name: Option<String>) -> Self {
+        Self { name }
     }
 
     pub fn name(&self) -> Option<&str> {
         self.name.as_deref()
-    }
-
-    pub fn inner_attributes(&self) -> &[Attribute] {
-        &self.inner_attributes
-    }
-
-    pub fn items(&self) -> &[Item] {
-        &self.items
     }
 }
 
 impl ImplItem {
-    pub(crate) fn new(target: String, inner_attributes: Vec<Attribute>, items: Vec<Item>) -> Self {
-        Self {
-            target,
-            inner_attributes,
-            items,
-        }
-    }
-
-    pub fn target(&self) -> &str {
-        &self.target
-    }
-
-    pub fn inner_attributes(&self) -> &[Attribute] {
-        &self.inner_attributes
-    }
-
-    pub fn items(&self) -> &[Item] {
-        &self.items
+    pub(crate) fn new() -> Self {
+        Self {}
     }
 }
 
 impl FunctionItem {
-    pub(crate) fn new(
-        name: Option<String>,
-        parameters: Vec<Parameter>,
-        body: Option<FunctionBody>,
-        signature_nodes: Vec<SyntaxNode>,
-    ) -> Self {
-        Self {
-            name,
-            parameters,
-            body,
-            signature_nodes,
-        }
+    pub(crate) fn new(name: Option<String>) -> Self {
+        Self { name }
     }
 
     pub fn name(&self) -> Option<&str> {
         self.name.as_deref()
     }
-
-    pub fn parameters(&self) -> &[Parameter] {
-        &self.parameters
-    }
-
-    pub fn body(&self) -> Option<&FunctionBody> {
-        self.body.as_ref()
-    }
-
-    pub fn signature_nodes(&self) -> &[SyntaxNode] {
-        &self.signature_nodes
-    }
 }
 
 impl Parameter {
-    pub(crate) fn new(bounds: Range<usize>, receiver: bool) -> Self {
+    pub(crate) fn new(attributes: Vec<Attribute>, bounds: Range<usize>, receiver: bool) -> Self {
         Self {
+            attributes,
             start: bounds.start,
             end: bounds.end,
             receiver,
         }
     }
 
-    pub fn start(&self) -> usize {
+    pub(crate) fn attributes(&self) -> &[Attribute] {
+        &self.attributes
+    }
+
+    pub(crate) fn start(&self) -> usize {
         self.start
     }
 
-    pub fn end(&self) -> usize {
+    pub(crate) fn end(&self) -> usize {
         self.end
     }
 
-    pub fn is_receiver(&self) -> bool {
+    pub(crate) fn is_receiver(&self) -> bool {
         self.receiver
     }
 }
 
-impl FunctionBody {
+impl ImplSyntaxData {
     pub(crate) fn new(
-        bounds: Range<usize>,
-        leading_attributes: Vec<Attribute>,
-        nodes: Vec<SyntaxNode>,
+        self_type: Option<TypeSyntax>,
+        trait_path: Option<PathSyntax>,
+        trait_impl: bool,
     ) -> Self {
         Self {
-            start: bounds.start,
-            end: bounds.end,
-            leading_attributes,
-            nodes,
+            self_type,
+            trait_path,
+            trait_impl,
         }
     }
 
-    pub fn start(&self) -> usize {
-        self.start
+    pub fn self_type(&self) -> Option<&TypeSyntax> {
+        self.self_type.as_ref()
     }
 
-    pub fn end(&self) -> usize {
-        self.end
+    pub fn trait_path(&self) -> Option<&PathSyntax> {
+        self.trait_path.as_ref()
     }
 
-    pub fn leading_attributes(&self) -> &[Attribute] {
-        &self.leading_attributes
-    }
-
-    pub fn nodes(&self) -> &[SyntaxNode] {
-        &self.nodes
-    }
-}
-
-impl PathNode {
-    pub(crate) fn new(segments: Vec<String>, bounds: Range<usize>) -> Self {
-        Self {
-            segments,
-            start: bounds.start,
-            end: bounds.end,
-        }
-    }
-
-    pub fn segments(&self) -> &[String] {
-        &self.segments
-    }
-
-    pub fn start(&self) -> usize {
-        self.start
-    }
-
-    pub fn end(&self) -> usize {
-        self.end
-    }
-}
-
-impl TupleNode {
-    pub(crate) fn new(arity: usize, bounds: Range<usize>) -> Self {
-        Self {
-            arity,
-            start: bounds.start,
-            end: bounds.end,
-        }
-    }
-
-    pub fn arity(&self) -> usize {
-        self.arity
-    }
-
-    pub fn start(&self) -> usize {
-        self.start
-    }
-
-    pub fn end(&self) -> usize {
-        self.end
-    }
-}
-
-impl ClosureNode {
-    pub(crate) fn new(parameters: Vec<Parameter>, bounds: Range<usize>) -> Self {
-        Self {
-            parameters,
-            start: bounds.start,
-            end: bounds.end,
-        }
-    }
-
-    pub fn parameters(&self) -> &[Parameter] {
-        &self.parameters
-    }
-
-    pub fn start(&self) -> usize {
-        self.start
-    }
-
-    pub fn end(&self) -> usize {
-        self.end
+    pub fn is_trait_impl(&self) -> bool {
+        self.trait_impl
     }
 }
 
 impl MacroInvocation {
-    pub(crate) fn new(path: PathNode, bounds: Range<usize>) -> Self {
+    pub(crate) fn new(path: PathSyntax, bounds: Range<usize>, input: MacroInput) -> Self {
         Self {
             path,
             start: bounds.start,
             end: bounds.end,
+            input,
         }
     }
 
-    pub fn path(&self) -> &PathNode {
+    pub fn path(&self) -> &PathSyntax {
         &self.path
     }
 
@@ -473,26 +242,22 @@ impl MacroInvocation {
     pub fn end(&self) -> usize {
         self.end
     }
+
+    pub fn input(&self) -> &MacroInput {
+        &self.input
+    }
+
+    pub(crate) fn with_input_status(&self, tokens: &[Token], status: MacroInputStatus) -> Self {
+        Self {
+            path: self.path.clone(),
+            start: self.start,
+            end: self.end,
+            input: MacroInput::from_tokens(tokens, self.input.bounds(), status),
+        }
+    }
 }
 
 impl MacroDefinition {
-    pub(crate) fn new(bounds: Range<usize>) -> Self {
-        Self {
-            start: bounds.start,
-            end: bounds.end,
-        }
-    }
-
-    pub fn start(&self) -> usize {
-        self.start
-    }
-
-    pub fn end(&self) -> usize {
-        self.end
-    }
-}
-
-impl OtherItem {
     pub(crate) fn new(bounds: Range<usize>) -> Self {
         Self {
             start: bounds.start,

@@ -177,9 +177,10 @@ The workspace separates the command-line application from the analysis pipeline:
 | `cargo-cop` | CLI, configuration and scan orchestration, exit codes. |
 | `cop-config` | TOML schema validation, config discovery, and CLI-over-config resolution. |
 | `cop-cargo` | Cargo metadata, package and target selection, features, dependencies, and target `cfg`. |
+| `cop-cfg` | Shared `cfg` expression parsing, normalization, and three-valued evaluation. |
 | `cop-syntax` | Project-owned Rust lexer, syntax tree, parser, and parser coverage status. |
 | `cop-analysis` | `cfg` evaluation, module graph discovery, symbol and path resolution, analysis status. |
-| `cop-rules` | The 19 source convention rules. |
+| `cop-rules` | The 20 source convention rules. |
 | `cop-model` | Shared rule IDs, diagnostic, location, message, and scan-status types. |
 | `cop-report` | Stable diagnostic ordering and human/JSON rendering. |
 | `cop-i18n` | English and Simplified Chinese messages. |

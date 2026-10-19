@@ -9,6 +9,7 @@ use fluent_syntax::{
     ast::{Entry, Expression, InlineExpression, Pattern, PatternElement},
     parser,
 };
+use unic_langid::LanguageIdentifier;
 
 fn main() {
     println!("cargo:rerun-if-changed=locales");
@@ -55,7 +56,7 @@ fn validate_catalogs() -> Result<(), Vec<String>> {
         }
         let locale = entry.file_name().to_string_lossy().into_owned();
         found_locales.insert(locale.clone());
-        match locale.parse::<unic_langid::LanguageIdentifier>() {
+        match locale.parse::<LanguageIdentifier>() {
             Ok(locale_id) => {
                 let locale_id = locale_id.to_string();
                 if !supported_locales.insert(locale_id.clone()) {

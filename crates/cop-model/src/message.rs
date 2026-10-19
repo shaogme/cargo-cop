@@ -95,6 +95,7 @@ pub const SYNTAX_INNER_ATTRIBUTE_POSITION: MessageId =
     MessageId::new("syntax-inner-attribute-position");
 pub const SYNTAX_EXPECT_ATTRIBUTE_BRACKET: MessageId =
     MessageId::new("syntax-expect-attribute-bracket");
+pub const SYNTAX_ATTRIBUTE_INVALID: MessageId = MessageId::new("syntax-attribute-invalid");
 pub const SYNTAX_ATTRIBUTE_UNCLOSED: MessageId = MessageId::new("syntax-attribute-unclosed");
 pub const SYNTAX_VISIBILITY_UNCLOSED: MessageId = MessageId::new("syntax-visibility-unclosed");
 pub const SYNTAX_EXPECT_MODULE_NAME: MessageId = MessageId::new("syntax-expect-module-name");
@@ -102,6 +103,7 @@ pub const SYNTAX_EXPECT_MODULE_BODY: MessageId = MessageId::new("syntax-expect-m
 pub const SYNTAX_INLINE_MODULE_UNCLOSED: MessageId =
     MessageId::new("syntax-inline-module-unclosed");
 pub const SYNTAX_USE_MISSING_SEMICOLON: MessageId = MessageId::new("syntax-use-missing-semicolon");
+pub const SYNTAX_USE_TREE_INVALID: MessageId = MessageId::new("syntax-use-tree-invalid");
 pub const SYNTAX_EXTERN_CRATE_MISSING_SEMICOLON: MessageId =
     MessageId::new("syntax-extern-crate-missing-semicolon");
 pub const SYNTAX_NAMED_ITEM_EXPECT_NAME: MessageId =
@@ -118,7 +120,37 @@ pub const SYNTAX_FUNCTION_PARAMETERS_UNCLOSED: MessageId =
 pub const SYNTAX_FUNCTION_BODY_UNCLOSED: MessageId =
     MessageId::new("syntax-function-body-unclosed");
 pub const SYNTAX_ITEM_UNSUPPORTED: MessageId = MessageId::new("syntax-item-unsupported");
+pub const SYNTAX_EXPRESSION_UNSUPPORTED: MessageId =
+    MessageId::new("syntax-expression-unsupported");
+pub const SYNTAX_UNSUPPORTED_EDITION: MessageId = MessageId::new("syntax-unsupported-edition");
+pub const SYNTAX_MACRO_OPAQUE: MessageId = MessageId::new("syntax-macro-opaque");
+pub const SYNTAX_PARSE_ERROR_LEXICAL_ERROR: MessageId =
+    MessageId::new("syntax-parse-error-lexical-error");
+pub const SYNTAX_PARSE_ERROR_UNEXPECTED_TOKEN: MessageId =
+    MessageId::new("syntax-parse-error-unexpected-token");
+pub const SYNTAX_PARSE_ERROR_UNEXPECTED_EOF: MessageId =
+    MessageId::new("syntax-parse-error-unexpected-eof");
+pub const SYNTAX_PARSE_ERROR_UNCLOSED_DELIMITER: MessageId =
+    MessageId::new("syntax-parse-error-unclosed-delimiter");
+pub const SYNTAX_PARSE_ERROR_INVALID_ATTRIBUTE: MessageId =
+    MessageId::new("syntax-parse-error-invalid-attribute");
+pub const SYNTAX_PARSE_ERROR_UNSUPPORTED_EDITION: MessageId =
+    MessageId::new("syntax-parse-error-unsupported-edition");
+pub const SYNTAX_UNSUPPORTED_ITEM: MessageId = MessageId::new("syntax-unsupported-item");
+pub const SYNTAX_UNSUPPORTED_ASSOCIATED_ITEM: MessageId =
+    MessageId::new("syntax-unsupported-associated-item");
+pub const SYNTAX_UNSUPPORTED_TYPE: MessageId = MessageId::new("syntax-unsupported-type");
+pub const SYNTAX_UNSUPPORTED_PATTERN: MessageId = MessageId::new("syntax-unsupported-pattern");
+pub const SYNTAX_UNSUPPORTED_STATEMENT: MessageId = MessageId::new("syntax-unsupported-statement");
+pub const SYNTAX_UNSUPPORTED_EXPRESSION: MessageId =
+    MessageId::new("syntax-unsupported-expression");
+pub const SYNTAX_UNSUPPORTED_ATTRIBUTE: MessageId = MessageId::new("syntax-unsupported-attribute");
+pub const SYNTAX_UNSUPPORTED_VISIBILITY: MessageId =
+    MessageId::new("syntax-unsupported-visibility");
+pub const SYNTAX_UNSUPPORTED_USE_TREE: MessageId = MessageId::new("syntax-unsupported-use-tree");
+pub const SYNTAX_UNSUPPORTED_TOKEN: MessageId = MessageId::new("syntax-unsupported-token");
 pub const SYNTAX_DELIMITER_UNCLOSED: MessageId = MessageId::new("syntax-delimiter-unclosed");
+pub const SYNTAX_UNEXPECTED_TOKEN: MessageId = MessageId::new("syntax-unexpected-token");
 pub const SYNTAX_UNMATCHED_CLOSE_DELIMITER: MessageId =
     MessageId::new("syntax-unmatched-close-delimiter");
 pub const SYNTAX_DECLARATION_BODY_UNCLOSED: MessageId =
@@ -222,12 +254,14 @@ impl MessageId {
         SYNTAX_INVALID_RADIX_DIGIT,
         SYNTAX_INNER_ATTRIBUTE_POSITION,
         SYNTAX_EXPECT_ATTRIBUTE_BRACKET,
+        SYNTAX_ATTRIBUTE_INVALID,
         SYNTAX_ATTRIBUTE_UNCLOSED,
         SYNTAX_VISIBILITY_UNCLOSED,
         SYNTAX_EXPECT_MODULE_NAME,
         SYNTAX_EXPECT_MODULE_BODY,
         SYNTAX_INLINE_MODULE_UNCLOSED,
         SYNTAX_USE_MISSING_SEMICOLON,
+        SYNTAX_USE_TREE_INVALID,
         SYNTAX_EXTERN_CRATE_MISSING_SEMICOLON,
         SYNTAX_NAMED_ITEM_EXPECT_NAME,
         SYNTAX_TRAIT_EXPECT_NAME,
@@ -239,7 +273,27 @@ impl MessageId {
         SYNTAX_FUNCTION_PARAMETERS_UNCLOSED,
         SYNTAX_FUNCTION_BODY_UNCLOSED,
         SYNTAX_ITEM_UNSUPPORTED,
+        SYNTAX_EXPRESSION_UNSUPPORTED,
+        SYNTAX_UNSUPPORTED_EDITION,
+        SYNTAX_MACRO_OPAQUE,
+        SYNTAX_PARSE_ERROR_LEXICAL_ERROR,
+        SYNTAX_PARSE_ERROR_UNEXPECTED_TOKEN,
+        SYNTAX_PARSE_ERROR_UNEXPECTED_EOF,
+        SYNTAX_PARSE_ERROR_UNCLOSED_DELIMITER,
+        SYNTAX_PARSE_ERROR_INVALID_ATTRIBUTE,
+        SYNTAX_PARSE_ERROR_UNSUPPORTED_EDITION,
+        SYNTAX_UNSUPPORTED_ITEM,
+        SYNTAX_UNSUPPORTED_ASSOCIATED_ITEM,
+        SYNTAX_UNSUPPORTED_TYPE,
+        SYNTAX_UNSUPPORTED_PATTERN,
+        SYNTAX_UNSUPPORTED_STATEMENT,
+        SYNTAX_UNSUPPORTED_EXPRESSION,
+        SYNTAX_UNSUPPORTED_ATTRIBUTE,
+        SYNTAX_UNSUPPORTED_VISIBILITY,
+        SYNTAX_UNSUPPORTED_USE_TREE,
+        SYNTAX_UNSUPPORTED_TOKEN,
         SYNTAX_DELIMITER_UNCLOSED,
+        SYNTAX_UNEXPECTED_TOKEN,
         SYNTAX_UNMATCHED_CLOSE_DELIMITER,
         SYNTAX_DECLARATION_BODY_UNCLOSED,
         CONFIG_FILE_MISSING,
@@ -328,6 +382,9 @@ impl MessageId {
             }
             PARSER_COVERAGE => &[("issue", TEXT)],
             SYNTAX_UNKNOWN_CHARACTER => &[("character", TEXT)],
+            SYNTAX_UNSUPPORTED_EDITION | SYNTAX_PARSE_ERROR_UNSUPPORTED_EDITION => {
+                &[("edition", TEXT)]
+            }
             SYNTAX_INVALID_RADIX_DIGIT => &[("radix", NUMBER)],
             CONFIG_FILE_MISSING => &[("path", TEXT)],
             CONFIG_FILE_READ_ERROR | CONFIG_PARSE_ERROR => &[("path", TEXT), ("detail", OPAQUE)],

@@ -5,7 +5,14 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use serde_json::Value;
+use serde_json::{from_str, Value};
+
+use cop_analysis::{
+    AnalysisRequest, CfgDecision, ConfiguredAstIssueKind, PathResolutionKind, ProjectAnalyzer,
+};
+use cop_cargo::{
+    CargoDiscoveryRequest, CargoProjectLoader, CargoSelection, FeatureSelection, TargetSelector,
+};
 
 static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
 
@@ -17,6 +24,19 @@ struct RunOutput {
     status: i32,
     stdout: String,
     stderr: String,
+}
+
+struct ExpectedPathDiagnostic {
+    line: usize,
+    start_column: usize,
+    end_column: usize,
+    expected_path: &'static str,
+}
+
+struct ConfiguredNodeExpectation<'a> {
+    marker: &'a str,
+    kind: &'a str,
+    decision: CfgDecision,
 }
 
 impl Fixture {
@@ -87,7 +107,7 @@ fn package_manifest(name: &str) -> String {
 }
 
 fn item_spacing_diagnostics(output: &RunOutput) -> Vec<Value> {
-    let report = serde_json::from_str::<Value>(&output.stdout).expect("JSON 报告");
+    let report = from_str::<Value>(&output.stdout).expect("JSON 报告");
     report["diagnostics"]
         .as_array()
         .expect("诊断数组")
@@ -98,7 +118,7 @@ fn item_spacing_diagnostics(output: &RunOutput) -> Vec<Value> {
 }
 
 fn rule_diagnostics(output: &RunOutput, rule_id: &str) -> Vec<Value> {
-    let report = serde_json::from_str::<Value>(&output.stdout).expect("JSON 报告");
+    let report = from_str::<Value>(&output.stdout).expect("JSON 报告");
     report["diagnostics"]
         .as_array()
         .expect("诊断数组")
@@ -211,13 +231,30 @@ fn displays_warnings_by_default() {
     fixture.write("src/generated.rs", "pub fn generated() {}\n");
 
     let output = fixture.run(&["--format", "json"]);
-    let report = serde_json::from_str::<Value>(&output.stdout).expect("JSON 报告");
+    let report = from_str::<Value>(&output.stdout).expect("JSON 报告");
 
     assert_eq!(output.status, 0, "{}", output.stderr);
     assert_eq!(report["status"], "partial");
     assert_eq!(report["summary"]["warnings"], 1);
     assert_eq!(report["summary"]["suppressed_warnings"], 0);
     assert_eq!(report["diagnostics"][0]["analysis_issue"], "dynamic_input");
+}
+
+#[test]
+fn excludes_include_macros_inside_false_trait_members() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "src/lib.rs",
+        "trait Conditional { #[cfg(any())] fn disabled() { include!(\"hidden.rs\"); } }\n",
+    );
+
+    let output = fixture.run(&["--format", "json"]);
+
+    assert_eq!(output.status, 0, "{}", output.stderr);
+    assert!(!output
+        .stdout
+        .contains("\"analysis_issue\":\"dynamic_input\""));
 }
 
 #[test]
@@ -237,7 +274,7 @@ fn suppresses_warnings_but_preserves_errors_and_partial_status() {
     );
 
     let output = fixture.run(&["--format", "json"]);
-    let report = serde_json::from_str::<Value>(&output.stdout).expect("JSON 报告");
+    let report = from_str::<Value>(&output.stdout).expect("JSON 报告");
     let diagnostics = report["diagnostics"].as_array().expect("诊断数组");
 
     assert_eq!(output.status, 1, "{}", output.stderr);
@@ -258,8 +295,7 @@ fn suppresses_warnings_but_preserves_errors_and_partial_status() {
 
     fixture.write("src/lib.rs", "mod absent;\ninclude!(\"generated.rs\");\n");
     let incomplete = fixture.run(&["--format", "json"]);
-    let incomplete_report =
-        serde_json::from_str::<Value>(&incomplete.stdout).expect("JSON 部分扫描报告");
+    let incomplete_report = from_str::<Value>(&incomplete.stdout).expect("JSON 部分扫描报告");
 
     assert_eq!(incomplete.status, 2, "{}", incomplete.stderr);
     assert_eq!(incomplete_report["status"], "incomplete");
@@ -294,10 +330,9 @@ fn uses_one_resolved_locale_for_help_and_json_messages() {
         "zh-CN",
     ]);
     let invalid_arguments = fixture.run(&["--format", "json", "--locale", "en-US", "--unknown"]);
-    let english = serde_json::from_str::<Value>(&configured.stdout).expect("英文 JSON 报告");
-    let chinese = serde_json::from_str::<Value>(&overridden.stdout).expect("中文 JSON 报告");
-    let argument_error =
-        serde_json::from_str::<Value>(&invalid_arguments.stdout).expect("参数错误 JSON 报告");
+    let english = from_str::<Value>(&configured.stdout).expect("英文 JSON 报告");
+    let chinese = from_str::<Value>(&overridden.stdout).expect("中文 JSON 报告");
+    let argument_error = from_str::<Value>(&invalid_arguments.stdout).expect("参数错误 JSON 报告");
     let english_diagnostic = &english["diagnostics"][0];
     let chinese_diagnostic = &chinese["diagnostics"][0];
 
@@ -505,6 +540,691 @@ fn evaluates_cfg_false_true_and_unknown_branches_without_guessing() {
         .stdout
         .contains("\"analysis_issue\":\"unknown_cfg\""));
     assert!(!unknown.stdout.contains("missing_module"));
+}
+
+#[test]
+fn keeps_false_and_unknown_configured_nodes_queryable_by_ast_id() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    let source = "#[cfg(any())]\nmod disabled {\n    #[cfg(mystery_child)]\n    fn nested() {}\n}\n#[cfg(mystery_function)]\nfn uncertain() {}\n#[cfg(any()) trailing]\nfn malformed() {}\n#[path = \"chosen.rs\"]\nmod chosen;\n#[cfg_attr(mystery_path, path = \"alternate.rs\")]\nmod routed;\nfn local_scope() {\n    #[cfg(any())]\n    fn hidden_local() {}\n}\n";
+    fixture.write("src/lib.rs", source);
+    fixture.write("src/chosen.rs", "pub fn chosen() {}\n");
+    fixture.write("src/alternate.rs", "pub fn alternate() {}\n");
+
+    let discovery =
+        CargoProjectLoader::discover(CargoDiscoveryRequest::new(fixture.root.join("Cargo.toml")))
+            .expect("Cargo 元数据");
+    let project = TargetSelector::select(
+        discovery,
+        CargoSelection::new(FeatureSelection::new(Vec::new(), false, true))
+            .with_current_directory(fixture.root.clone()),
+    )
+    .expect("选择 package 与 target");
+    let package = project.packages().first().expect("选中的 package");
+    let snapshot = ProjectAnalyzer::analyze(AnalysisRequest::new(package));
+    let module = snapshot
+        .modules()
+        .iter()
+        .find(|module| module.is_crate_root())
+        .expect("crate 根模块");
+    let parsed = module.parse_output();
+    let configured = module.configured_ast();
+
+    assert_eq!(configured.nodes().len(), parsed.syntax_nodes().len());
+    for node in parsed.syntax_nodes() {
+        assert!(
+            configured.node(node.id()).is_some(),
+            "AST ID {:?}",
+            node.id()
+        );
+    }
+
+    let node_at = |marker: &str| {
+        let offset = source.find(marker).expect("源码标记");
+        parsed
+            .syntax_nodes()
+            .iter()
+            .filter(|node| node.start() <= offset && offset < node.end())
+            .min_by_key(|node| node.end().saturating_sub(node.start()))
+            .expect("对应 item 节点")
+    };
+    let nested = configured
+        .node(node_at("fn nested").id())
+        .expect("false 后代节点");
+    assert_eq!(nested.decision(), CfgDecision::False);
+    let mut parent = nested.parent();
+    while let Some(parent_id) = parent {
+        let ancestor = configured.node(parent_id).expect("父节点配置记录");
+        if ancestor.parent().is_none() {
+            break;
+        }
+        assert_eq!(ancestor.decision(), CfgDecision::False);
+        parent = ancestor.parent();
+    }
+
+    let uncertain = configured
+        .node(node_at("fn uncertain").id())
+        .expect("unknown 节点");
+    assert_eq!(uncertain.decision(), CfgDecision::Unknown);
+    assert!(uncertain
+        .effective_condition()
+        .is_some_and(|condition| condition.contains("mystery_function")));
+    let hidden_local = configured
+        .node(node_at("fn hidden_local").id())
+        .expect("false local item");
+    assert_eq!(hidden_local.decision(), CfgDecision::False);
+
+    let chosen = configured
+        .node(node_at("mod chosen").id())
+        .expect("带 path 属性的 module 节点");
+    assert_eq!(chosen.attribute_evaluation().path(), Some("chosen.rs"));
+    let routed = configured
+        .node(node_at("mod routed").id())
+        .expect("带未知 path 条件的 module 节点");
+    assert!(routed.attribute_evaluation().path_unknown());
+    assert!(routed.issues().iter().any(|issue| {
+        issue.kind() == ConfiguredAstIssueKind::UnknownCfg
+            && issue
+                .condition()
+                .is_some_and(|condition| condition.contains("mystery_path"))
+    }));
+    let malformed = configured
+        .node(node_at("fn malformed").id())
+        .expect("malformed 属性节点");
+    assert!(malformed.attribute_evaluation().is_malformed());
+    assert!(malformed.issues().iter().any(|issue| {
+        issue.kind() == ConfiguredAstIssueKind::MalformedAttribute
+            && parsed
+                .source()
+                .slice(issue.start(), issue.end())
+                .is_some_and(|range| range == "trailing")
+    }));
+    assert_eq!(
+        configured
+            .node_for_range(uncertain.start(), uncertain.end())
+            .map(|node| node.ast_node_id()),
+        Some(uncertain.ast_node_id())
+    );
+    assert!(configured
+        .enabled_nodes()
+        .all(|node| node.decision() == CfgDecision::True));
+    assert!(configured.potentially_enabled_nodes().count() > configured.enabled_nodes().count());
+}
+
+#[test]
+fn preserves_cfg_decisions_across_configured_ast_node_kinds() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    let source = "#[cfg(custom_item)] struct Conditional;\nstruct Record { #[cfg(any())] hidden_field: u8, #[cfg(all())] visible_field: u16 }\nenum Choice { #[cfg(custom_variant)] Conditional, Visible }\nfn generic<#[cfg(any())] HiddenGeneric, #[cfg(custom_generic)] PossibleGeneric>() {}\nfn inspect(#[cfg(any())] hidden_parameter: u8, #[cfg(custom_parameter)] possible_parameter: u8) {\n    #[cfg(any())] let hidden_statement = 0;\n    #[cfg(custom_statement)] let possible_statement = 0;\n    #[cfg(any())] fn hidden_local() {}\n    match 0 { #[cfg(any())] 1 => (), #[cfg(custom_arm)] _ => (), _ => () };\n    let _ = #[cfg(custom_expression)] value.member;\n    let _closure = |#[cfg(any())] hidden_closure: u8, #[cfg(custom_closure)] possible_closure: u8| ();\n    use crate::{#[cfg(any())] missing::Hidden as HiddenUse, #[cfg(custom_use)] existing::Visible as VisibleUse};\n}\n";
+    fixture.write("src/lib.rs", source);
+    let discovery =
+        CargoProjectLoader::discover(CargoDiscoveryRequest::new(fixture.root.join("Cargo.toml")))
+            .expect("Cargo 元数据");
+    let project = TargetSelector::select(
+        discovery,
+        CargoSelection::new(FeatureSelection::new(Vec::new(), false, true))
+            .with_current_directory(fixture.root.clone()),
+    )
+    .expect("选择 package 与 target");
+    let package = project.packages().first().expect("选中的 package");
+    let snapshot = ProjectAnalyzer::analyze(AnalysisRequest::new(package));
+    let module = snapshot
+        .modules()
+        .iter()
+        .find(|module| module.is_crate_root())
+        .expect("crate 根模块");
+    let parsed = module.parse_output();
+    let configured = module.configured_ast();
+    let cases = [
+        ConfiguredNodeExpectation {
+            marker: "Conditional;",
+            kind: "Item",
+            decision: CfgDecision::Unknown,
+        },
+        ConfiguredNodeExpectation {
+            marker: "hidden_field",
+            kind: "Field",
+            decision: CfgDecision::False,
+        },
+        ConfiguredNodeExpectation {
+            marker: "visible_field",
+            kind: "Field",
+            decision: CfgDecision::True,
+        },
+        ConfiguredNodeExpectation {
+            marker: "Conditional, Visible",
+            kind: "EnumVariant",
+            decision: CfgDecision::Unknown,
+        },
+        ConfiguredNodeExpectation {
+            marker: "HiddenGeneric",
+            kind: "GenericParameter",
+            decision: CfgDecision::False,
+        },
+        ConfiguredNodeExpectation {
+            marker: "PossibleGeneric",
+            kind: "GenericParameter",
+            decision: CfgDecision::Unknown,
+        },
+        ConfiguredNodeExpectation {
+            marker: "hidden_parameter",
+            kind: "Parameter",
+            decision: CfgDecision::False,
+        },
+        ConfiguredNodeExpectation {
+            marker: "possible_parameter",
+            kind: "Parameter",
+            decision: CfgDecision::Unknown,
+        },
+        ConfiguredNodeExpectation {
+            marker: "hidden_statement",
+            kind: "Statement",
+            decision: CfgDecision::False,
+        },
+        ConfiguredNodeExpectation {
+            marker: "possible_statement",
+            kind: "Statement",
+            decision: CfgDecision::Unknown,
+        },
+        ConfiguredNodeExpectation {
+            marker: "hidden_local",
+            kind: "LocalItem",
+            decision: CfgDecision::False,
+        },
+        ConfiguredNodeExpectation {
+            marker: "1 =>",
+            kind: "MatchArm",
+            decision: CfgDecision::False,
+        },
+        ConfiguredNodeExpectation {
+            marker: "#[cfg(custom_arm)]",
+            kind: "MatchArm",
+            decision: CfgDecision::Unknown,
+        },
+        ConfiguredNodeExpectation {
+            marker: "value.member",
+            kind: "Expression",
+            decision: CfgDecision::Unknown,
+        },
+        ConfiguredNodeExpectation {
+            marker: "hidden_closure",
+            kind: "Parameter",
+            decision: CfgDecision::False,
+        },
+        ConfiguredNodeExpectation {
+            marker: "possible_closure",
+            kind: "Parameter",
+            decision: CfgDecision::Unknown,
+        },
+        ConfiguredNodeExpectation {
+            marker: "HiddenUse",
+            kind: "UseTree",
+            decision: CfgDecision::False,
+        },
+        ConfiguredNodeExpectation {
+            marker: "VisibleUse",
+            kind: "UseTree",
+            decision: CfgDecision::Unknown,
+        },
+    ];
+
+    for expectation in cases {
+        let offset = source.find(expectation.marker).expect("源码标记");
+        let node = parsed
+            .syntax_nodes()
+            .iter()
+            .filter(|node| {
+                format!("{:?}", node.kind()) == expectation.kind
+                    && node.start() <= offset
+                    && offset < node.end()
+            })
+            .min_by_key(|node| node.end().saturating_sub(node.start()))
+            .unwrap_or_else(|| {
+                let containing = parsed
+                    .syntax_nodes()
+                    .iter()
+                    .filter(|node| node.start() <= offset && offset < node.end())
+                    .map(|node| {
+                        format!(
+                            "{:?}: {}",
+                            node.kind(),
+                            parsed
+                                .source()
+                                .slice(node.start(), node.end())
+                                .unwrap_or_default()
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                panic!(
+                    "找不到 {} 节点: {}; {containing:?}",
+                    expectation.kind, expectation.marker
+                )
+            });
+        let configured_node = configured.node(node.id()).expect("配置 AST 节点");
+        assert_eq!(
+            configured_node.decision(),
+            expectation.decision,
+            "{}",
+            expectation.marker
+        );
+        if expectation.decision != CfgDecision::True {
+            assert!(configured_node.effective_condition().is_some());
+        }
+    }
+}
+
+#[test]
+fn parses_comments_inside_recursive_cfg_attr_arguments() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "Cargo.toml",
+        "[package]\nname = \"sample\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[features]\nenabled = []\n",
+    );
+    fixture.write(
+        "src/lib.rs",
+        "#[cfg_attr(feature = \"enabled\", /* comma, ) */ cfg_attr(all(feature = \"enabled\" /* comma, ) */, feature = \"enabled\"), cfg(any()) /* trailing, ) */))]\nfn hidden() {}\nfn active() {}\n",
+    );
+
+    let output = fixture.run(&["--format", "json", "--features", "enabled"]);
+
+    assert_eq!(output.status, 0, "{}", output.stdout);
+    assert!(output.stdout.contains("\"status\":\"complete\""));
+    assert!(!output.stdout.contains("malformed_cfg_attribute"));
+    assert!(!output.stdout.contains("hidden"));
+}
+
+#[test]
+fn locates_malformed_stacked_cfg_at_the_attribute_that_failed() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "src/lib.rs",
+        "#[cfg(mystery_parent)]\n#[cfg(not())]\nfn uncertain() {}\n",
+    );
+
+    let output = fixture.run(&["--format", "json"]);
+    let report = from_str::<Value>(&output.stdout).expect("JSON 报告");
+    let malformed = report["diagnostics"]
+        .as_array()
+        .expect("诊断数组")
+        .iter()
+        .find(|diagnostic| diagnostic["message_id"] == "malformed-cfg-attribute")
+        .expect("malformed 属性诊断");
+
+    assert_eq!(malformed["start"]["line"], 2, "{}", output.stdout);
+    assert_eq!(malformed["start"]["column"], 3, "{}", output.stdout);
+}
+
+#[test]
+fn locates_trailing_cfg_attribute_tokens_at_the_unexpected_range() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "src/lib.rs",
+        "#[cfg(any()) trailing]\nfn hidden() {}\nfn active() {}\n",
+    );
+
+    let output = fixture.run(&["--format", "json"]);
+    let report = from_str::<Value>(&output.stdout).expect("JSON 报告");
+    let malformed = report["diagnostics"]
+        .as_array()
+        .expect("诊断数组")
+        .iter()
+        .find(|diagnostic| diagnostic["message_id"] == "malformed-cfg-attribute")
+        .expect("malformed 属性诊断");
+
+    assert_eq!(malformed["start"]["line"], 1, "{}", output.stdout);
+    assert_eq!(malformed["start"]["column"], 14, "{}", output.stdout);
+    assert_eq!(malformed["end"]["column"], 22, "{}", output.stdout);
+}
+
+#[test]
+fn filters_false_trait_and_impl_members_and_reports_unknown_members() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "Cargo.toml",
+        "[package]\nname = \"sample\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[features]\nenabled = []\n",
+    );
+    fixture.write(
+        "src/lib.rs",
+        "trait Contract {\n    #[cfg(any())]\n    #[allow(dead_code)]\n    fn disabled(a: u8, b: u8, c: u8, d: u8, e: u8, f: u8);\n    fn active();\n}\n\nstruct Service;\n\n#[cfg(feature = \"enabled\")]\nimpl Service {\n    #[cfg(any())]\n    fn disabled(&self, a: u8, b: u8, c: u8, d: u8, e: u8, f: u8) {}\n    #[cfg(custom_mode)]\n    fn possible(&self, a: u8, b: u8, c: u8, d: u8, e: u8, f: u8) {}\n}\n",
+    );
+
+    let output = fixture.run(&["--format", "json", "--features", "enabled"]);
+
+    assert_eq!(output.status, 1, "{}", output.stdout);
+    let parameter_diagnostics = rule_diagnostics(&output, "parameter_limit");
+    assert_eq!(parameter_diagnostics.len(), 1, "{}", output.stdout);
+    assert_eq!(
+        parameter_diagnostics[0]["cfg_condition"],
+        "all(custom_mode, feature = \"enabled\")"
+    );
+    assert!(output.stdout.contains("\"analysis_issue\":\"unknown_cfg\""));
+    assert!(!output.has_rule("no_lint_relaxation"));
+}
+
+#[test]
+fn filters_inactive_fields_and_match_arms_and_keeps_unknown_conditions() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "Cargo.toml",
+        "[package]\nname = \"sample\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[features]\nenabled = []\n",
+    );
+    fixture.write(
+        "src/lib.rs",
+        "#[cfg(any())]\nstruct Disabled { #[cfg(hidden_condition)] pub hidden: u8 }\n#[cfg(any())]\nimpl Disabled {}\n\nstruct Record {\n    #[cfg(any())] pub inactive: u8,\n    #[cfg(feature = \"enabled\")] pub gated: u8,\n    #[cfg(custom_field)] pub uncertain: u8,\n    pub current: u8,\n}\n\nimpl Record {}\n\npub fn variants(value: u8) {\n    match value {\n        #[cfg(any())] 0 => (1, 2, 3),\n        #[cfg(custom_arm)] 1 => (1, 2, 3),\n        _ => (),\n    }\n}\n",
+    );
+
+    let output = fixture.run(&["--format", "json"]);
+    let private_fields = rule_diagnostics(&output, "private_fields_for_behavior_types");
+    let tuple_arity = rule_diagnostics(&output, "tuple_arity");
+    let report = from_str::<Value>(&output.stdout).expect("JSON 报告");
+    let unknown_cfg = report["diagnostics"]
+        .as_array()
+        .expect("诊断数组")
+        .iter()
+        .filter(|diagnostic| diagnostic["analysis_issue"] == "unknown_cfg")
+        .count();
+
+    assert_eq!(output.status, 1, "{}", output.stdout);
+    assert_eq!(private_fields.len(), 2, "{}", output.stdout);
+    assert_eq!(tuple_arity.len(), 1, "{}", output.stdout);
+    assert_eq!(unknown_cfg, 2, "{}", output.stdout);
+    assert!(private_fields
+        .iter()
+        .any(|diagnostic| diagnostic["cfg_condition"] == "custom_field"));
+    assert_eq!(tuple_arity[0]["cfg_condition"], "custom_arm");
+    assert!(!output.stdout.contains("hidden_condition"));
+}
+
+#[test]
+fn inherits_unknown_ancestor_conditions_and_prunes_false_field_descendants() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "src/lib.rs",
+        "#[cfg(custom_parent)]\nstruct Record {\n    #[cfg(any())] pub inactive: u8,\n    #[cfg(custom_child)] pub conditional: u16,\n    pub inherited: u32,\n}\nimpl Record {}\n",
+    );
+
+    let output = fixture.run(&["--format", "json"]);
+    let fields = rule_diagnostics(&output, "private_fields_for_behavior_types");
+    let report = from_str::<Value>(&output.stdout).expect("JSON 报告");
+    let unknown_cfg = report["diagnostics"]
+        .as_array()
+        .expect("诊断数组")
+        .iter()
+        .filter(|diagnostic| diagnostic["analysis_issue"] == "unknown_cfg")
+        .count();
+
+    assert_eq!(output.status, 1, "{}", output.stdout);
+    assert_eq!(fields.len(), 2, "{}", output.stdout);
+    assert!(fields
+        .iter()
+        .any(|diagnostic| diagnostic["cfg_condition"] == "custom_parent"));
+    assert!(fields.iter().any(
+        |diagnostic| diagnostic["cfg_condition"]
+            .as_str()
+            .is_some_and(|condition| {
+                condition.contains("custom_child") && condition.contains("custom_parent")
+            })
+    ));
+    assert_eq!(unknown_cfg, 2, "{}", output.stdout);
+    assert!(!output.stdout.contains("inactive"));
+    assert!(output.stdout.contains("\"status\":\"partial\""));
+}
+
+#[test]
+fn omits_false_use_tree_branches_from_import_rules_and_symbol_aliases() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "src/lib.rs",
+        "mod parent { pub struct Secret; }\nuse crate::{#[cfg(any())] parent::Secret as Later};\n\nfn use_alias() { let _ = Later; }\n\nstruct Later;\n",
+    );
+
+    let output = fixture.run(&["--format", "json"]);
+
+    assert_eq!(output.status, 1, "{}", output.stdout);
+    assert!(output.has_rule("declaration_before_use"));
+    assert!(!output.has_rule("cfg_inside_use_tree"));
+}
+
+#[test]
+fn omits_false_nested_block_use_branches_from_local_symbols() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "src/lib.rs",
+        "mod parent { pub struct Secret; }\nfn use_alias() {\n    use crate::{#[cfg(any())] parent::Secret as Later};\n    let _ = Later;\n}\n\nstruct Later;\n",
+    );
+
+    let output = fixture.run(&["--format", "json"]);
+
+    assert_eq!(output.status, 1, "{}", output.stdout);
+    assert!(
+        output.has_rule("declaration_before_use"),
+        "{}",
+        output.stdout
+    );
+    assert!(!output.has_rule("cfg_inside_use_tree"), "{}", output.stdout);
+}
+
+#[test]
+fn resolves_aliases_from_grouped_block_use_leaves() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    let source = "mod diagnostics { pub enum CodecStage { Conversion } }\nfn imported() {\n    use crate::diagnostics::{CodecStage as Stage};\n    let _ = Stage;\n}\n";
+    fixture.write("src/lib.rs", source);
+    let discovery =
+        CargoProjectLoader::discover(CargoDiscoveryRequest::new(fixture.root.join("Cargo.toml")))
+            .expect("Cargo 元数据");
+    let project = TargetSelector::select(
+        discovery,
+        CargoSelection::new(FeatureSelection::new(Vec::new(), false, true))
+            .with_current_directory(fixture.root.clone()),
+    )
+    .expect("选择 package 与 target");
+    let package = project.packages().first().expect("选中的 package");
+    let snapshot = ProjectAnalyzer::analyze(AnalysisRequest::new(package));
+    let module = snapshot
+        .modules()
+        .iter()
+        .find(|module| module.is_crate_root())
+        .expect("crate 根模块");
+    let offset = source.find("let _ = Stage").expect("别名引用位置") + "let _ = ".len();
+    let resolution = snapshot.symbols().resolve_path_at(
+        module,
+        &["Stage".to_owned()],
+        Some(offset..offset + "Stage".len()),
+    );
+
+    assert_eq!(resolution.kind(), PathResolutionKind::Local);
+    assert_eq!(resolution.alias_chain(), ["Stage"]);
+    assert_eq!(
+        resolution.symbol().map(|symbol| symbol.name()),
+        Some("CodecStage")
+    );
+}
+
+#[test]
+fn keeps_module_analysis_and_diagnostics_on_the_same_unknown_cfg_condition() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "src/lib.rs",
+        "#[cfg(custom_gate)]\n#[allow(dead_code)]\nmod child;\n",
+    );
+    fixture.write("src/child.rs", "pub struct Item;\n\npub fn exposed() {}\n");
+    let output = fixture.run(&["--format", "json"]);
+    let discovery =
+        CargoProjectLoader::discover(CargoDiscoveryRequest::new(fixture.root.join("Cargo.toml")))
+            .expect("Cargo 元数据");
+    let project = TargetSelector::select(
+        discovery,
+        CargoSelection::new(FeatureSelection::new(Vec::new(), false, true))
+            .with_current_directory(fixture.root.clone()),
+    )
+    .expect("选择 package 与 target");
+    let package = project.packages().first().expect("选中的 package");
+    let snapshot = ProjectAnalyzer::analyze(AnalysisRequest::new(package));
+    let root = snapshot
+        .modules()
+        .iter()
+        .find(|module| module.is_crate_root())
+        .expect("crate 根模块");
+    let child = snapshot
+        .modules()
+        .iter()
+        .find(|module| module.namespace() == ["child"])
+        .expect("cfg 条件下发现的子模块");
+    let symbol = snapshot
+        .symbols()
+        .symbols()
+        .iter()
+        .find(|symbol| symbol.name() == "Item")
+        .expect("子模块符号");
+
+    assert_eq!(output.status, 1, "{}", output.stdout);
+    assert_eq!(child.cfg_condition(), Some("custom_gate"));
+    assert!(root.lint_relaxations().iter().any(|attribute| {
+        attribute.decision() == CfgDecision::Unknown && attribute.condition() == Some("custom_gate")
+    }));
+    assert_eq!(symbol.cfg_condition(), Some("custom_gate"));
+    let diagnostics = rule_diagnostics(&output, "child_public_free_functions");
+    assert_eq!(diagnostics.len(), 1, "{}", output.stdout);
+    assert_eq!(diagnostics[0]["cfg_condition"], "custom_gate");
+    let lint_diagnostics = rule_diagnostics(&output, "no_lint_relaxation");
+    assert_eq!(lint_diagnostics.len(), 1, "{}", output.stdout);
+    assert_eq!(lint_diagnostics[0]["cfg_condition"], "custom_gate");
+}
+
+#[test]
+fn analyzes_supported_items_around_function_body_opaque_syntax() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write("src/lib.rs", "mod child;\n");
+    fixture.write(
+        "src/child.rs",
+        "pub fn opaque_body() { hidden!(); }\npub fn available() {}\n",
+    );
+
+    let output = fixture.run(&["--format", "json"]);
+
+    assert_eq!(output.status, 1, "{}", output.stdout);
+    assert!(output.stdout.contains("\"status\":\"partial\""));
+    assert!(output
+        .stdout
+        .contains("\"analysis_issue\":\"parser_coverage\""));
+    assert_eq!(
+        rule_diagnostics(&output, "child_public_free_functions").len(),
+        2,
+        "{}",
+        output.stdout
+    );
+}
+
+#[test]
+fn skips_item_spacing_between_provably_exclusive_cfg_nodes() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "src/lib.rs",
+        "#[cfg(custom)]\nstruct First;\n#[cfg(not(custom))]\nstruct Second;\n",
+    );
+
+    let exclusive = fixture.run(&["--format", "json"]);
+    assert!(!exclusive.has_rule("item_spacing"), "{}", exclusive.stdout);
+
+    fixture.write(
+        "src/lib.rs",
+        "#[cfg(custom)]\nstruct First;\n#[cfg(custom)]\nstruct Second;\n",
+    );
+    let compatible = fixture.run(&["--format", "json"]);
+    assert!(compatible.has_rule("item_spacing"), "{}", compatible.stdout);
+}
+
+#[test]
+fn evaluates_cfg_attr_cfg_injections_as_implications() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "Cargo.toml",
+        "[package]\nname = \"sample\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[features]\nouter = []\ninner = []\n",
+    );
+    fixture.write(
+        "src/lib.rs",
+        "#[cfg_attr(feature = \"outer\", cfg(feature = \"inner\"))]\nfn gated(a: u8, b: u8, c: u8, d: u8, e: u8, f: u8) {}\n",
+    );
+
+    let outer_disabled = fixture.run(&["--format", "json"]);
+    let injected_false = fixture.run(&["--format", "json", "--features", "outer"]);
+    let injected_true = fixture.run(&["--format", "json", "--features", "outer,inner"]);
+
+    assert!(
+        outer_disabled.has_rule("parameter_limit"),
+        "{}",
+        outer_disabled.stdout
+    );
+    assert!(
+        !injected_false.has_rule("parameter_limit"),
+        "{}",
+        injected_false.stdout
+    );
+    assert!(
+        injected_true.has_rule("parameter_limit"),
+        "{}",
+        injected_true.stdout
+    );
+
+    fixture.write(
+        "src/lib.rs",
+        "#[cfg_attr(custom_gate, cfg(any()))]\nfn possible(a: u8, b: u8, c: u8, d: u8, e: u8, f: u8) {}\n",
+    );
+    let unknown = fixture.run(&["--format", "json"]);
+    let diagnostics = rule_diagnostics(&unknown, "parameter_limit");
+    assert_eq!(diagnostics.len(), 1, "{}", unknown.stdout);
+    assert_eq!(diagnostics[0]["cfg_condition"], "not(custom_gate)");
+    assert!(unknown
+        .stdout
+        .contains("\"analysis_issue\":\"unknown_cfg\""));
+}
+
+#[test]
+fn conditionally_active_local_bindings_only_shadow_coexisting_references() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "src/lib.rs",
+        "fn use_false_binding() {\n    #[cfg(any())] let Later = 0;\n    let _ = Later;\n}\n\nfn use_exclusive_binding() {\n    #[cfg(custom_mode)] let Other = 0;\n    #[cfg(not(custom_mode))] let _ = Other;\n}\n\nstruct Later;\nstruct Other;\n",
+    );
+
+    let output = fixture.run(&["--format", "json"]);
+    let diagnostics = rule_diagnostics(&output, "declaration_before_use");
+
+    assert_eq!(diagnostics.len(), 2, "{}", output.stdout);
+    assert!(diagnostics.iter().any(|diagnostic| diagnostic["message"]
+        .as_str()
+        .is_some_and(|value| value.contains("Later"))));
+    assert!(diagnostics.iter().any(|diagnostic| diagnostic["message"]
+        .as_str()
+        .is_some_and(|value| value.contains("Other"))));
+}
+
+#[test]
+fn conditionally_active_local_items_shadow_only_when_enabled() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "src/lib.rs",
+        "fn false_local_item() {\n    #[cfg(any())] struct Later;\n    let _ = Later;\n}\n\nfn active_local_item() {\n    struct Later;\n    let _ = Later;\n}\n\nstruct Later;\n",
+    );
+
+    let output = fixture.run(&["--format", "json"]);
+    let diagnostics = rule_diagnostics(&output, "declaration_before_use");
+
+    assert_eq!(diagnostics.len(), 1, "{}", output.stdout);
+    assert!(diagnostics[0]["message"]
+        .as_str()
+        .is_some_and(|message| message.contains("Later")));
 }
 
 #[test]
@@ -809,8 +1529,8 @@ fn rejects_parent_traversal_in_external_module_path_attributes() {
         "--locale",
         "zh-CN",
     ]);
-    let default_report = serde_json::from_str::<Value>(&default.stdout).expect("默认 JSON 报告");
-    let chinese_report = serde_json::from_str::<Value>(&chinese.stdout).expect("中文 JSON 报告");
+    let default_report = from_str::<Value>(&default.stdout).expect("默认 JSON 报告");
+    let chinese_report = from_str::<Value>(&chinese.stdout).expect("中文 JSON 报告");
     let diagnostics = rule_diagnostics(&default, "no_parent_path_attribute");
     let warning_diagnostics = rule_diagnostics(&warning, "no_parent_path_attribute");
     let chinese_diagnostics = rule_diagnostics(&chinese, "no_parent_path_attribute");
@@ -858,6 +1578,26 @@ fn reports_parser_coverage_failures_as_incomplete_scans() {
 }
 
 #[test]
+fn continues_rules_in_recovered_regions_after_a_local_parser_issue() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write("src/lib.rs", "mod child;\n");
+    fixture.write("src/child.rs", "fn () {}\npub fn exposed() {}\n");
+
+    let output = fixture.run(&["--format", "json"]);
+
+    assert_eq!(output.status, 2, "{}", output.stderr);
+    assert!(
+        output.has_rule("child_public_free_functions"),
+        "{}",
+        output.stdout
+    );
+    assert!(output
+        .stdout
+        .contains("\"analysis_issue\":\"parser_coverage\""));
+}
+
+#[test]
 fn reports_invalid_radix_literals_as_incomplete_scans() {
     let fixture = Fixture::new();
     fixture.write("Cargo.toml", &package_manifest("sample"));
@@ -870,7 +1610,13 @@ fn reports_invalid_radix_literals_as_incomplete_scans() {
     assert!(invalid
         .stdout
         .contains("\"analysis_issue\":\"parser_coverage\""));
-    assert!(invalid.stdout.contains("基数前缀后需要至少一个数字"));
+    assert!(
+        invalid
+            .stdout
+            .contains("词法分析遇到无效或无法识别的 token"),
+        "{}",
+        invalid.stdout
+    );
 
     fixture.write(
         "src/lib.rs",
@@ -957,19 +1703,37 @@ fn reports_external_qualified_paths_in_nested_call_arguments() {
     assert!(output.stdout.contains("\"status\":\"complete\""));
     let diagnostics = rule_diagnostics(&output, "no_inline_qualified_path");
     assert_eq!(diagnostics.len(), 3, "{}", output.stdout);
-    for (diagnostic, (line, start_column, end_column, expected_path)) in diagnostics.iter().zip([
-        (4, 13, 37, "std::path::PathBuf::from"),
-        (5, 17, 37, "std::path::Path::new"),
-        (8, 9, 29, "std::path::Path::new"),
+    for (diagnostic, expected) in diagnostics.iter().zip([
+        ExpectedPathDiagnostic {
+            line: 4,
+            start_column: 13,
+            end_column: 37,
+            expected_path: "std::path::PathBuf::from",
+        },
+        ExpectedPathDiagnostic {
+            line: 5,
+            start_column: 17,
+            end_column: 37,
+            expected_path: "std::path::Path::new",
+        },
+        ExpectedPathDiagnostic {
+            line: 8,
+            start_column: 9,
+            end_column: 29,
+            expected_path: "std::path::Path::new",
+        },
     ]) {
-        assert_eq!(diagnostic["start"]["line"], line);
-        assert_eq!(diagnostic["start"]["column"], start_column);
-        assert_eq!(diagnostic["end"]["line"], line);
-        assert_eq!(diagnostic["end"]["column"], end_column);
-        let source_line = source.lines().nth(line - 1).expect("诊断对应源码行");
+        assert_eq!(diagnostic["start"]["line"], expected.line);
+        assert_eq!(diagnostic["start"]["column"], expected.start_column);
+        assert_eq!(diagnostic["end"]["line"], expected.line);
+        assert_eq!(diagnostic["end"]["column"], expected.end_column);
+        let source_line = source
+            .lines()
+            .nth(expected.line - 1)
+            .expect("诊断对应源码行");
         assert_eq!(
-            &source_line[start_column - 1..end_column - 1],
-            expected_path
+            &source_line[expected.start_column - 1..expected.end_column - 1],
+            expected.expected_path
         );
     }
 }
@@ -1041,6 +1805,14 @@ fn reports_external_crate_root_aliases_without_misclassifying_local_names() {
         "{}",
         local_alias.stdout
     );
+
+    fixture.write(
+        "src/lib.rs",
+        "fn local_group_alias() { use vendor::{self as external}; let _ = external::Thing; }\n",
+    );
+    let local_group_alias = fixture.run(&["--format", "json", "--package", "app"]);
+    assert_eq!(local_group_alias.status, 1, "{}", local_group_alias.stdout);
+    assert!(local_group_alias.has_rule("no_inline_qualified_path"));
 
     fixture.write(
         "src/lib.rs",
@@ -1448,6 +2220,31 @@ fn counts_only_active_code_lines_at_module_thresholds() {
 }
 
 #[test]
+fn excludes_false_cfg_items_from_child_module_line_counts() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write("src/lib.rs", "mod child;\n");
+    let inactive_body = (0..80)
+        .map(|index| format!("    let _value_{index} = {index};\n"))
+        .collect::<String>();
+    let active_items = (0..70)
+        .map(|index| format!("pub fn active_{index}() {{}}\n\n"))
+        .collect::<String>();
+    let child = format!("{active_items}\n#[cfg(any())]\nfn inactive() {{\n{inactive_body}}}\n");
+    fixture.write("src/child.rs", &child);
+
+    let output = fixture.run(&[
+        "--format",
+        "json",
+        "--disable-rule",
+        "child_public_free_functions",
+    ]);
+
+    assert_eq!(output.status, 0, "{}", output.stdout);
+    assert!(!output.has_rule("child_module_line_count"));
+}
+
+#[test]
 fn detects_syntax_limits_and_ignores_macro_and_literal_contents() {
     let fixture = Fixture::new();
     fixture.write("Cargo.toml", &package_manifest("sample"));
@@ -1469,6 +2266,62 @@ fn detects_syntax_limits_and_ignores_macro_and_literal_contents() {
             .count(),
         3
     );
+}
+
+#[test]
+fn reports_opaque_macro_input_without_evaluating_its_cfg_tokens() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "src/lib.rs",
+        "fn opaque() { hidden!({ #[cfg(macro_only_cfg)] let value = 0; }); assert!(#[cfg(macro_only_cfg)] true); }\n",
+    );
+
+    let output = fixture.run(&["--format", "json"]);
+
+    assert_eq!(output.status, 0, "{}", output.stdout);
+    assert!(output.stdout.contains("\"status\":\"partial\""));
+    assert!(output
+        .stdout
+        .contains("\"analysis_issue\":\"parser_coverage\""));
+    assert!(!output.stdout.contains("\"analysis_issue\":\"unknown_cfg\""));
+    assert!(!output.stdout.contains("macro_only_cfg"));
+}
+
+#[test]
+fn filters_false_closure_parameters_and_marks_unknown_parameter_limits() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "src/lib.rs",
+        "fn closures() {\n    let _reduced = |#[cfg(any())] hidden: u8, a: u8, b: u8, c: u8, d: u8, e: u8| ();\n    let _possible = |#[cfg(custom_parameter)] hidden: u8, a: u8, b: u8, c: u8, d: u8, e: u8| ();\n}\n",
+    );
+
+    let output = fixture.run(&["--format", "json"]);
+    let diagnostics = rule_diagnostics(&output, "parameter_limit");
+
+    assert_eq!(diagnostics.len(), 1, "{}", output.stdout);
+    assert_eq!(diagnostics[0]["cfg_condition"], "custom_parameter");
+    assert!(output.stdout.contains("\"analysis_issue\":\"unknown_cfg\""));
+}
+
+#[test]
+fn skips_opaque_macro_coverage_inside_false_cfg_ancestors() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "src/lib.rs",
+        "#[cfg(any())]\nfn inactive() { hidden!({ #[cfg(macro_only_cfg)] let value = 0; }); }\nfn active() {}\n",
+    );
+
+    let output = fixture.run(&["--format", "json"]);
+
+    assert_eq!(output.status, 0, "{}", output.stdout);
+    assert!(output.stdout.contains("\"status\":\"complete\""));
+    assert!(!output
+        .stdout
+        .contains("\"analysis_issue\":\"parser_coverage\""));
+    assert!(!output.stdout.contains("macro_only_cfg"));
 }
 
 #[test]
@@ -1510,6 +2363,189 @@ fn checks_import_spacing_in_module_and_nested_block_scopes() {
     assert!(output.has_rule("cfg_use_group_spacing"));
     assert!(output.has_rule("cfg_inside_use_tree"));
     assert!(output.has_rule("imports_at_scope_start"));
+}
+
+#[test]
+fn merges_module_import_leaf_pairs_with_the_longest_common_prefix() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "src/lib.rs",
+        "use crate::{model::nested::First, model::Second};\nuse crate::{model::nested::Third, model::Fourth};\n",
+    );
+
+    let output = fixture.run(&["--format", "json"]);
+    let diagnostics = rule_diagnostics(&output, "merge_common_prefix_imports");
+
+    assert_eq!(diagnostics.len(), 1, "{}", output.stdout);
+    assert_eq!(diagnostics[0]["start"]["line"], 2);
+    assert_eq!(diagnostics[0]["arguments"]["line"], 1);
+    assert_eq!(
+        diagnostics[0]["arguments"]["prefix"],
+        "crate::model::nested"
+    );
+}
+
+#[test]
+fn merges_module_multi_leaf_imports_with_single_leaf_imports() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "src/lib.rs",
+        "use crate::{model::First, model::Second};\nuse crate::model::Third;\n",
+    );
+
+    let output = fixture.run(&["--format", "json"]);
+    let diagnostics = rule_diagnostics(&output, "merge_common_prefix_imports");
+
+    assert_eq!(diagnostics.len(), 1, "{}", output.stdout);
+    assert_eq!(diagnostics[0]["start"]["line"], 2);
+    assert_eq!(diagnostics[0]["arguments"]["line"], 1);
+    assert_eq!(diagnostics[0]["arguments"]["prefix"], "crate::model");
+}
+
+#[test]
+fn compares_only_ordinary_leaf_pairs_in_module_imports() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "src/lib.rs",
+        "use crate::{model::Alias as FirstAlias, model::*};\nuse crate::{model::Alias as SecondAlias, model::*};\nuse crate::{model::First, model::Alias as ThirdAlias, model::*};\nuse crate::{model::Second, model::Alias as FourthAlias, model::*};\n",
+    );
+
+    let output = fixture.run(&["--format", "json"]);
+    let diagnostics = rule_diagnostics(&output, "merge_common_prefix_imports");
+
+    assert_eq!(diagnostics.len(), 1, "{}", output.stdout);
+    assert_eq!(diagnostics[0]["start"]["line"], 4);
+    assert_eq!(diagnostics[0]["arguments"]["line"], 3);
+    assert_eq!(diagnostics[0]["arguments"]["prefix"], "crate::model");
+}
+
+#[test]
+fn ignores_incompatible_or_nonadjacent_module_imports_and_false_cfg_leaves() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "Cargo.toml",
+        "[package]\nname = \"sample\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[features]\nfirst = []\nsecond = []\n",
+    );
+    fixture.write(
+        "src/lib.rs",
+        "use core::{model::First, model::Second};\n#[cfg(any())]\nuse crate::{model::InactiveFirst, model::InactiveSecond};\nuse std::{model::Third, model::Fourth};\npub use crate::{model::Fifth, model::Sixth};\n#[cfg(feature = \"first\")]\nuse crate::{model::Seventh, model::Eighth};\n#[cfg(feature = \"second\")]\nuse crate::{model::Ninth, model::Tenth};\nfn separator() {}\nuse crate::{model::Eleventh, model::Twelfth};\n",
+    );
+
+    let output = fixture.run(&["--format", "json", "--features", "first,second"]);
+
+    assert!(
+        rule_diagnostics(&output, "merge_common_prefix_imports").is_empty(),
+        "{}",
+        output.stdout
+    );
+}
+
+#[test]
+fn ignores_parser_unsupported_module_use_leaves() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "src/lib.rs",
+        "use crate::{#[broken(,)] model::First, model::*};\nuse crate::model::Third;\n",
+    );
+
+    let output = fixture.run(&["--format", "json"]);
+
+    assert!(
+        rule_diagnostics(&output, "merge_common_prefix_imports").is_empty(),
+        "{}",
+        output.stdout
+    );
+}
+
+#[test]
+fn does_not_compare_branches_inside_one_module_use_tree() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write("src/lib.rs", "use crate::{model::First, model::Second};\n");
+
+    let output = fixture.run(&["--format", "json"]);
+
+    assert!(
+        rule_diagnostics(&output, "merge_common_prefix_imports").is_empty(),
+        "{}",
+        output.stdout
+    );
+}
+
+#[test]
+fn merges_block_multi_leaf_imports_and_keeps_source_order_for_equal_prefixes() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "src/lib.rs",
+        "fn body() {\n    use crate::{alpha::left::First, beta::right::Second};\n    use crate::{alpha::left::Third, beta::right::Fourth};\n}\n",
+    );
+
+    let output = fixture.run(&["--format", "json"]);
+    let diagnostics = rule_diagnostics(&output, "merge_common_prefix_imports");
+
+    assert_eq!(diagnostics.len(), 1, "{}", output.stdout);
+    assert_eq!(diagnostics[0]["start"]["line"], 3);
+    assert_eq!(diagnostics[0]["arguments"]["line"], 2);
+    assert_eq!(diagnostics[0]["arguments"]["prefix"], "crate::alpha::left");
+}
+
+#[test]
+fn merges_block_multi_leaf_imports_with_single_leaf_imports() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "src/lib.rs",
+        "fn body() {\n    use crate::{model::First, model::Second};\n    use crate::model::Third;\n}\n",
+    );
+
+    let output = fixture.run(&["--format", "json"]);
+    let diagnostics = rule_diagnostics(&output, "merge_common_prefix_imports");
+
+    assert_eq!(diagnostics.len(), 1, "{}", output.stdout);
+    assert_eq!(diagnostics[0]["start"]["line"], 3);
+    assert_eq!(diagnostics[0]["arguments"]["line"], 2);
+    assert_eq!(diagnostics[0]["arguments"]["prefix"], "crate::model");
+}
+
+#[test]
+fn preserves_single_leaf_block_import_diagnostic_parameters() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "src/lib.rs",
+        "fn body() {\n    use crate::model::First;\n    use crate::model::Second;\n}\n",
+    );
+
+    let output = fixture.run(&["--format", "json"]);
+    let diagnostics = rule_diagnostics(&output, "merge_common_prefix_imports");
+
+    assert_eq!(diagnostics.len(), 1, "{}", output.stdout);
+    assert_eq!(diagnostics[0]["start"]["line"], 3);
+    assert_eq!(diagnostics[0]["arguments"]["line"], 2);
+    assert_eq!(diagnostics[0]["arguments"]["prefix"], "crate::model");
+}
+
+#[test]
+fn ignores_block_imports_that_are_not_at_scope_start_for_prefix_merging() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "src/lib.rs",
+        "fn body() {\n    let value = 1;\n    use crate::{model::First, model::Second};\n    use crate::{model::Third, model::Fourth};\n}\n",
+    );
+
+    let output = fixture.run(&["--format", "json"]);
+
+    assert!(
+        rule_diagnostics(&output, "merge_common_prefix_imports").is_empty(),
+        "{}",
+        output.stdout
+    );
 }
 
 #[test]
@@ -1604,33 +2640,18 @@ fn reports_module_scope_order_violations_on_the_late_items() {
     assert_eq!(chinese.status, 1, "{}", chinese.stdout);
     assert_eq!(english.status, 1, "{}", english.stdout);
     let extern_crates = rule_diagnostics(&chinese, "extern_crate_at_scope_start");
-    assert_eq!(extern_crates.len(), 2, "{}", chinese.stdout);
-    assert_eq!(
-        extern_crates
-            .iter()
-            .map(|diagnostic| diagnostic["start"]["line"].as_u64().unwrap())
-            .collect::<Vec<_>>(),
-        vec![2, 6]
-    );
-    assert_eq!(extern_crates[0]["severity"], "error");
-    assert!(extern_crates[0]["message"]
-        .as_str()
-        .unwrap()
-        .contains("extern crate 声明必须位于模块作用域开头"));
+    assert!(extern_crates.is_empty(), "{}", chinese.stdout);
     let english_extern_crates = rule_diagnostics(&english, "extern_crate_at_scope_start");
-    assert!(english_extern_crates[0]["message"]
-        .as_str()
-        .unwrap()
-        .contains("extern crate declarations must appear at the start of a module scope"));
+    assert!(english_extern_crates.is_empty(), "{}", english.stdout);
 
     let imports = rule_diagnostics(&chinese, "imports_at_scope_start");
-    assert_eq!(imports.len(), 2, "{}", chinese.stdout);
+    assert_eq!(imports.len(), 1, "{}", chinese.stdout);
     assert_eq!(
         imports
             .iter()
             .map(|diagnostic| diagnostic["start"]["line"].as_u64().unwrap())
             .collect::<Vec<_>>(),
-        vec![10, 15]
+        vec![10]
     );
     assert!(imports[0]["message"]
         .as_str()
@@ -1674,17 +2695,13 @@ fn checks_late_extern_crates_in_each_module_scope_but_not_function_blocks() {
         "json",
         "--disable-rule",
         "child_module_line_count",
+        "--disable-rule",
+        "item_spacing",
     ]);
 
-    assert_eq!(output.status, 1, "{}", output.stdout);
+    assert_eq!(output.status, 0, "{}", output.stdout);
     let extern_crates = rule_diagnostics(&output, "extern_crate_at_scope_start");
-    assert_eq!(extern_crates.len(), 3, "{}", output.stdout);
-    assert_eq!(extern_crates[0]["path"], "src/external_scope.rs");
-    assert_eq!(extern_crates[0]["start"]["line"], 3);
-    assert_eq!(extern_crates[1]["path"], "src/lib.rs");
-    assert_eq!(extern_crates[1]["start"]["line"], 4);
-    assert_eq!(extern_crates[2]["path"], "src/lib.rs");
-    assert_eq!(extern_crates[2]["start"]["line"], 9);
+    assert!(extern_crates.is_empty(), "{}", output.stdout);
     assert!(!output.has_rule("imports_at_scope_start"));
     assert!(!output.has_rule("out_of_line_modules_at_scope_start"));
 }
@@ -1735,7 +2752,7 @@ fn configures_extern_crate_order_rule_and_allows_disabling_it() {
 }
 
 #[test]
-fn checks_order_inside_files_disabled_by_cfg_attributes() {
+fn skips_target_specific_order_checks_inside_files_disabled_by_cfg_attributes() {
     let fixture = Fixture::new();
     fixture.write("Cargo.toml", &package_manifest("sample"));
     fixture.write("src/lib.rs", "mod disabled;\n");
@@ -1751,11 +2768,9 @@ fn checks_order_inside_files_disabled_by_cfg_attributes() {
         "child_module_line_count",
     ]);
 
-    assert_eq!(output.status, 1, "{}", output.stdout);
+    assert_eq!(output.status, 0, "{}", output.stdout);
     let imports = rule_diagnostics(&output, "imports_at_scope_start");
-    assert_eq!(imports.len(), 1, "{}", output.stdout);
-    assert_eq!(imports[0]["path"], "src/disabled.rs");
-    assert_eq!(imports[0]["start"]["line"], 3);
+    assert!(imports.is_empty(), "{}", output.stdout);
 
     fixture.write(
         "src/lib.rs",
@@ -1767,11 +2782,9 @@ fn checks_order_inside_files_disabled_by_cfg_attributes() {
         "--disable-rule",
         "child_module_line_count",
     ]);
-    assert_eq!(root_output.status, 1, "{}", root_output.stdout);
+    assert_eq!(root_output.status, 0, "{}", root_output.stdout);
     let root_imports = rule_diagnostics(&root_output, "imports_at_scope_start");
-    assert_eq!(root_imports.len(), 1, "{}", root_output.stdout);
-    assert_eq!(root_imports[0]["path"], "src/lib.rs");
-    assert_eq!(root_imports[0]["start"]["line"], 3);
+    assert!(root_imports.is_empty(), "{}", root_output.stdout);
 }
 
 #[test]
@@ -1886,6 +2899,10 @@ fn normalizes_stacked_cfg_conditions_before_import_grouping() {
         "{}",
         output.stdout
     );
+    let diagnostics = rule_diagnostics(&output, "merge_common_prefix_imports");
+    assert_eq!(diagnostics[0]["start"]["line"], 4);
+    assert_eq!(diagnostics[0]["arguments"]["line"], 1);
+    assert_eq!(diagnostics[0]["arguments"]["prefix"], "crate::module");
     assert!(!output.has_rule("cfg_use_group_spacing"));
 }
 
@@ -1933,7 +2950,7 @@ fn checks_parent_private_access_spacing_and_nested_lint_attributes() {
     );
     fixture.write(
         "src/lib.rs",
-        "struct First;\nstruct Second;\n\nstruct Third;\n\n/// 保留文档注释；Retained documentation\nstruct Fourth;\n\n\nstruct Fifth;\n\n#[cfg_attr(all(unix, feature = \"extra\"), cfg_attr(windows, allow(dead_code)))]\nfn relaxed() {}\n\nmod parent;\n",
+        "struct First;\nstruct Second;\n\nstruct Third;\n\n/// 保留文档注释；Retained documentation\nstruct Fourth;\n\n\nstruct Fifth;\n\n#[cfg_attr(all(unix, feature = \"extra\"), cfg_attr(unix, allow(dead_code)))]\nfn relaxed() {}\n\nmod parent;\n",
     );
     fixture.write(
         "src/parent.rs",
@@ -1944,7 +2961,14 @@ fn checks_parent_private_access_spacing_and_nested_lint_attributes() {
         "use super::Secret as Hidden;\nuse super::Visible as Public;\nuse super::*;\nfn references() { let _ = super::Secret; let _ = crate::parent::Secret; }\n",
     );
 
-    let output = fixture.run(&["--format", "json"]);
+    let inactive = fixture.run(&["--format", "json"]);
+    assert!(
+        !inactive.has_rule("no_lint_relaxation"),
+        "{}",
+        inactive.stdout
+    );
+
+    let output = fixture.run(&["--format", "json", "--features", "extra"]);
     assert_eq!(output.status, 1, "{}", output.stderr);
     assert!(output.has_rule("no_parent_private_dependency"));
     assert!(output.has_rule("item_spacing"));
@@ -2129,7 +3153,7 @@ fn resolves_cfg_attr_paths_from_the_out_of_line_module_directory() {
     fixture.write("src/lib.rs", "#[path = \"outer.rs\"] mod outer;\n");
     fixture.write(
         "src/outer.rs",
-        "#[cfg_attr(feature = \"selected\", path = \"children/selected.rs\")]\nmod logical;\n",
+        "#[cfg_attr(feature = \"selected\", path = \"children/selected.rs\" /* 忽略注释中的分隔符 / Delimiters in this comment are ignored, ) */)]\nmod logical;\n",
     );
     fixture.write("src/outer/logical.rs", "pub fn default_path() {}\n");
     fixture.write(
@@ -2407,10 +3431,9 @@ fn reports_missing_item_names_as_incomplete_syntax() {
     assert!(output
         .stdout
         .contains("\"analysis_issue\":\"parser_coverage\""));
-    assert!(output.stdout.contains("具名声明关键字后需要名称"));
-    assert!(output.stdout.contains("trait 后需要名称"));
-    assert!(output.stdout.contains("fn 后需要函数名称"));
-    assert!(output.stdout.contains("impl 后需要类型目标"));
+    assert!(output
+        .stdout
+        .contains("syntax-parse-error-unexpected-token"));
 }
 
 #[test]

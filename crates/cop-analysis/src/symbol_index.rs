@@ -1,20 +1,10 @@
+mod index;
 mod local_bindings;
 
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
-use cop_cargo::{DependencyKind, SelectedPackage, TargetContext};
 use cop_model::SourceSpan;
-use cop_syntax::{Item, ItemKind, SourceFile, UseTree, VisibilityKind};
-
-use local_bindings::LocalBindings;
-
-use crate::{
-    cfg_eval::{CfgDecision, CfgEvaluator},
-    ModuleNode,
-};
+pub use index::{PathResolution, SymbolIndex};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SymbolKind {
@@ -55,6 +45,21 @@ pub enum VisibilityResult {
     Unknown,
 }
 
+pub(crate) struct SymbolRecordData {
+    pub(crate) name: String,
+    pub(crate) kind: SymbolKind,
+    pub(crate) visibility: SymbolVisibility,
+    pub(crate) context_index: usize,
+    pub(crate) target_name: String,
+    pub(crate) namespace: Vec<String>,
+    pub(crate) target_namespace: Option<Vec<String>>,
+    pub(crate) target_path: Option<Vec<String>>,
+    pub(crate) external_crate: Option<String>,
+    pub(crate) file_path: PathBuf,
+    pub(crate) span: Option<SourceSpan>,
+    pub(crate) cfg_condition: Option<String>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SymbolRecord {
     name: String,
@@ -71,44 +76,24 @@ pub struct SymbolRecord {
     cfg_condition: Option<String>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct PathResolution {
-    kind: PathResolutionKind,
-    symbol: Option<SymbolRecord>,
-    external_crate: Option<String>,
-    external_path_depth: Option<usize>,
-    external_crate_qualifier: bool,
-    visibility: VisibilityResult,
-    alias_chain: Vec<String>,
-}
-
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct SymbolIndex {
-    symbols: Vec<SymbolRecord>,
-    external_crates: BTreeMap<usize, BTreeSet<String>>,
-    local_bindings: LocalBindings,
-}
-
-struct UseWalk<'a> {
-    context_index: usize,
-    target_name: &'a str,
-    namespace: &'a [String],
-    file_path: &'a Path,
-    source: &'a SourceFile,
-    cfg_condition: Option<&'a str>,
-    visibility: SymbolVisibility,
-}
-
-struct ResolveState<'a> {
-    context_index: usize,
-    requester: &'a [String],
-    offset: Option<usize>,
-    alias_chain: Vec<String>,
-    seen_aliases: BTreeSet<(Vec<String>, String)>,
-    seen_local_aliases: BTreeSet<(usize, String)>,
-}
-
 impl SymbolRecord {
+    pub(crate) fn new(data: SymbolRecordData) -> Self {
+        Self {
+            name: data.name,
+            kind: data.kind,
+            visibility: data.visibility,
+            context_index: data.context_index,
+            target_name: data.target_name,
+            namespace: data.namespace,
+            target_namespace: data.target_namespace,
+            target_path: data.target_path,
+            external_crate: data.external_crate,
+            file_path: data.file_path,
+            span: data.span,
+            cfg_condition: data.cfg_condition,
+        }
+    }
+
     pub fn name(&self) -> &str {
         &self.name
     }
@@ -123,6 +108,10 @@ impl SymbolRecord {
 
     pub fn target_name(&self) -> &str {
         &self.target_name
+    }
+
+    pub(crate) fn context_index(&self) -> usize {
+        self.context_index
     }
 
     pub fn namespace(&self) -> &[String] {
@@ -174,552 +163,6 @@ impl SymbolRecord {
                 }
             }
         }
-    }
-}
-
-impl PathResolution {
-    pub fn kind(&self) -> PathResolutionKind {
-        self.kind
-    }
-
-    pub fn symbol(&self) -> Option<&SymbolRecord> {
-        self.symbol.as_ref()
-    }
-
-    pub fn external_crate(&self) -> Option<&str> {
-        self.external_crate.as_deref()
-    }
-
-    pub fn visibility(&self) -> VisibilityResult {
-        self.visibility
-    }
-
-    pub fn alias_chain(&self) -> &[String] {
-        &self.alias_chain
-    }
-
-    pub fn is_external_crate_qualifier(&self) -> bool {
-        self.external_crate_qualifier
-    }
-}
-
-impl SymbolIndex {
-    pub(crate) fn build(package: &SelectedPackage, modules: &[ModuleNode]) -> Self {
-        let mut index = Self::default();
-        let mut module_conditions = BTreeMap::new();
-        for module in modules {
-            module_conditions.insert(
-                (module.context_index(), module.namespace().to_vec()),
-                module.cfg_condition().map(str::to_owned),
-            );
-        }
-        for module in modules {
-            let Some(target) = package.targets().get(module.context_index()) else {
-                continue;
-            };
-            index.add_module_symbols(module, target, &module_conditions);
-        }
-        index.local_bindings = LocalBindings::build(modules);
-        for (context_index, target) in package.targets().iter().enumerate() {
-            let evaluator = CfgEvaluator::new(target);
-            let build_script = target.kind().iter().any(|kind| kind == "custom-build");
-            let crates = index.external_crates.entry(context_index).or_default();
-            for dependency in package.dependencies().dependencies() {
-                let dependency_kind_is_active = match dependency.kind() {
-                    DependencyKind::Normal => !build_script,
-                    DependencyKind::Build => build_script,
-                    DependencyKind::Development => target.cfg_test(),
-                    DependencyKind::Other(_) => false,
-                };
-                if !dependency_kind_is_active
-                    || (dependency.is_optional()
-                        && !target
-                            .features()
-                            .activated_dependencies()
-                            .contains(dependency.dependency_key()))
-                {
-                    continue;
-                }
-                if dependency.target_condition().is_some_and(|condition| {
-                    evaluator.dependency_condition(condition) != CfgDecision::True
-                }) {
-                    continue;
-                }
-                crates.insert(dependency.rust_name().to_owned());
-            }
-            crates.extend(["alloc", "core"].into_iter().map(str::to_owned));
-            let no_std = modules.iter().any(|module| {
-                module.context_index() == context_index
-                    && module.is_crate_root()
-                    && module
-                        .parse_output()
-                        .inner_attributes()
-                        .iter()
-                        .any(|attribute| {
-                            attribute.path().last().is_some_and(|name| name == "no_std")
-                        })
-            });
-            if !no_std {
-                crates.insert("std".to_owned());
-            }
-            if target.crate_types().iter().any(|kind| kind == "proc-macro") {
-                crates.insert("proc_macro".to_owned());
-            }
-        }
-        index.symbols.sort_by(|left, right| {
-            left.target_name
-                .cmp(&right.target_name)
-                .then_with(|| left.context_index.cmp(&right.context_index))
-                .then_with(|| left.namespace.cmp(&right.namespace))
-                .then_with(|| left.name.cmp(&right.name))
-                .then_with(|| left.file_path.cmp(&right.file_path))
-                .then_with(|| {
-                    left.span
-                        .as_ref()
-                        .map(SourceSpan::start_line)
-                        .cmp(&right.span.as_ref().map(SourceSpan::start_line))
-                })
-        });
-        index
-    }
-
-    pub fn symbols(&self) -> &[SymbolRecord] {
-        &self.symbols
-    }
-
-    pub fn resolve_path(&self, module: &ModuleNode, path: &[String]) -> PathResolution {
-        self.resolve_path_at(module, path, None)
-    }
-
-    pub fn resolve_path_at(
-        &self,
-        module: &ModuleNode,
-        path: &[String],
-        offset: Option<usize>,
-    ) -> PathResolution {
-        let mut state = ResolveState {
-            context_index: module.context_index(),
-            requester: module.namespace(),
-            offset,
-            alias_chain: Vec::new(),
-            seen_aliases: BTreeSet::new(),
-            seen_local_aliases: BTreeSet::new(),
-        };
-        self.resolve_inner(&mut state, module.namespace(), path)
-    }
-
-    fn add_module_symbols(
-        &mut self,
-        module: &ModuleNode,
-        target: &TargetContext,
-        module_conditions: &BTreeMap<(usize, Vec<String>), Option<String>>,
-    ) {
-        let evaluator = CfgEvaluator::new(target);
-        for item in module.items() {
-            let effects =
-                evaluator.evaluate_attributes(item.attributes(), module.parse_output().source());
-            let item_cfg = merge_cfg(module.cfg_condition(), &effects.conditions);
-            match item.kind() {
-                ItemKind::Module(child) => {
-                    let mut target_namespace = module.namespace().to_vec();
-                    target_namespace.push(child.name().to_owned());
-                    let cfg_condition = module_conditions
-                        .get(&(module.context_index(), target_namespace.clone()))
-                        .cloned()
-                        .flatten()
-                        .or(item_cfg);
-                    self.symbols.push(SymbolRecord {
-                        name: child.name().to_owned(),
-                        kind: SymbolKind::Module,
-                        visibility: visibility(item.visibility().kind()),
-                        context_index: module.context_index(),
-                        target_name: module.target_name().to_owned(),
-                        namespace: module.namespace().to_vec(),
-                        target_namespace: Some(target_namespace),
-                        target_path: None,
-                        external_crate: None,
-                        file_path: module.file_path().to_path_buf(),
-                        span: module
-                            .parse_output()
-                            .source()
-                            .span(item.start(), item.end())
-                            .ok(),
-                        cfg_condition,
-                    });
-                }
-                ItemKind::Use(use_item) => {
-                    let walk = UseWalk {
-                        context_index: module.context_index(),
-                        target_name: module.target_name(),
-                        namespace: module.namespace(),
-                        file_path: module.file_path(),
-                        source: module.parse_output().source(),
-                        cfg_condition: item_cfg.as_deref(),
-                        visibility: visibility(item.visibility().kind()),
-                    };
-                    self.add_use_tree(walk, use_item.tree(), &[]);
-                }
-                ItemKind::ExternCrate(extern_crate) => {
-                    if let Some(crate_name) = extern_crate.name() {
-                        let name = extern_crate.alias().unwrap_or(crate_name);
-                        self.symbols.push(SymbolRecord {
-                            name: name.to_owned(),
-                            kind: SymbolKind::ExternalCrate,
-                            visibility: visibility(item.visibility().kind()),
-                            context_index: module.context_index(),
-                            target_name: module.target_name().to_owned(),
-                            namespace: module.namespace().to_vec(),
-                            target_namespace: None,
-                            target_path: None,
-                            external_crate: Some(crate_name.to_owned()),
-                            file_path: module.file_path().to_path_buf(),
-                            span: module
-                                .parse_output()
-                                .source()
-                                .span(item.start(), item.end())
-                                .ok(),
-                            cfg_condition: item_cfg,
-                        });
-                    }
-                }
-                _ => {
-                    if let Some((name, kind)) = named_item(item) {
-                        self.symbols.push(SymbolRecord {
-                            name,
-                            kind,
-                            visibility: visibility(item.visibility().kind()),
-                            context_index: module.context_index(),
-                            target_name: module.target_name().to_owned(),
-                            namespace: module.namespace().to_vec(),
-                            target_namespace: None,
-                            target_path: None,
-                            external_crate: None,
-                            file_path: module.file_path().to_path_buf(),
-                            span: module
-                                .parse_output()
-                                .source()
-                                .span(item.start(), item.end())
-                                .ok(),
-                            cfg_condition: item_cfg,
-                        });
-                    }
-                }
-            }
-        }
-    }
-
-    fn add_use_tree(&mut self, walk: UseWalk<'_>, tree: &UseTree, prefix: &[String]) {
-        let mut path = prefix.to_vec();
-        path.extend(tree.path().iter().cloned());
-        if !tree.children().is_empty() {
-            for child in tree.children() {
-                self.add_use_tree(
-                    UseWalk {
-                        context_index: walk.context_index,
-                        target_name: walk.target_name,
-                        namespace: walk.namespace,
-                        file_path: walk.file_path,
-                        source: walk.source,
-                        cfg_condition: walk.cfg_condition,
-                        visibility: walk.visibility.clone(),
-                    },
-                    child,
-                    &path,
-                );
-            }
-            return;
-        }
-        if tree.is_glob() || path.is_empty() {
-            return;
-        }
-        let alias = tree.alias().map(str::to_owned).or_else(|| {
-            if path.last().is_some_and(|segment| segment == "self") {
-                path.pop();
-                path.last().cloned()
-            } else {
-                path.last().cloned()
-            }
-        });
-        if let Some(name) = alias {
-            self.symbols.push(SymbolRecord {
-                name,
-                kind: SymbolKind::UseAlias,
-                visibility: walk.visibility,
-                context_index: walk.context_index,
-                target_name: walk.target_name.to_owned(),
-                namespace: walk.namespace.to_vec(),
-                target_namespace: None,
-                target_path: Some(path),
-                external_crate: None,
-                file_path: walk.file_path.to_path_buf(),
-                span: walk.source.span(tree.start(), tree.end()).ok(),
-                cfg_condition: walk.cfg_condition.map(str::to_owned),
-            });
-        }
-    }
-
-    fn resolve_inner(
-        &self,
-        state: &mut ResolveState<'_>,
-        base_namespace: &[String],
-        path: &[String],
-    ) -> PathResolution {
-        let mut base = base_namespace.to_vec();
-        let mut rest = path;
-        let rooted = rest
-            .first()
-            .is_some_and(|segment| segment == "crate" || segment == "::");
-        if rest
-            .first()
-            .is_some_and(|segment| segment == "crate" || segment == "::")
-        {
-            base.clear();
-            rest = &rest[1..];
-        } else if rest.first().is_some_and(|segment| segment == "self") {
-            rest = &rest[1..];
-        } else {
-            while rest.first().is_some_and(|segment| segment == "super") {
-                if base.pop().is_none() {
-                    return unresolved(PathResolutionKind::Unresolved, &state.alias_chain);
-                }
-                rest = &rest[1..];
-            }
-        }
-        let Some(first) = rest.first() else {
-            return PathResolution {
-                kind: PathResolutionKind::Local,
-                symbol: None,
-                external_crate: None,
-                external_path_depth: None,
-                external_crate_qualifier: false,
-                visibility: VisibilityResult::Reachable,
-                alias_chain: state.alias_chain.clone(),
-            };
-        };
-        if rooted
-            && path.first().is_some_and(|segment| segment == "::")
-            && self
-                .external_crates
-                .get(&state.context_index)
-                .is_some_and(|crates| crates.contains(identifier_name(first)))
-        {
-            return PathResolution {
-                kind: PathResolutionKind::ExternalCrate,
-                symbol: None,
-                external_crate: Some(identifier_name(first).to_owned()),
-                external_path_depth: Some(rest.len().saturating_sub(1)),
-                external_crate_qualifier: true,
-                visibility: VisibilityResult::Public,
-                alias_chain: state.alias_chain.clone(),
-            };
-        }
-        let has_explicit_scope = path
-            .first()
-            .is_some_and(|segment| matches!(segment.as_str(), "crate" | "::" | "self" | "super"));
-        if !has_explicit_scope && base == state.requester {
-            if let Some(offset) = state.offset {
-                if let Some(binding) =
-                    self.local_bindings
-                        .find(state.context_index, state.requester, offset, first)
-                {
-                    if let Some(target_path) = binding.target_path() {
-                        let key = (binding.scope_start(), binding.name().to_owned());
-                        if !state.seen_local_aliases.insert(key.clone()) {
-                            return unresolved(PathResolutionKind::AliasCycle, &state.alias_chain);
-                        }
-                        state.alias_chain.push(binding.name().to_owned());
-                        let mut redirected = target_path.to_vec();
-                        let suffix_length = rest.len().saturating_sub(1);
-                        redirected.extend(rest.iter().skip(1).cloned());
-                        let mut resolution =
-                            self.resolve_inner(state, state.requester, &redirected);
-                        if resolution.external_path_depth == Some(suffix_length) {
-                            resolution.external_crate_qualifier = true;
-                        } else if resolution.external_crate.is_some() {
-                            resolution.external_crate_qualifier = false;
-                        }
-                        state.seen_local_aliases.remove(&key);
-                        return resolution;
-                    }
-                    return PathResolution {
-                        kind: PathResolutionKind::Local,
-                        symbol: None,
-                        external_crate: None,
-                        external_path_depth: None,
-                        external_crate_qualifier: false,
-                        visibility: VisibilityResult::Reachable,
-                        alias_chain: state.alias_chain.clone(),
-                    };
-                }
-            }
-        }
-        let candidate = match self.find_symbol(state.context_index, &base, first) {
-            Ok(Some(candidate)) => candidate,
-            Err(()) => return unresolved(PathResolutionKind::Ambiguous, &state.alias_chain),
-            Ok(None) => {
-                if (rooted || base == base_namespace)
-                    && self
-                        .external_crates
-                        .get(&state.context_index)
-                        .is_some_and(|crates| crates.contains(identifier_name(first)))
-                {
-                    return PathResolution {
-                        kind: PathResolutionKind::ExternalCrate,
-                        symbol: None,
-                        external_crate: Some(identifier_name(first).to_owned()),
-                        external_path_depth: Some(rest.len().saturating_sub(1)),
-                        external_crate_qualifier: true,
-                        visibility: VisibilityResult::Public,
-                        alias_chain: state.alias_chain.clone(),
-                    };
-                }
-                return unresolved(PathResolutionKind::Unresolved, &state.alias_chain);
-            }
-        };
-        if candidate.kind == SymbolKind::UseAlias {
-            let visibility = candidate.is_visible_from(state.requester);
-            if visibility == VisibilityResult::Private {
-                return PathResolution {
-                    kind: PathResolutionKind::Local,
-                    symbol: Some(candidate.clone()),
-                    external_crate: None,
-                    external_path_depth: None,
-                    external_crate_qualifier: false,
-                    visibility,
-                    alias_chain: state.alias_chain.clone(),
-                };
-            }
-            let key = (candidate.namespace.clone(), candidate.name.clone());
-            if !state.seen_aliases.insert(key) {
-                return unresolved(PathResolutionKind::AliasCycle, &state.alias_chain);
-            }
-            state.alias_chain.push(candidate.name.clone());
-            let mut redirected = candidate.target_path.clone().unwrap_or_default();
-            let suffix_length = rest.len().saturating_sub(1);
-            redirected.extend(rest.iter().skip(1).cloned());
-            let request_offset = state.offset.take();
-            let mut resolution = self.resolve_inner(state, &candidate.namespace, &redirected);
-            state.offset = request_offset;
-            if resolution.external_path_depth == Some(suffix_length) {
-                resolution.external_crate_qualifier = true;
-            } else if resolution.external_crate.is_some() {
-                resolution.external_crate_qualifier = false;
-            }
-            state
-                .seen_aliases
-                .remove(&(candidate.namespace.clone(), candidate.name.clone()));
-            return resolution;
-        }
-        if let Some(external) = &candidate.external_crate {
-            return PathResolution {
-                kind: PathResolutionKind::ExternalCrate,
-                symbol: Some(candidate.clone()),
-                external_crate: Some(external.clone()),
-                external_path_depth: Some(rest.len().saturating_sub(1)),
-                external_crate_qualifier: true,
-                visibility: candidate.is_visible_from(state.requester),
-                alias_chain: state.alias_chain.clone(),
-            };
-        }
-        let visibility = candidate.is_visible_from(state.requester);
-        if visibility == VisibilityResult::Private {
-            return PathResolution {
-                kind: PathResolutionKind::Local,
-                symbol: Some(candidate.clone()),
-                external_crate: None,
-                external_path_depth: None,
-                external_crate_qualifier: false,
-                visibility,
-                alias_chain: state.alias_chain.clone(),
-            };
-        }
-        if rest.len() > 1 {
-            if let Some(next_namespace) = candidate.target_namespace.as_ref() {
-                return self.resolve_inner(state, next_namespace, &rest[1..]);
-            }
-            return unresolved(PathResolutionKind::Unresolved, &state.alias_chain);
-        }
-        PathResolution {
-            kind: PathResolutionKind::Local,
-            symbol: Some(candidate.clone()),
-            external_crate: None,
-            external_path_depth: None,
-            external_crate_qualifier: false,
-            visibility,
-            alias_chain: state.alias_chain.clone(),
-        }
-    }
-
-    fn find_symbol(
-        &self,
-        context_index: usize,
-        namespace: &[String],
-        name: &str,
-    ) -> Result<Option<&SymbolRecord>, ()> {
-        for depth in (0..=namespace.len()).rev() {
-            let scope = &namespace[..depth];
-            let mut found = self.symbols.iter().filter(|symbol| {
-                symbol.context_index == context_index
-                    && symbol.namespace == scope
-                    && identifier_name(&symbol.name) == identifier_name(name)
-            });
-            let Some(first) = found.next() else {
-                continue;
-            };
-            if found.next().is_some() {
-                return Err(());
-            }
-            return Ok(Some(first));
-        }
-        Ok(None)
-    }
-}
-
-fn identifier_name(name: &str) -> &str {
-    name.strip_prefix("r#").unwrap_or(name)
-}
-
-fn unresolved(kind: PathResolutionKind, alias_chain: &[String]) -> PathResolution {
-    PathResolution {
-        kind,
-        symbol: None,
-        external_crate: None,
-        external_path_depth: None,
-        external_crate_qualifier: false,
-        visibility: VisibilityResult::Unknown,
-        alias_chain: alias_chain.to_vec(),
-    }
-}
-
-fn merge_cfg(parent: Option<&str>, conditions: &[String]) -> Option<String> {
-    let mut merged = parent.into_iter().map(str::to_owned).collect::<Vec<_>>();
-    merged.extend(conditions.iter().cloned());
-    (!merged.is_empty()).then(|| merged.join(" && "))
-}
-
-fn visibility(kind: &VisibilityKind) -> SymbolVisibility {
-    match kind {
-        VisibilityKind::Private => SymbolVisibility::Private,
-        VisibilityKind::Public => SymbolVisibility::Public,
-        VisibilityKind::Restricted(scope) => SymbolVisibility::Restricted(scope.clone()),
-    }
-}
-
-fn named_item(item: &Item) -> Option<(String, SymbolKind)> {
-    match item.kind() {
-        ItemKind::Struct(declaration) => Some((declaration.name()?.to_owned(), SymbolKind::Struct)),
-        ItemKind::Enum(declaration) => Some((declaration.name()?.to_owned(), SymbolKind::Enum)),
-        ItemKind::Union(declaration) => Some((declaration.name()?.to_owned(), SymbolKind::Union)),
-        ItemKind::TypeAlias(declaration) => {
-            Some((declaration.name()?.to_owned(), SymbolKind::TypeAlias))
-        }
-        ItemKind::Trait(trait_item) => Some((trait_item.name()?.to_owned(), SymbolKind::Trait)),
-        ItemKind::Constant(declaration) => {
-            Some((declaration.name()?.to_owned(), SymbolKind::Constant))
-        }
-        ItemKind::Static(declaration) => Some((declaration.name()?.to_owned(), SymbolKind::Static)),
-        ItemKind::Function(function) => Some((function.name()?.to_owned(), SymbolKind::Function)),
-        _ => None,
     }
 }
 

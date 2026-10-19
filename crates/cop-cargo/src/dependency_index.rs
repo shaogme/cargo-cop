@@ -1,5 +1,7 @@
-use std::cmp::Ordering;
-use std::path::{Path, PathBuf};
+use std::{
+    cmp::Ordering,
+    path::{Path, PathBuf},
+};
 
 use crate::metadata::DependencyDto;
 

@@ -13,6 +13,7 @@ keywords = ["cargo", "metadata", "rust"]
 categories.workspace = true
 
 [dependencies]
+cop-cfg.workspace = true
 cop-model.workspace = true
 serde.workspace = true
 serde_json.workspace = true

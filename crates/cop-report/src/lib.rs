@@ -295,7 +295,7 @@ mod tests {
         Diagnostic, LocalizedMessage, RuleId, ScanResult, ScanStatus, Severity, SourceLocation,
         SourceSpan, ToolErrorKind, CONFIG_FILE_READ_ERROR, ITEM_SPACING, MODULE_FILE_LAYOUT,
     };
-    use serde_json::{json, Value};
+    use serde_json::{from_str, json, Value};
 
     use super::{Locale, ReportFormat, Reporter};
 
@@ -335,7 +335,7 @@ mod tests {
             ReportFormat::Json,
             Locale::ZH_CN,
         );
-        let report = serde_json::from_str::<Value>(&rendered).expect("JSON 报告");
+        let report = from_str::<Value>(&rendered).expect("JSON 报告");
         let diagnostics = report["diagnostics"].as_array().expect("诊断数组");
 
         assert_eq!(report["schema_version"], 3);
@@ -409,7 +409,7 @@ mod tests {
             ReportFormat::Json,
             Locale::EN_US,
         );
-        let report = serde_json::from_str::<Value>(&rendered).expect("JSON 报告");
+        let report = from_str::<Value>(&rendered).expect("JSON 报告");
         let diagnostic = &report["diagnostics"][0];
 
         let message = diagnostic["message"]
