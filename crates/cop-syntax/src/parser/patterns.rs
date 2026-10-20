@@ -10,6 +10,12 @@ use super::{
     token_cursor::{SyntaxError, SyntaxErrorKind, TokenCursor},
 };
 
+#[derive(Clone, Copy)]
+pub(super) enum PatternParseContext {
+    Bounded,
+    MatchArm,
+}
+
 pub(super) struct PatternParser;
 
 impl PatternParser {
@@ -21,13 +27,18 @@ impl PatternParser {
             .ok_or_else(|| SyntaxError::new(SyntaxErrorKind::UnexpectedToken, 0..0))?;
         let start = cursor.offset();
         if !cursor.consume_punctuation("&") {
-            return Self::parse_range_with_binding_mode(tokens, cursor.start()..cursor.end(), true);
+            return Self::parse_range_with_binding_mode(
+                tokens,
+                cursor.start()..cursor.end(),
+                true,
+                PatternParseContext::Bounded,
+            );
         }
         if matches!(cursor.peek().map(Token::kind), Some(TokenKind::Lifetime(_))) {
             cursor.consume();
         }
         let mutable = cursor.consume_identifier("mut");
-        let pattern = Self::parse(&mut cursor, true)?;
+        let pattern = Self::parse(&mut cursor, true, PatternParseContext::Bounded)?;
         if !cursor.is_empty() {
             return Err(PathParser::error_at(
                 &cursor,
@@ -47,32 +58,34 @@ impl PatternParser {
     pub(super) fn parse_prefix(
         cursor: &mut TokenCursor<'_>,
         bind_bare_identifiers: bool,
+        context: PatternParseContext,
     ) -> Result<PatternSyntax, SyntaxError> {
-        Self::parse(cursor, bind_bare_identifiers)
+        Self::parse(cursor, bind_bare_identifiers, context)
     }
 
     pub(super) fn parse_range(
         tokens: &[Token],
         bounds: Range<usize>,
     ) -> Result<PatternSyntax, SyntaxError> {
-        Self::parse_range_with_binding_mode(tokens, bounds, false)
+        Self::parse_range_with_binding_mode(tokens, bounds, false, PatternParseContext::Bounded)
     }
 
     pub(super) fn parse_binding_range(
         tokens: &[Token],
         bounds: Range<usize>,
     ) -> Result<PatternSyntax, SyntaxError> {
-        Self::parse_range_with_binding_mode(tokens, bounds, true)
+        Self::parse_range_with_binding_mode(tokens, bounds, true, PatternParseContext::Bounded)
     }
 
     fn parse_range_with_binding_mode(
         tokens: &[Token],
         bounds: Range<usize>,
         bind_bare_identifiers: bool,
+        context: PatternParseContext,
     ) -> Result<PatternSyntax, SyntaxError> {
         let mut cursor = TokenCursor::new(tokens, bounds)
             .ok_or_else(|| SyntaxError::new(SyntaxErrorKind::UnexpectedToken, 0..0))?;
-        let pattern = Self::parse(&mut cursor, bind_bare_identifiers)?;
+        let pattern = Self::parse(&mut cursor, bind_bare_identifiers, context)?;
         if !cursor.is_empty() {
             return Err(PathParser::error_at(
                 &cursor,
@@ -85,12 +98,13 @@ impl PatternParser {
     fn parse(
         cursor: &mut TokenCursor<'_>,
         bind_bare_identifiers: bool,
+        context: PatternParseContext,
     ) -> Result<PatternSyntax, SyntaxError> {
         let attributes = Self::parse_attributes(cursor)?;
         let pattern_start = cursor.index();
         let pattern_start_offset = cursor.offset();
         if cursor.consume_punctuation("|") {
-            let first = Self::parse(cursor, bind_bare_identifiers)?;
+            let first = Self::parse(cursor, bind_bare_identifiers, context)?;
             let alternatives = match first.kind() {
                 PatternSyntaxKind::Or(alternatives) => alternatives.clone(),
                 _ => vec![first.clone()],
@@ -113,7 +127,7 @@ impl PatternParser {
                 bounds,
             ));
         }
-        let kind = Self::parse_atom(cursor, bind_bare_identifiers)?;
+        let kind = Self::parse_atom(cursor, bind_bare_identifiers, context)?;
         let bounds = Self::include_attributes(
             PathParser::span(
                 cursor.tokens(),
@@ -133,10 +147,14 @@ impl PatternParser {
             None
         };
         if let Some(inclusive) = inclusive {
-            let end = if Self::is_pattern_boundary(cursor) {
+            let end = if Self::is_pattern_boundary(cursor, context) {
                 None
             } else {
-                Some(Box::new(Self::parse(cursor, bind_bare_identifiers)?))
+                Some(Box::new(Self::parse(
+                    cursor,
+                    bind_bare_identifiers,
+                    context,
+                )?))
             };
             let bounds = PathParser::span(
                 cursor.tokens(),
@@ -158,9 +176,9 @@ impl PatternParser {
         }
         if cursor.consume_punctuation("|") {
             let mut alternatives = vec![pattern];
-            alternatives.push(Self::parse(cursor, bind_bare_identifiers)?);
+            alternatives.push(Self::parse(cursor, bind_bare_identifiers, context)?);
             while cursor.consume_punctuation("|") {
-                alternatives.push(Self::parse(cursor, bind_bare_identifiers)?);
+                alternatives.push(Self::parse(cursor, bind_bare_identifiers, context)?);
             }
             let first_start = alternatives
                 .first()
@@ -180,12 +198,13 @@ impl PatternParser {
     fn parse_atom(
         cursor: &mut TokenCursor<'_>,
         bind_bare_identifiers: bool,
+        context: PatternParseContext,
     ) -> Result<PatternSyntaxKind, SyntaxError> {
         if cursor.consume_punctuation("&") {
             let mutable = cursor.consume_identifier("mut");
             return Ok(PatternSyntaxKind::Reference {
                 mutable,
-                pattern: Box::new(Self::parse(cursor, bind_bare_identifiers)?),
+                pattern: Box::new(Self::parse(cursor, bind_bare_identifiers, context)?),
             });
         }
         if cursor.at_identifier("ref") || cursor.at_identifier("mut") {
@@ -203,7 +222,11 @@ impl PatternParser {
             let name = name.to_owned();
             cursor.consume();
             let subpattern = if cursor.consume_punctuation("@") {
-                Some(Box::new(Self::parse(cursor, bind_bare_identifiers)?))
+                Some(Box::new(Self::parse(
+                    cursor,
+                    bind_bare_identifiers,
+                    context,
+                )?))
             } else {
                 None
             };
@@ -215,11 +238,11 @@ impl PatternParser {
             });
         }
         if cursor.consume_open_delimiter(Delimiter::Parenthesis) {
-            let elements = Self::parse_pattern_list(cursor, ")", bind_bare_identifiers)?;
+            let elements = Self::parse_pattern_list(cursor, ")", bind_bare_identifiers, context)?;
             return Ok(PatternSyntaxKind::Tuple(elements));
         }
         if cursor.consume_open_delimiter(Delimiter::Bracket) {
-            let elements = Self::parse_pattern_list(cursor, "]", bind_bare_identifiers)?;
+            let elements = Self::parse_pattern_list(cursor, "]", bind_bare_identifiers, context)?;
             return Ok(PatternSyntaxKind::Slice(elements));
         }
         if cursor.at_punctuation("..=") || cursor.at_punctuation("..") {
@@ -227,10 +250,14 @@ impl PatternParser {
             if !inclusive {
                 cursor.consume_punctuation("..");
             }
-            let end = if Self::is_pattern_boundary(cursor) {
+            let end = if Self::is_pattern_boundary(cursor, context) {
                 None
             } else {
-                Some(Box::new(Self::parse(cursor, bind_bare_identifiers)?))
+                Some(Box::new(Self::parse(
+                    cursor,
+                    bind_bare_identifiers,
+                    context,
+                )?))
             };
             if end.is_none() && !inclusive {
                 return Ok(PatternSyntaxKind::Rest);
@@ -281,11 +308,11 @@ impl PatternParser {
         if cursor.consume_open_delimiter(Delimiter::Parenthesis) {
             return Ok(PatternSyntaxKind::TupleStruct {
                 path,
-                elements: Self::parse_pattern_list(cursor, ")", bind_bare_identifiers)?,
+                elements: Self::parse_pattern_list(cursor, ")", bind_bare_identifiers, context)?,
             });
         }
         if cursor.consume_open_delimiter(Delimiter::Brace) {
-            return Self::parse_struct_fields(cursor, path, bind_bare_identifiers);
+            return Self::parse_struct_fields(cursor, path, bind_bare_identifiers, context);
         }
         let simple_name = path
             .segments()
@@ -301,7 +328,11 @@ impl PatternParser {
                 return Ok(PatternSyntaxKind::Wildcard);
             }
             let subpattern = if cursor.consume_punctuation("@") {
-                Some(Box::new(Self::parse(cursor, bind_bare_identifiers)?))
+                Some(Box::new(Self::parse(
+                    cursor,
+                    bind_bare_identifiers,
+                    context,
+                )?))
             } else {
                 None
             };
@@ -325,6 +356,7 @@ impl PatternParser {
         cursor: &mut TokenCursor<'_>,
         closing: &str,
         bind_bare_identifiers: bool,
+        context: PatternParseContext,
     ) -> Result<Vec<PatternSyntax>, SyntaxError> {
         let delimiter = match closing {
             ")" => Delimiter::Parenthesis,
@@ -339,7 +371,7 @@ impl PatternParser {
         };
         let mut patterns = Vec::new();
         while !cursor.is_empty() && !cursor.at_close_delimiter(delimiter) {
-            patterns.push(Self::parse(cursor, bind_bare_identifiers)?);
+            patterns.push(Self::parse(cursor, bind_bare_identifiers, context)?);
             if !cursor.consume_punctuation(",") {
                 break;
             }
@@ -357,6 +389,7 @@ impl PatternParser {
         cursor: &mut TokenCursor<'_>,
         path: PathSyntax,
         bind_bare_identifiers: bool,
+        context: PatternParseContext,
     ) -> Result<PatternSyntaxKind, SyntaxError> {
         let mut fields = Vec::new();
         let mut rest = false;
@@ -401,7 +434,7 @@ impl PatternParser {
                 field_name = parsed_field_name.to_owned();
             }
             let pattern = if cursor.consume_punctuation(":") {
-                Some(Self::parse(cursor, bind_bare_identifiers)?)
+                Some(Self::parse(cursor, bind_bare_identifiers, context)?)
             } else {
                 Some(PatternSyntax::new(
                     PatternSyntaxKind::Binding {
@@ -473,12 +506,16 @@ impl PatternParser {
         bounds
     }
 
-    fn is_pattern_boundary(cursor: &TokenCursor<'_>) -> bool {
-        matches!(
-            cursor.peek().map(Token::kind),
-            Some(TokenKind::CloseDelimiter(_))
-        ) || cursor.at_punctuation(",")
+    fn is_pattern_boundary(cursor: &TokenCursor<'_>, context: PatternParseContext) -> bool {
+        cursor.is_empty()
+            || matches!(
+                cursor.peek().map(Token::kind),
+                Some(TokenKind::CloseDelimiter(_))
+            )
+            || cursor.at_punctuation(",")
             || cursor.at_punctuation("|")
+            || (matches!(context, PatternParseContext::MatchArm)
+                && (cursor.at_identifier("if") || cursor.at_punctuation("=>")))
     }
 
     fn consume_group(

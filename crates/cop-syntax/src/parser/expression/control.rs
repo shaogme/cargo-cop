@@ -7,7 +7,7 @@ use crate::{
     },
     parser::{
         path::PathParser,
-        patterns::PatternParser,
+        patterns::{PatternParseContext, PatternParser},
         token_cursor::{SyntaxError, SyntaxErrorKind, TokenCursor},
     },
     Delimiter, SourceFile, Token, TokenKind,
@@ -81,7 +81,11 @@ impl ControlParser {
         while !cursor.is_empty() {
             let arm_start = cursor.index();
             let attributes = PrattParser::parse_expression_attributes(&mut cursor)?;
-            let pattern = match PatternParser::parse_prefix(&mut cursor, false) {
+            let pattern = match PatternParser::parse_prefix(
+                &mut cursor,
+                false,
+                PatternParseContext::MatchArm,
+            ) {
                 Ok(pattern) => pattern,
                 Err(error) => {
                     let arm_bounds = Self::recover_match_arm(&mut cursor, arm_start);

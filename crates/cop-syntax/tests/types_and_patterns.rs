@@ -1,6 +1,7 @@
 use cop_syntax::{
-    GenericArgumentSyntax, GenericParameterKind, ParseOptions, ParseOutput, PatternSyntaxKind,
-    RustParser, SourceFile, SyntaxNodeKind, TypeSyntaxKind, WherePredicateKind,
+    CoverageStatus, ExpressionSyntaxKind, GenericArgumentSyntax, GenericParameterKind,
+    ParseOptions, ParseOutput, PatternSyntaxKind, RustParser, SourceFile, SyntaxNodeKind,
+    TypeSyntaxKind, WherePredicateKind,
 };
 
 fn parse(source: SourceFile) -> ParseOutput {
@@ -196,6 +197,113 @@ fn attributed((#[cfg(any())] visible, hidden): (Value, Value)) {}
         .issues()
         .iter()
         .any(|issue| { issue.message().id().as_str() == "syntax-macro-opaque" }));
+}
+
+#[test]
+fn parses_open_ended_integer_ranges_in_match_arms() {
+    let text = r#"
+fn char_len(byte: u8) -> usize {
+    match byte {
+        0xf0.. => 4,
+        0xe0.. => 3,
+        0xc0.. => 2,
+        _ => 1,
+    }
+}
+"#;
+    let parsed = parse(SourceFile::new("src/open_ranges.rs", text));
+
+    assert_eq!(
+        parsed.coverage(),
+        CoverageStatus::Complete,
+        "issues: {:?}",
+        parsed.issues()
+    );
+    assert!(parsed.issues().is_empty(), "issues: {:?}", parsed.issues());
+    let match_arms = parsed
+        .syntax_nodes()
+        .iter()
+        .find_map(
+            |node| match node.expression_syntax().map(|syntax| syntax.kind()) {
+                Some(ExpressionSyntaxKind::Match { arms, .. }) => Some(arms),
+                _ => None,
+            },
+        )
+        .expect("match 表达式");
+    assert_eq!(match_arms.len(), 4);
+    assert!(match_arms[3]
+        .pattern()
+        .is_some_and(|pattern| matches!(pattern.kind(), PatternSyntaxKind::Wildcard)));
+
+    let range_patterns = parsed
+        .syntax_nodes()
+        .iter()
+        .filter_map(|node| node.pattern_syntax())
+        .filter(|pattern| {
+            matches!(
+                pattern.kind(),
+                PatternSyntaxKind::Range {
+                    start: Some(_),
+                    end: None,
+                    inclusive: false,
+                }
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(range_patterns.len(), 3, "patterns: {range_patterns:?}");
+    for (pattern, expected) in range_patterns.iter().zip(["0xf0..", "0xe0..", "0xc0.."]) {
+        let bounds = pattern.bounds();
+        assert_eq!(
+            parsed.source().slice(bounds.start, bounds.end),
+            Some(expected)
+        );
+    }
+}
+
+#[test]
+fn parses_open_ended_range_before_match_guard() {
+    let text = r#"
+fn char_len(byte: u8) -> usize {
+    match byte {
+        0xf0.. if byte > 0 => 4,
+        _ => 1,
+    }
+}
+"#;
+    let parsed = parse(SourceFile::new("src/guarded_open_range.rs", text));
+
+    assert_eq!(
+        parsed.coverage(),
+        CoverageStatus::Complete,
+        "issues: {:?}",
+        parsed.issues()
+    );
+    assert!(parsed.issues().is_empty(), "issues: {:?}", parsed.issues());
+    let guarded_arm = parsed
+        .syntax_nodes()
+        .iter()
+        .find_map(
+            |node| match node.expression_syntax().map(|syntax| syntax.kind()) {
+                Some(ExpressionSyntaxKind::Match { arms, .. }) => arms.first(),
+                _ => None,
+            },
+        )
+        .expect("带 guard 的 match arm");
+    assert!(guarded_arm.guard().is_some());
+    let pattern = guarded_arm.pattern().expect("guard arm 模式");
+    assert!(matches!(
+        pattern.kind(),
+        PatternSyntaxKind::Range {
+            start: Some(_),
+            end: None,
+            inclusive: false,
+        }
+    ));
+    let bounds = pattern.bounds();
+    assert_eq!(
+        parsed.source().slice(bounds.start, bounds.end),
+        Some("0xf0..")
+    );
 }
 
 #[test]

@@ -4,7 +4,7 @@ use crate::{
     ast::{ExpressionSyntax, TypeSyntax},
     parser::{
         expression::SyntaxCollector,
-        patterns::PatternParser,
+        patterns::{PatternParseContext, PatternParser},
         token_cursor::{SyntaxError, SyntaxErrorKind, TokenCursor},
         types::TypeParser,
         use_tree::UseTreeParser,
@@ -64,7 +64,7 @@ impl StatementParser {
     ) -> Result<ParsedStatement, SyntaxError> {
         cursor.consume_identifier("let");
         let pattern_start = cursor.index();
-        PatternParser::parse_prefix(cursor, true)?;
+        PatternParser::parse_prefix(cursor, true, PatternParseContext::Bounded)?;
         let pattern = Some(pattern_start..cursor.index());
         let type_annotation = if cursor.consume_punctuation(":") {
             let type_start = cursor.index();
