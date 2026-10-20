@@ -24,19 +24,12 @@ The project provides 20 configurable rules, human-readable and JSON reports, and
 
 At runtime the tool queries Cargo metadata and Rust target `cfg` information. It does not build the inspected package or its dependencies.
 
-## Build and install
+## Install
 
 From a checkout of this repository:
 
 ```sh
-cargo build -p cargo-cop
-cargo run -p cargo-cop -- --help
-```
-
-To install the executable in Cargo's binary directory:
-
-```sh
-cargo install --path crates/cargo-cop
+cargo install cargo-cop
 ```
 
 To install a prebuilt release with [cargo-binstall](https://github.com/cargo-bins/cargo-binstall):
@@ -44,6 +37,42 @@ To install a prebuilt release with [cargo-binstall](https://github.com/cargo-bin
 ```sh
 cargo binstall cargo-cop
 ```
+
+### Install in GitHub Actions
+
+Use this action in a workflow to download and install the latest prebuilt release by default:
+
+```yaml
+steps:
+  - uses: actions/checkout@main
+  - uses: shaogme/cargo-cop@main
+  - run: cargo cop
+```
+
+`version` defaults to `latest`; set it to a cargo-cop release to install a specific version. The version may include or omit the `v` prefix. `from-source` defaults to `false`; set it to `true` to build the selected release tag from source. The action installs the stable Rust toolchain for source builds. To install a pinned prebuilt release:
+
+```yaml
+steps:
+  - uses: actions/checkout@main
+  - uses: shaogme/cargo-cop@main
+    with:
+      version: 0.1.11
+  - run: cargo cop --workspace
+```
+
+To build that version from source:
+
+```yaml
+steps:
+  - uses: actions/checkout@main
+  - uses: shaogme/cargo-cop@main
+    with:
+      version: 0.1.11
+      from-source: true
+  - run: cargo cop --workspace
+```
+
+The action adds its installation directory to `PATH` for subsequent steps and exposes the installed version through its `version` output.
 
 After installation, use either `cargo-cop` directly or `cargo cop`:
 

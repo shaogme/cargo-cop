@@ -1,0 +1,138 @@
+name: Install cargo-cop
+description: Install cargo-cop from a GitHub release or build it from source.
+author: Shao G.
+
+inputs:
+  version:
+    description: Release version to install (for example, 0.1.11 or v0.1.11). Defaults to the latest release.
+    required: false
+    default: latest
+  from-source:
+    description: Build the selected release from source with Cargo instead of downloading a release binary.
+    required: false
+    default: "false"
+
+outputs:
+  version:
+    description: The cargo-cop version installed by this action.
+    value: ${{ steps.resolve_unix.outputs.version || steps.resolve_windows.outputs.version }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve release version (Linux and macOS)
+      id: resolve_unix
+      if: runner.os != 'Windows'
+      shell: bash
+      env:
+        INPUT_VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        version="$INPUT_VERSION"
+        if [[ "$version" == "latest" ]]; then
+          tag="$(curl -fsSL -H 'Accept: application/vnd.github+json' https://api.github.com/repos/shaogme/cargo-cop/releases/latest | jq -er '.tag_name')"
+          version="${tag#v}"
+        else
+          version="${version#v}"
+        fi
+        if [[ ! "$version" =~ ^[0-9]+(\.[0-9]+){2}(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+          echo "Invalid cargo-cop version: $INPUT_VERSION" >&2
+          exit 1
+        fi
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+
+    - name: Resolve release version (Windows)
+      id: resolve_windows
+      if: runner.os == 'Windows'
+      shell: pwsh
+      env:
+        INPUT_VERSION: ${{ inputs.version }}
+      run: |
+        $version = $env:INPUT_VERSION
+        if ($version -eq 'latest') {
+          $release = Invoke-RestMethod -Uri 'https://api.github.com/repos/shaogme/cargo-cop/releases/latest' -Headers @{ Accept = 'application/vnd.github+json' }
+          $version = $release.tag_name -replace '^v', ''
+        } else {
+          $version = $version -replace '^v', ''
+        }
+        if ($version -notmatch '^\d+(\.\d+){2}(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$') {
+          throw "Invalid cargo-cop version: $env:INPUT_VERSION"
+        }
+        "version=$version" >> $env:GITHUB_OUTPUT
+
+    - name: Install Rust toolchain
+      if: inputs.from-source == 'true'
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install release binary (Linux and macOS)
+      if: inputs.from-source != 'true' && runner.os != 'Windows'
+      shell: bash
+      env:
+        CARGO_COP_VERSION: ${{ steps.resolve_unix.outputs.version }}
+      run: |
+        set -euo pipefail
+        case "$RUNNER_OS/$RUNNER_ARCH" in
+          Linux/X64) target="x86_64-unknown-linux-gnu" ;;
+          Linux/ARM64) target="aarch64-unknown-linux-gnu" ;;
+          macOS/X64) target="x86_64-apple-darwin" ;;
+          macOS/ARM64) target="aarch64-apple-darwin" ;;
+          *) echo "Unsupported cargo-cop release platform: $RUNNER_OS/$RUNNER_ARCH" >&2; exit 1 ;;
+        esac
+        package="cargo-cop-${target}-v${CARGO_COP_VERSION}"
+        temp_dir="$(mktemp -d)"
+        trap 'rm -rf "$temp_dir"' EXIT
+        curl -fsSL "https://github.com/shaogme/cargo-cop/releases/download/v${CARGO_COP_VERSION}/${package}.tgz" -o "$temp_dir/package.tgz"
+        tar -xzf "$temp_dir/package.tgz" -C "$temp_dir"
+        install_root="$RUNNER_TEMP/cargo-cop"
+        mkdir -p "$install_root/bin"
+        cp "$temp_dir/$package/cargo-cop" "$install_root/bin/cargo-cop"
+        chmod +x "$install_root/bin/cargo-cop"
+        echo "$install_root/bin" >> "$GITHUB_PATH"
+
+    - name: Install release binary (Windows)
+      if: inputs.from-source != 'true' && runner.os == 'Windows'
+      shell: pwsh
+      env:
+        CARGO_COP_VERSION: ${{ steps.resolve_windows.outputs.version }}
+      run: |
+        if ($env:RUNNER_ARCH -ne 'X64') {
+          throw "Unsupported cargo-cop release platform: Windows/$env:RUNNER_ARCH"
+        }
+        $target = 'x86_64-pc-windows-msvc'
+        $package = "cargo-cop-$target-v$env:CARGO_COP_VERSION"
+        $tempDir = Join-Path $env:RUNNER_TEMP ([guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $tempDir | Out-Null
+        try {
+          $archive = Join-Path $tempDir 'package.zip'
+          $url = "https://github.com/shaogme/cargo-cop/releases/download/v$env:CARGO_COP_VERSION/$package.zip"
+          Invoke-WebRequest -Uri $url -OutFile $archive
+          Expand-Archive -Path $archive -DestinationPath $tempDir
+          $installRoot = Join-Path $env:RUNNER_TEMP 'cargo-cop'
+          $binPath = Join-Path $installRoot 'bin'
+          New-Item -ItemType Directory -Path $binPath -Force | Out-Null
+          Copy-Item (Join-Path (Join-Path $tempDir $package) 'cargo-cop.exe') (Join-Path $binPath 'cargo-cop.exe') -Force
+          $binPath >> $env:GITHUB_PATH
+        } finally {
+          Remove-Item -Path $tempDir -Recurse -Force
+        }
+
+    - name: Build from source (Linux and macOS)
+      if: inputs.from-source == 'true' && runner.os != 'Windows'
+      shell: bash
+      env:
+        CARGO_COP_VERSION: ${{ steps.resolve_unix.outputs.version }}
+      run: |
+        set -euo pipefail
+        install_root="$RUNNER_TEMP/cargo-cop"
+        cargo install cargo-cop --git https://github.com/shaogme/cargo-cop --tag "v${CARGO_COP_VERSION}" --locked --force --root "$install_root"
+        echo "$install_root/bin" >> "$GITHUB_PATH"
+
+    - name: Build from source (Windows)
+      if: inputs.from-source == 'true' && runner.os == 'Windows'
+      shell: pwsh
+      env:
+        CARGO_COP_VERSION: ${{ steps.resolve_windows.outputs.version }}
+      run: |
+        $installRoot = Join-Path $env:RUNNER_TEMP 'cargo-cop'
+        cargo install cargo-cop --git https://github.com/shaogme/cargo-cop --tag "v$env:CARGO_COP_VERSION" --locked --force --root $installRoot
+        Join-Path $installRoot 'bin' >> $env:GITHUB_PATH

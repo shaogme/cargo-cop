@@ -26,17 +26,8 @@
 
 ## 构建与安装
 
-在仓库 checkout 根目录运行：
-
 ```sh
-cargo build -p cargo-cop
-cargo run -p cargo-cop -- --help
-```
-
-如需将可执行文件安装到 Cargo 的二进制目录：
-
-```sh
-cargo install --path crates/cargo-cop
+cargo install cargo-cop
 ```
 
 也可以通过 [cargo-binstall](https://github.com/cargo-bins/cargo-binstall) 安装预编译的 release：
@@ -44,6 +35,42 @@ cargo install --path crates/cargo-cop
 ```sh
 cargo binstall cargo-cop
 ```
+
+### 在 GitHub Actions 中安装
+
+在 workflow 中使用此 action 会默认下载并安装最新 release 的预编译二进制：
+
+```yaml
+steps:
+  - uses: actions/checkout@main
+  - uses: shaogme/cargo-cop@main
+  - run: cargo cop
+```
+
+`version` 默认是 `latest`，也可指定 cargo-cop release 版本；版本号可带或不带 `v` 前缀。`from-source` 默认为 `false`，设置为 `true` 后会从所选 release tag 的源码构建（action 会安装 stable Rust 工具链）。固定版本并下载预编译二进制：
+
+```yaml
+steps:
+  - uses: actions/checkout@main
+  - uses: shaogme/cargo-cop@main
+    with:
+      version: 0.1.11
+  - run: cargo cop --workspace
+```
+
+如需从同一版本的源码构建：
+
+```yaml
+steps:
+  - uses: actions/checkout@main
+  - uses: shaogme/cargo-cop@main
+    with:
+      version: 0.1.11
+      from-source: true
+  - run: cargo cop --workspace
+```
+
+action 会将安装目录加入后续步骤的 `PATH`，并通过 `version` output 暴露实际安装的版本。
 
 安装后可直接运行 `cargo-cop`，也可使用 Cargo 子命令 `cargo cop`：
 
