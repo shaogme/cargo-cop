@@ -18,8 +18,8 @@ pub use ast::{
     MacroTokenTree, ParseIssue, ParseIssueCode, ParseIssueKind, ParseOutput, PathSegmentSyntax,
     PathSyntax, PatternFieldSyntax, PatternSyntax, PatternSyntaxKind, StatementSyntaxKind,
     SyntaxNode, SyntaxNodeData, SyntaxNodeKind, TraitBoundKind, TraitBoundSyntax, TypeSyntax,
-    TypeSyntaxKind, UnsupportedConstructKind, UseTreeSyntaxData, Visibility, VisibilityKind,
-    WhereClauseSyntax, WherePredicateKind, WherePredicateSyntax,
+    TypeSyntaxKind, UnaryOperator, UnsupportedConstructKind, UseTreeSyntaxData, Visibility,
+    VisibilityKind, WhereClauseSyntax, WherePredicateKind, WherePredicateSyntax,
 };
 pub use lexer::{
     Delimiter, LexIssue, LexOutput, LiteralKind, RustEdition, RustLexer, Token, TokenKind, Trivia,

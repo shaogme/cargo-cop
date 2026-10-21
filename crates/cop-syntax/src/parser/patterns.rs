@@ -200,7 +200,7 @@ impl PatternParser {
         bind_bare_identifiers: bool,
         context: PatternParseContext,
     ) -> Result<PatternSyntaxKind, SyntaxError> {
-        if cursor.consume_punctuation("&") {
+        if cursor.consume_punctuation_prefix("&") {
             let mutable = cursor.consume_identifier("mut");
             return Ok(PatternSyntaxKind::Reference {
                 mutable,

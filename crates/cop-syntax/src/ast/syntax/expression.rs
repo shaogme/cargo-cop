@@ -6,6 +6,7 @@ use super::{PatternSyntax, TypeSyntax};
 
 pub use kind::{
     ExpressionBlockKind, ExpressionErrorKind, ExpressionSyntaxKind, ExpressionUnsupportedKind,
+    UnaryOperator,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]

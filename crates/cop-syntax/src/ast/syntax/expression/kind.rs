@@ -27,6 +27,17 @@ pub enum ExpressionErrorKind {
     UnclosedDelimiter,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UnaryOperator {
+    Negate,
+    Not,
+    Dereference,
+    SharedBorrow,
+    MutableBorrow,
+    RawConstBorrow,
+    RawMutableBorrow,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ExpressionSyntaxKind {
     Literal,
@@ -43,7 +54,7 @@ pub enum ExpressionSyntaxKind {
         fields: Vec<ExpressionFieldSyntax>,
     },
     Unary {
-        operator: String,
+        operator: UnaryOperator,
         operand: Box<ExpressionSyntax>,
     },
     Binary {

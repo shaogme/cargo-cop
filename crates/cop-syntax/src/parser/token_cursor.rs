@@ -5,7 +5,7 @@ use crate::{Delimiter, Token, TokenKind};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct CursorCheckpoint {
     index: usize,
-    pending_punctuation: Option<PendingPunctuation>,
+    punctuation_offset: Option<usize>,
 }
 
 pub(super) struct TokenCursor<'a> {
@@ -13,23 +13,8 @@ pub(super) struct TokenCursor<'a> {
     start: usize,
     end: usize,
     index: usize,
-    pending_punctuation: Option<PendingPunctuation>,
+    punctuation_offset: Option<usize>,
     pending_token: Option<Token>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum PendingPunctuation {
-    LessThan,
-    GreaterThan,
-}
-
-impl PendingPunctuation {
-    fn text(self) -> &'static str {
-        match self {
-            Self::LessThan => "<",
-            Self::GreaterThan => ">",
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -69,7 +54,7 @@ impl<'a> TokenCursor<'a> {
             start: bounds.start,
             end: bounds.end,
             index: bounds.start,
-            pending_punctuation: None,
+            punctuation_offset: None,
             pending_token: None,
         })
     }
@@ -91,15 +76,15 @@ impl<'a> TokenCursor<'a> {
     }
 
     pub(super) fn consumed_end_index(&self) -> usize {
-        self.index + usize::from(self.pending_punctuation.is_some())
+        self.index + usize::from(self.punctuation_offset.is_some())
     }
 
     pub(super) fn is_empty(&self) -> bool {
-        self.index >= self.end && self.pending_punctuation.is_none()
+        self.index >= self.end && self.punctuation_offset.is_none()
     }
 
     pub(super) fn peek(&self) -> Option<&Token> {
-        if self.pending_punctuation.is_some() {
+        if self.punctuation_offset.is_some() {
             return self.pending_token.as_ref();
         }
         (self.index < self.end).then(|| &self.tokens[self.index])
@@ -116,7 +101,7 @@ impl<'a> TokenCursor<'a> {
     }
 
     pub(super) fn consume(&mut self) -> Option<&'a Token> {
-        if self.pending_punctuation.is_some() || self.index >= self.end {
+        if self.punctuation_offset.is_some() || self.index >= self.end {
             return None;
         }
         let token = &self.tokens[self.index];
@@ -127,7 +112,7 @@ impl<'a> TokenCursor<'a> {
     pub(super) fn checkpoint(&self) -> CursorCheckpoint {
         CursorCheckpoint {
             index: self.index,
-            pending_punctuation: self.pending_punctuation,
+            punctuation_offset: self.punctuation_offset,
         }
     }
 
@@ -135,18 +120,17 @@ impl<'a> TokenCursor<'a> {
         if checkpoint.index < self.start || checkpoint.index > self.end {
             return false;
         }
-        let pending_token = if let Some(punctuation) = checkpoint.pending_punctuation {
+        let pending_token = if let Some(offset) = checkpoint.punctuation_offset {
             if checkpoint.index >= self.end {
                 return false;
             }
             let Some(token) = self.tokens.get(checkpoint.index) else {
                 return false;
             };
-            let Some(fragment) = token.punctuation_fragment(1) else {
+            let Some(fragment) = token.punctuation_fragment(offset) else {
                 return false;
             };
-            if !matches!(fragment.kind(), TokenKind::Punctuation(value) if value == punctuation.text())
-            {
+            if !matches!(fragment.kind(), TokenKind::Punctuation(_)) {
                 return false;
             }
             Some(fragment)
@@ -154,7 +138,7 @@ impl<'a> TokenCursor<'a> {
             None
         };
         self.index = checkpoint.index;
-        self.pending_punctuation = checkpoint.pending_punctuation;
+        self.punctuation_offset = checkpoint.punctuation_offset;
         self.pending_token = pending_token;
         true
     }
@@ -208,6 +192,33 @@ impl<'a> TokenCursor<'a> {
         }
     }
 
+    pub(super) fn consume_punctuation_prefix(&mut self, prefix: &str) -> bool {
+        if prefix.is_empty() {
+            return false;
+        }
+        let Some(token) = self.peek() else {
+            return false;
+        };
+        let TokenKind::Punctuation(value) = token.kind() else {
+            return false;
+        };
+        if !value.starts_with(prefix) {
+            return false;
+        }
+        if value.len() == prefix.len() {
+            self.advance_current_punctuation();
+            return true;
+        }
+
+        let next_offset = self.punctuation_offset.unwrap_or(0) + prefix.len();
+        let Some(fragment) = self.tokens[self.index].punctuation_fragment(next_offset) else {
+            return false;
+        };
+        self.punctuation_offset = Some(next_offset);
+        self.pending_token = Some(fragment);
+        true
+    }
+
     pub(super) fn consume_identifier(&mut self, expected: &str) -> bool {
         if self.at_identifier(expected) {
             self.index += 1;
@@ -244,20 +255,10 @@ impl<'a> TokenCursor<'a> {
     }
 
     pub(super) fn consume_angle_close(&mut self) -> bool {
-        if self.pending_punctuation == Some(PendingPunctuation::GreaterThan) {
-            self.advance_current_punctuation();
-            return true;
+        if self.at_punctuation(">") {
+            return self.consume_punctuation(">");
         }
-        match self.peek().map(Token::kind) {
-            Some(TokenKind::Punctuation(value)) if value == ">" => {
-                self.index += 1;
-                true
-            }
-            Some(TokenKind::Punctuation(value)) if value == ">>" => {
-                self.set_pending_punctuation(PendingPunctuation::GreaterThan)
-            }
-            _ => false,
-        }
+        self.at_punctuation(">>") && self.consume_punctuation_prefix(">")
     }
 
     pub(super) fn at_angle_open(&self) -> bool {
@@ -265,46 +266,20 @@ impl<'a> TokenCursor<'a> {
     }
 
     pub(super) fn consume_angle_open(&mut self) -> bool {
-        if self.pending_punctuation == Some(PendingPunctuation::LessThan) {
-            self.advance_current_punctuation();
-            return true;
+        if self.at_punctuation("<") {
+            return self.consume_punctuation("<");
         }
-        match self.peek().map(Token::kind) {
-            Some(TokenKind::Punctuation(value)) if value == "<" => {
-                self.index += 1;
-                true
-            }
-            Some(TokenKind::Punctuation(value)) if value == "<<" => {
-                self.set_pending_punctuation(PendingPunctuation::LessThan)
-            }
-            _ => false,
-        }
-    }
-
-    fn set_pending_punctuation(&mut self, punctuation: PendingPunctuation) -> bool {
-        let Some(token) = self.tokens.get(self.index) else {
-            return false;
-        };
-        let Some(fragment) = token.punctuation_fragment(1) else {
-            return false;
-        };
-        if !matches!(fragment.kind(), TokenKind::Punctuation(value) if value == punctuation.text())
-        {
-            return false;
-        }
-        self.pending_punctuation = Some(punctuation);
-        self.pending_token = Some(fragment);
-        true
+        self.at_punctuation("<<") && self.consume_punctuation_prefix("<")
     }
 
     fn advance_current_punctuation(&mut self) {
         self.index += 1;
-        self.pending_punctuation = None;
+        self.punctuation_offset = None;
         self.pending_token = None;
     }
 
     pub(super) fn skip_delimited_group(&mut self) -> Option<Range<usize>> {
-        if self.pending_punctuation.is_some() {
+        if self.punctuation_offset.is_some() {
             return None;
         }
         let open = self.index;
@@ -339,7 +314,7 @@ impl<'a> TokenCursor<'a> {
             return None;
         }
         let mut cursor = TokenCursor::new(self.tokens, bounds.clone())?;
-        if self.pending_punctuation.is_some()
+        if self.punctuation_offset.is_some()
             && bounds.start == self.index
             && !cursor.restore(self.checkpoint())
         {
@@ -360,7 +335,7 @@ impl<'a> TokenCursor<'a> {
             {
                 continue;
             }
-            if self.pending_punctuation.is_some() {
+            if self.punctuation_offset.is_some() {
                 self.advance_current_punctuation();
             } else {
                 self.index += 1;
@@ -372,13 +347,20 @@ impl<'a> TokenCursor<'a> {
     pub(super) fn find_top_level_punctuation(&self, expected: &str) -> Option<usize> {
         let mut angle_depth = 0usize;
         let mut index = self.index;
-        if let Some(punctuation) = self.pending_punctuation {
-            if Self::is_angle_open(punctuation.text()) {
-                angle_depth += 1;
-            } else if Self::is_angle_close(punctuation.text()) {
-                angle_depth = angle_depth.saturating_sub(1);
-            } else if punctuation.text() == expected && angle_depth == 0 {
-                return Some(index);
+        if let Some(token) = self.pending_token.as_ref() {
+            match token.kind() {
+                TokenKind::Punctuation(value) if value == "<" => angle_depth += 1,
+                TokenKind::Punctuation(value) if value == "<<" => angle_depth += 2,
+                TokenKind::Punctuation(value) if value == ">" => {
+                    angle_depth = angle_depth.saturating_sub(1);
+                }
+                TokenKind::Punctuation(value) if value == ">>" => {
+                    angle_depth = angle_depth.saturating_sub(2);
+                }
+                TokenKind::Punctuation(value) if value == expected && angle_depth == 0 => {
+                    return Some(index);
+                }
+                _ => {}
             }
             index += 1;
         }
@@ -409,11 +391,17 @@ impl<'a> TokenCursor<'a> {
     pub(super) fn find_top_level_identifier(&self, expected: &str) -> Option<usize> {
         let mut angle_depth = 0usize;
         let mut index = self.index;
-        if let Some(punctuation) = self.pending_punctuation {
-            if Self::is_angle_open(punctuation.text()) {
-                angle_depth += 1;
-            } else if Self::is_angle_close(punctuation.text()) {
-                angle_depth = angle_depth.saturating_sub(1);
+        if let Some(token) = self.pending_token.as_ref() {
+            match token.kind() {
+                TokenKind::Punctuation(value) if value == "<" => angle_depth += 1,
+                TokenKind::Punctuation(value) if value == "<<" => angle_depth += 2,
+                TokenKind::Punctuation(value) if value == ">" => {
+                    angle_depth = angle_depth.saturating_sub(1);
+                }
+                TokenKind::Punctuation(value) if value == ">>" => {
+                    angle_depth = angle_depth.saturating_sub(2);
+                }
+                _ => {}
             }
             index += 1;
         }
@@ -463,14 +451,6 @@ impl<'a> TokenCursor<'a> {
             }
         }
         None
-    }
-
-    fn is_angle_open(punctuation: &str) -> bool {
-        punctuation == "<"
-    }
-
-    fn is_angle_close(punctuation: &str) -> bool {
-        punctuation == ">"
     }
 
     fn offset_at_start(&self) -> usize {
@@ -584,5 +564,26 @@ mod tests {
         assert!(cursor.restore(checkpoint));
         assert_eq!(cursor.offset(), 4);
         assert_eq!(cursor.peek().map(|token| token.text(&source)), Some(">"));
+    }
+
+    #[test]
+    fn arbitrary_punctuation_prefixes_preserve_the_remaining_source_range() {
+        let source = SourceFile::new("src/lib.rs", "<<=");
+        let lexed = RustLexer::lex(&source);
+        let tokens = lexed.tokens();
+        let mut cursor = TokenCursor::new(tokens, 0..tokens.len()).expect("有界游标");
+
+        assert!(cursor.consume_punctuation_prefix("<<"));
+        let checkpoint = cursor.checkpoint();
+        assert_eq!(cursor.offset(), 2);
+        assert_eq!(cursor.consumed_offset(), 2);
+        assert_eq!(cursor.consumed_end_index(), 1);
+        assert_eq!(cursor.peek().map(|token| token.text(&source)), Some("="));
+
+        assert!(cursor.consume_punctuation("="));
+        assert!(cursor.is_empty());
+        assert!(cursor.restore(checkpoint));
+        assert_eq!(cursor.offset(), 2);
+        assert_eq!(cursor.peek().map(|token| token.text(&source)), Some("="));
     }
 }

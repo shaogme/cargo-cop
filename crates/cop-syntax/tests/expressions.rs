@@ -1,7 +1,7 @@
 use cop_syntax::{
     CoverageStatus, ExpressionSyntaxKind, ExpressionUnsupportedKind, MacroInputStatus,
     ParseIssueKind, ParseOptions, ParseOutput, RustParser, SourceFile, StatementSyntaxKind,
-    SyntaxNodeKind, TypeSyntaxKind,
+    SyntaxNodeKind, TypeSyntaxKind, UnaryOperator,
 };
 
 fn parse(source: SourceFile) -> ParseOutput {
@@ -571,7 +571,7 @@ fn unary_operators_bind_more_tightly_than_type_casts() {
     assert!(matches!(
         cast.kind(),
         ExpressionSyntaxKind::Cast { expression, .. }
-            if matches!(expression.kind(), ExpressionSyntaxKind::Unary { operator, .. } if operator == "-")
+            if matches!(expression.kind(), ExpressionSyntaxKind::Unary { operator, .. } if *operator == UnaryOperator::Negate)
     ));
 }
 

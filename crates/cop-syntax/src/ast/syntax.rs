@@ -10,6 +10,7 @@ use crate::Delimiter;
 pub use expression::{
     ClosureParameterSyntax, ExpressionBlockKind, ExpressionErrorKind, ExpressionFieldSyntax,
     ExpressionMatchArmSyntax, ExpressionSyntax, ExpressionSyntaxKind, ExpressionUnsupportedKind,
+    UnaryOperator,
 };
 pub use path::{GenericArgumentSyntax, PathSegmentSyntax, PathSyntax};
 pub use pattern::{PatternFieldSyntax, PatternSyntax};

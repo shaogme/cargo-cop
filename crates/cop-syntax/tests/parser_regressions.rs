@@ -2,6 +2,7 @@ use cop_syntax::{
     AttributeMetaArgument, AttributeMetaValueKind, CoverageStatus, ExpressionSyntaxKind,
     ForeignItemSyntaxKind, ItemSyntaxKind, LiteralKind, ParseIssueCode, ParseIssueKind,
     ParseOptions, PatternSyntaxKind, RustParser, SourceFile, SyntaxNodeKind, TypeSyntaxKind,
+    UnaryOperator,
 };
 
 fn parse(source: &str, edition: &str) -> cop_syntax::ParseOutput {
@@ -9,6 +10,109 @@ fn parse(source: &str, edition: &str) -> cop_syntax::ParseOutput {
         SourceFile::new("src/parser_regressions.rs", source),
         ParseOptions::new(edition),
     )
+}
+
+#[test]
+fn parses_borrow_of_identifier_raw_in_generated_test_body() {
+    let source = r#"
+#[test]
+fn generated_byte_strings_round_trip() {
+    let rounds = if cfg!(miri) { 50 } else { 20_000 };
+    let mut rng = XorShift {
+        state: 0x9e37_79b9_7f4a_7c15,
+    };
+    for round in 0..rounds {
+        let raw = rng.bytes();
+        for codec in [PercentCodec::path(), PercentCodec::name()] {
+            let encoded = codec.encode(&raw);
+            assert_eq!(
+                PercentCodec::decode(&encoded),
+                Decoded {
+                    bytes: raw.clone(),
+                    malformed: 0
+                },
+                "round {round}"
+            );
+        }
+    }
+}
+"#;
+    let parsed = parse(source, "2021");
+    let raw_end = source.find("&raw").expect("&raw 借用位置") + "&raw".len();
+
+    assert!(
+        !parsed.issues().iter().any(|issue| {
+            issue.code() == ParseIssueCode::UnexpectedEof
+                && issue.start() == raw_end
+                && issue.end() == raw_end
+        }),
+        "{:?}",
+        parsed.issues()
+    );
+    let argument = parsed
+        .syntax_nodes()
+        .iter()
+        .filter_map(|node| node.expression_syntax())
+        .find_map(|expression| match expression.kind() {
+            ExpressionSyntaxKind::MethodCall {
+                method, arguments, ..
+            } if method == "encode" => arguments.first(),
+            _ => None,
+        })
+        .expect("encode 参数");
+
+    assert!(matches!(
+        argument.kind(),
+        ExpressionSyntaxKind::Unary {
+            operator: UnaryOperator::SharedBorrow,
+            operand,
+        } if matches!(operand.kind(), ExpressionSyntaxKind::Path(path)
+            if path.segments().first().is_some_and(|segment| segment.name() == "raw"))
+    ));
+}
+
+#[test]
+fn distinguishes_raw_borrows_from_mutable_borrows_and_field_borrows() {
+    let source = "fn inspect(ptr: *const u8) { let raw_const = &raw const ptr; let raw_mut = &raw mut ptr; let mutable = &mut raw; let field = &raw.field; }";
+    let parsed = parse(source, "2021");
+    let unary_expressions = parsed
+        .syntax_nodes()
+        .iter()
+        .filter_map(|node| node.expression_syntax())
+        .filter_map(|expression| {
+            let ExpressionSyntaxKind::Unary { operator, operand } = expression.kind() else {
+                return None;
+            };
+            source
+                .get(expression.bounds())
+                .map(|text| (text, operator, operand.as_ref()))
+        })
+        .collect::<Vec<_>>();
+
+    assert!(parsed.issues().is_empty(), "{:?}", parsed.issues());
+    assert!(unary_expressions.iter().any(|(text, operator, operand)| {
+        *text == "&raw const ptr"
+            && **operator == UnaryOperator::RawConstBorrow
+            && matches!(operand.kind(), ExpressionSyntaxKind::Path(path)
+                if path.segments().first().is_some_and(|segment| segment.name() == "ptr"))
+    }));
+    assert!(unary_expressions.iter().any(|(text, operator, operand)| {
+        *text == "&raw mut ptr"
+            && **operator == UnaryOperator::RawMutableBorrow
+            && matches!(operand.kind(), ExpressionSyntaxKind::Path(path)
+                if path.segments().first().is_some_and(|segment| segment.name() == "ptr"))
+    }));
+    assert!(unary_expressions.iter().any(|(text, operator, operand)| {
+        *text == "&mut raw"
+            && **operator == UnaryOperator::MutableBorrow
+            && matches!(operand.kind(), ExpressionSyntaxKind::Path(path)
+                if path.segments().first().is_some_and(|segment| segment.name() == "raw"))
+    }));
+    assert!(unary_expressions.iter().any(|(text, operator, operand)| {
+        *text == "&raw.field"
+            && **operator == UnaryOperator::SharedBorrow
+            && matches!(operand.kind(), ExpressionSyntaxKind::Field { field, .. } if field == "field")
+    }));
 }
 
 fn unexpected_issues(parsed: &cop_syntax::ParseOutput) -> Vec<(usize, usize)> {
@@ -67,6 +171,100 @@ fn parses_explicit_lifetime_receivers_and_preserves_parameter_ranges() {
         source
             .get(node.start()..node.end())
             .is_some_and(|text| text.contains("self"))
+    }));
+}
+
+#[test]
+fn parses_closure_parameters_with_nested_reference_patterns() {
+    let source = "fn inspect(path: &[u8]) { let _ = path.iter().take_while(|&&byte| byte == b'/').count(); }";
+    let parsed = parse(source, "2021");
+
+    assert_eq!(
+        parsed.coverage(),
+        CoverageStatus::Complete,
+        "{:?}",
+        parsed.issues()
+    );
+    assert!(parsed.issues().is_empty(), "{:?}", parsed.issues());
+    let closure = parsed
+        .syntax_nodes()
+        .iter()
+        .filter_map(|node| node.expression_syntax())
+        .find_map(|expression| match expression.kind() {
+            ExpressionSyntaxKind::Closure { parameters, .. } => Some(parameters),
+            _ => None,
+        })
+        .expect("闭包语法节点");
+    let pattern = closure.first().expect("闭包参数").pattern();
+    assert_eq!(source.get(pattern.bounds()), Some("&&byte"));
+
+    let PatternSyntaxKind::Reference { pattern, .. } = pattern.kind() else {
+        panic!("第一个 & 应解析为引用模式");
+    };
+    let PatternSyntaxKind::Reference { pattern, .. } = pattern.kind() else {
+        panic!("第二个 & 应解析为嵌套引用模式");
+    };
+    assert!(matches!(
+        pattern.kind(),
+        PatternSyntaxKind::Binding { name, .. } if name == "byte"
+    ));
+}
+
+#[test]
+fn preserves_single_and_repeated_reference_patterns_and_logical_and() {
+    let source = "fn inspect(left: bool, right: bool) { let _ = |&single| single; let _ = |&&&triple| triple; let _ = left && right; }";
+    let parsed = parse(source, "2021");
+    let patterns = parsed
+        .syntax_nodes()
+        .iter()
+        .filter_map(|node| node.expression_syntax())
+        .filter_map(|expression| match expression.kind() {
+            ExpressionSyntaxKind::Closure { parameters, .. } => Some(parameters),
+            _ => None,
+        })
+        .flat_map(|parameters| parameters.iter().map(|parameter| parameter.pattern()))
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        parsed.coverage(),
+        CoverageStatus::Complete,
+        "{:?}",
+        parsed.issues()
+    );
+    assert!(parsed.issues().is_empty(), "{:?}", parsed.issues());
+    assert_eq!(patterns.len(), 2);
+    assert_eq!(source.get(patterns[0].bounds()), Some("&single"));
+    let PatternSyntaxKind::Reference {
+        pattern: single_inner,
+        ..
+    } = patterns[0].kind()
+    else {
+        panic!("单层 & 应解析为引用模式");
+    };
+    assert!(matches!(
+        single_inner.kind(),
+        PatternSyntaxKind::Binding { name, .. } if name == "single"
+    ));
+
+    assert_eq!(source.get(patterns[1].bounds()), Some("&&&triple"));
+    let mut triple_inner = patterns[1];
+    for _ in 0..3 {
+        let PatternSyntaxKind::Reference { pattern, .. } = triple_inner.kind() else {
+            panic!("连续的 & 应分别解析为嵌套引用模式");
+        };
+        triple_inner = pattern;
+    }
+    assert!(matches!(
+        triple_inner.kind(),
+        PatternSyntaxKind::Binding { name, .. } if name == "triple"
+    ));
+    assert!(parsed.syntax_nodes().iter().any(|node| {
+        node.expression_syntax().is_some_and(|expression| {
+            matches!(
+                expression.kind(),
+                ExpressionSyntaxKind::Binary { operator, .. } if operator == "&&"
+            )
+        })
     }));
 }
 

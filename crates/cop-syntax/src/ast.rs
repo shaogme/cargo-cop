@@ -36,7 +36,7 @@ pub use syntax::{
     ExpressionMatchArmSyntax, ExpressionSyntax, ExpressionSyntaxKind, ExpressionUnsupportedKind,
     FunctionTraitArgumentsSyntax, GenericArgumentSyntax, GenericParameterKind,
     GenericParameterSyntax, PathSegmentSyntax, PathSyntax, PatternFieldSyntax, PatternSyntax,
-    PatternSyntaxKind, TraitBoundKind, TraitBoundSyntax, TypeSyntax, TypeSyntaxKind,
+    PatternSyntaxKind, TraitBoundKind, TraitBoundSyntax, TypeSyntax, TypeSyntaxKind, UnaryOperator,
     WhereClauseSyntax, WherePredicateKind, WherePredicateSyntax,
 };
 

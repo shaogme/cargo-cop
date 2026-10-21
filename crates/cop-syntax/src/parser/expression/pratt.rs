@@ -1,7 +1,10 @@
 use std::ops::Range;
 
 use crate::{
-    ast::{ExpressionBlockKind, ExpressionSyntax, ExpressionSyntaxKind, ExpressionUnsupportedKind},
+    ast::{
+        ExpressionBlockKind, ExpressionSyntax, ExpressionSyntaxKind, ExpressionUnsupportedKind,
+        UnaryOperator,
+    },
     parser::{
         path::PathParser,
         token_cursor::{SyntaxError, SyntaxErrorKind, TokenCursor},
@@ -352,20 +355,38 @@ impl PrattParser {
                     },
                 ),
                 "-" | "!" | "*" | "&" => {
-                    let mut operator = operator.clone();
+                    let operator = operator.clone();
+                    let raw_borrow_operator = if operator == "&" {
+                        Self::raw_borrow_operator(cursor)
+                    } else {
+                        None
+                    };
                     cursor.consume();
-                    if operator == "&" {
-                        if cursor.consume_identifier("raw") {
-                            operator.push_str(" raw");
-                            if cursor.consume_identifier("const") {
-                                operator.push_str(" const");
-                            } else if cursor.consume_identifier("mut") {
-                                operator.push_str(" mut");
+                    let operator = match operator.as_str() {
+                        "-" => UnaryOperator::Negate,
+                        "!" => UnaryOperator::Not,
+                        "*" => UnaryOperator::Dereference,
+                        "&" => match raw_borrow_operator {
+                            Some(operator) => {
+                                cursor.consume_identifier("raw");
+                                match operator {
+                                    UnaryOperator::RawConstBorrow => {
+                                        cursor.consume_identifier("const");
+                                    }
+                                    UnaryOperator::RawMutableBorrow => {
+                                        cursor.consume_identifier("mut");
+                                    }
+                                    _ => unreachable!("原始借用前缀必须跟随 const 或 mut"),
+                                }
+                                operator
                             }
-                        } else if cursor.consume_identifier("mut") {
-                            operator.push_str(" mut");
-                        }
-                    }
+                            None if cursor.consume_identifier("mut") => {
+                                UnaryOperator::MutableBorrow
+                            }
+                            None => UnaryOperator::SharedBorrow,
+                        },
+                        _ => unreachable!("一元运算符分支只接受已知标点"),
+                    };
                     let operand = Self::parse_with_struct_literals(
                         source,
                         cursor,
@@ -710,6 +731,17 @@ impl PrattParser {
         cursor.peek_n(1).is_some_and(
             |token| matches!(token.kind(), TokenKind::OpenDelimiter(found) if *found == delimiter),
         )
+    }
+
+    fn raw_borrow_operator(cursor: &TokenCursor<'_>) -> Option<UnaryOperator> {
+        if cursor.peek_n(1)?.kind().word() != Some("raw") {
+            return None;
+        }
+        match cursor.peek_n(2)?.kind().word()? {
+            "const" => Some(UnaryOperator::RawConstBorrow),
+            "mut" => Some(UnaryOperator::RawMutableBorrow),
+            _ => None,
+        }
     }
 
     pub(super) fn new_span(
