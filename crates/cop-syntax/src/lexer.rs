@@ -171,6 +171,22 @@ impl Token {
     pub fn text<'a>(&self, source: &'a SourceFile) -> &'a str {
         source.slice(self.start, self.end).unwrap_or("")
     }
+
+    pub(crate) fn punctuation_fragment(&self, start: usize) -> Option<Self> {
+        let TokenKind::Punctuation(value) = &self.kind else {
+            return None;
+        };
+        let punctuation = value.get(start..)?;
+        if punctuation.is_empty() {
+            return None;
+        }
+        Some(Self {
+            kind: TokenKind::Punctuation(punctuation.to_owned()),
+            start: self.start + start,
+            end: self.end,
+            leading_trivia: Vec::new(),
+        })
+    }
 }
 
 impl LexIssue {

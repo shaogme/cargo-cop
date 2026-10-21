@@ -98,6 +98,7 @@ impl GenericParameterParser {
             }
             match tokens[index].kind() {
                 TokenKind::Punctuation(value) if value == "<" => angle_depth += 1,
+                TokenKind::Punctuation(value) if value == "<<" => angle_depth += 2,
                 TokenKind::Punctuation(value) if value == ">" => {
                     angle_depth = angle_depth.saturating_sub(1);
                 }
@@ -264,6 +265,7 @@ fn matching_angle(tokens: &[Token], open: usize, end: usize) -> Option<usize> {
         }
         match tokens[index].kind() {
             TokenKind::Punctuation(value) if value == "<" => depth += 1,
+            TokenKind::Punctuation(value) if value == "<<" => depth += 2,
             TokenKind::Punctuation(value) if value == ">" => {
                 depth = depth.checked_sub(1)?;
                 if depth == 0 {

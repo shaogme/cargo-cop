@@ -18,7 +18,7 @@ impl PathParser {
     ) -> Result<PathSyntax, SyntaxError> {
         let start = cursor.index();
         let start_offset = cursor.offset();
-        if cursor.at_punctuation("<") {
+        if cursor.at_angle_open() {
             return Self::parse_qualified(cursor, start, start_offset);
         }
         let leading_colon = cursor.consume_punctuation("::");
@@ -27,7 +27,7 @@ impl PathParser {
             if !cursor.consume_punctuation("::") {
                 break;
             }
-            if cursor.consume_punctuation("<") {
+            if cursor.consume_angle_open() {
                 let arguments = Self::parse_arguments(cursor)?;
                 Self::expect_angle_close(cursor)?;
                 let previous = segments.pop().expect("路径至少包含一个段");
@@ -53,7 +53,7 @@ impl PathParser {
     pub(super) fn parse(cursor: &mut TokenCursor<'_>) -> Result<PathSyntax, SyntaxError> {
         let start = cursor.index();
         let start_offset = cursor.offset();
-        if cursor.at_punctuation("<") {
+        if cursor.at_angle_open() {
             return Self::parse_qualified(cursor, start, start_offset);
         }
         let leading_colon = cursor.consume_punctuation("::");
@@ -63,7 +63,7 @@ impl PathParser {
             if !cursor.consume_punctuation("::") {
                 break;
             }
-            if cursor.consume_punctuation("<") {
+            if cursor.consume_angle_open() {
                 let arguments = Self::parse_arguments(cursor)?;
                 Self::expect_angle_close(cursor)?;
                 let last = segments.pop().expect("路径至少包含一个段");
@@ -94,7 +94,7 @@ impl PathParser {
         start: usize,
         start_offset: usize,
     ) -> Result<PathSyntax, SyntaxError> {
-        cursor.consume_punctuation("<");
+        cursor.consume_angle_open();
         let self_type = TypeParser::parse(cursor)?;
         let trait_path = if cursor.consume_identifier("as") {
             Some(Box::new(Self::parse(cursor)?))
@@ -136,7 +136,7 @@ impl PathParser {
         };
         let name = name.to_owned();
         cursor.consume();
-        let arguments = if cursor.consume_punctuation("<") {
+        let arguments = if cursor.consume_angle_open() {
             let arguments = Self::parse_arguments(cursor)?;
             Self::expect_angle_close(cursor)?;
             arguments
@@ -329,7 +329,9 @@ impl PathParser {
         start_offset: usize,
         end_offset: usize,
     ) -> Range<usize> {
-        let start = tokens.get(start).map_or(start_offset, Token::start);
+        let start = tokens
+            .get(start)
+            .map_or(start_offset, |token| token.start().max(start_offset));
         let end = end
             .checked_sub(1)
             .and_then(|index| tokens.get(index))

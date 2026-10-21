@@ -15,6 +15,8 @@ fn model(mut value: Option<Box<Thing>>, xs: &[i32]) {
     let borrowed = &mut *value.as_mut().unwrap();
     let accessed = borrowed.field.method::<i32>(xs[0])?.tuple.0;
     let assigned = accessed += 1 * 2 + 3;
+    let shifted_left = 1 << 2;
+    let shifted_right = shifted_left >> 1;
     let ranged = ..=xs.len();
     let array = [1, 2, 3];
     let repeated = [0; LENGTH];
@@ -32,7 +34,7 @@ fn model(mut value: Option<Box<Thing>>, xs: &[i32]) {
     let café = 'outer: loop { break 'outer 3; };
     for item in xs { let _ = item; }
     unsafe { let _ = assigned; }
-    let _ = (borrowed, accessed, ranged, array, repeated, object, closure, branches, record_pattern, café);
+    let _ = (borrowed, accessed, shifted_left, shifted_right, ranged, array, repeated, object, closure, branches, record_pattern, café);
 }
 
 "#;
@@ -74,6 +76,12 @@ fn model(mut value: Option<Box<Thing>>, xs: &[i32]) {
         .any(|kind| matches!(kind, ExpressionSyntaxKind::Assignment { .. })));
     assert!(expressions.iter().any(
         |kind| matches!(kind, ExpressionSyntaxKind::Binary { operator, .. } if operator == "*")
+    ));
+    assert!(expressions.iter().any(
+        |kind| matches!(kind, ExpressionSyntaxKind::Binary { operator, .. } if operator == "<<")
+    ));
+    assert!(expressions.iter().any(
+        |kind| matches!(kind, ExpressionSyntaxKind::Binary { operator, .. } if operator == ">>")
     ));
     assert!(expressions.iter().any(|kind| matches!(
         kind,

@@ -161,6 +161,7 @@ impl AtomParser {
                     ));
                 };
                 let name = name.to_owned();
+                let name_bounds = name_token.start()..name_token.end();
                 field_cursor.consume();
                 let (value, shorthand) = if field_cursor.consume_punctuation(":") {
                     (
@@ -168,7 +169,6 @@ impl AtomParser {
                         false,
                     )
                 } else {
-                    let bounds = name_token.start()..name_token.end();
                     let path = PathParser::parse_expression(
                         &mut TokenCursor::new(cursor.tokens(), name_index..name_index + 1)
                             .expect("字段名 token 范围有效"),
@@ -176,7 +176,7 @@ impl AtomParser {
                     (
                         Some(ExpressionSyntax::new(
                             ExpressionSyntaxKind::Path(path),
-                            bounds,
+                            name_bounds,
                         )),
                         true,
                     )

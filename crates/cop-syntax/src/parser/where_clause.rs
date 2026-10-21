@@ -75,6 +75,7 @@ impl WhereClauseParser {
             }
             match tokens[index].kind() {
                 TokenKind::Punctuation(value) if value == "<" => angle_depth += 1,
+                TokenKind::Punctuation(value) if value == "<<" => angle_depth += 2,
                 TokenKind::Punctuation(value) if value == ">" => {
                     angle_depth = angle_depth.saturating_sub(1);
                 }
@@ -242,7 +243,7 @@ impl WhereClauseParser {
         if !cursor.consume_identifier("for") {
             return Ok(Vec::new());
         }
-        if !cursor.consume_punctuation("<") {
+        if !cursor.consume_angle_open() {
             return Err(PredicateError::at(cursor, SyntaxErrorKind::UnexpectedToken));
         }
         let mut lifetimes = Vec::new();

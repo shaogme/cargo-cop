@@ -592,7 +592,7 @@ impl TypeParser {
     }
 
     fn parse_lifetime_binders(cursor: &mut TokenCursor<'_>) -> Result<Vec<String>, SyntaxError> {
-        if !cursor.consume_punctuation("<") {
+        if !cursor.consume_angle_open() {
             return Err(PathParser::error_at(
                 cursor,
                 SyntaxErrorKind::UnexpectedToken,

@@ -231,6 +231,50 @@ fn retains_diagnostics_for_incomplete_let_annotations() {
 }
 
 #[test]
+fn parses_nested_qualified_associated_types_without_spacing() {
+    let source = r#"
+trait Fs { type Dir; }
+trait Platform { type Fs: Fs; }
+struct TrashDirs<T>(T);
+struct Error;
+
+pub(crate) fn discover<P: Platform>(
+    platform: &P,
+    include_network: bool,
+) -> Result<Vec<TrashDirs<<<P as Platform>::Fs as Fs>::Dir>>, Error> {}
+
+pub(crate) fn project<P: Platform>() -> <<P as Platform>::Fs as Fs>::Dir {}
+"#;
+    let parsed = parse(source, "2021");
+    let expected_type = "Result<Vec<TrashDirs<<<P as Platform>::Fs as Fs>::Dir>>, Error>";
+    let direct_type = "<<P as Platform>::Fs as Fs>::Dir";
+
+    assert_eq!(
+        parsed.coverage(),
+        CoverageStatus::Complete,
+        "issues: {:?}",
+        parsed.issues()
+    );
+    assert!(parsed.issues().is_empty(), "issues: {:?}", parsed.issues());
+    assert!(parsed.syntax_nodes().iter().any(|node| {
+        node.type_syntax().is_some_and(|syntax| {
+            parsed
+                .source()
+                .slice(syntax.bounds().start, syntax.bounds().end)
+                == Some(expected_type)
+        })
+    }));
+    assert!(parsed.syntax_nodes().iter().any(|node| {
+        node.type_syntax().is_some_and(|syntax| {
+            parsed
+                .source()
+                .slice(syntax.bounds().start, syntax.bounds().end)
+                == Some(direct_type)
+        })
+    }));
+}
+
+#[test]
 fn parses_real_world_2024_let_chain_condition() {
     let source = r#"
 fn inspect(mut visit: Visit, context: &mut Context, mut out: Output) {
