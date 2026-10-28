@@ -32,7 +32,6 @@ struct CandidateAnalysis {
     candidates_by_context: BTreeMap<usize, Vec<usize>>,
     candidates_by_name: BTreeMap<String, Vec<usize>>,
     candidates_by_namespace: BTreeMap<(usize, Vec<String>), Vec<usize>>,
-    associated_candidates_by_context: BTreeMap<usize, Vec<usize>>,
     api_dependency_references: BTreeSet<ReferenceId>,
     required: Vec<bool>,
     uncertain: Vec<bool>,
@@ -74,7 +73,6 @@ impl CandidateAnalysis {
         let mut candidates_by_context = BTreeMap::new();
         let mut candidates_by_name = BTreeMap::new();
         let mut candidates_by_namespace = BTreeMap::new();
-        let mut associated_candidates_by_context = BTreeMap::new();
         for (index, candidate) in candidates.iter().enumerate() {
             let context = candidate.symbol.context_index();
             candidates_by_context
@@ -89,12 +87,6 @@ impl CandidateAnalysis {
                 .entry((context, candidate.symbol.namespace().to_vec()))
                 .or_insert_with(Vec::new)
                 .push(index);
-            if candidate.symbol.kind() == SymbolKind::AssociatedItem {
-                associated_candidates_by_context
-                    .entry(context)
-                    .or_insert_with(Vec::new)
-                    .push(index);
-            }
         }
         let api_dependency_references = candidates
             .iter()
@@ -113,7 +105,6 @@ impl CandidateAnalysis {
             candidates_by_context,
             candidates_by_name,
             candidates_by_namespace,
-            associated_candidates_by_context,
             api_dependency_references,
         }
     }
@@ -308,14 +299,6 @@ impl CandidateAnalysis {
         let mut candidates = BTreeSet::new();
         for segment in segments {
             if let Some(indices) = self.candidates_by_name.get(identifier_name(segment)) {
-                candidates.extend(indices.iter().copied());
-            }
-        }
-        if segments.len() == 1 && segments.first().is_some_and(|segment| segment == "Self") {
-            if let Some(indices) = self
-                .associated_candidates_by_context
-                .get(&module.context_index())
-            {
                 candidates.extend(indices.iter().copied());
             }
         }

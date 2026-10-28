@@ -3907,19 +3907,20 @@ fn reports_only_unnecessary_pub_crate_declarations() {
 }
 
 #[test]
-fn keeps_candidate_visible_through_used_crate_api() {
+fn keeps_candidate_visible_through_used_api_despite_unrelated_self() {
     let fixture = Fixture::new();
     fixture.write(
         "Cargo.toml",
         &package_manifest("sample").replace("2021", "2024"),
     );
+    fixture.write("src/lib.rs", "mod put;\n");
     fixture.write(
-        "src/lib.rs",
-        "mod candidate_selection;\nfn use_candidate_api<P>() { let _ = crate::candidate_selection::CandidateSelection::candidates::<P>; }\n",
+        "src/put.rs",
+        include_str!("fixtures/put_candidate_caller.rs"),
     );
     fixture.write(
-        "src/candidate_selection.rs",
-        include_str!("fixtures/candidate_selection.rs"),
+        "src/put/candidates.rs",
+        include_str!("fixtures/candidates.rs"),
     );
 
     let output = fixture.run(&["--format", "json"]);
@@ -3932,6 +3933,22 @@ fn keeps_candidate_visible_through_used_crate_api() {
     assert!(
         reported_candidates.is_empty(),
         "Candidate was reported as unnecessary:\n{}\n{}",
+        output.stdout,
+        output.stderr
+    );
+    let reported_api = diagnostics
+        .iter()
+        .filter(|diagnostic| {
+            matches!(
+                diagnostic["arguments"]["name"].as_str(),
+                Some("CandidateSelection" | "candidates")
+            )
+        })
+        .collect::<Vec<_>>();
+
+    assert!(
+        reported_api.is_empty(),
+        "The used API was not recognized:\n{}\n{}",
         output.stdout,
         output.stderr
     );
