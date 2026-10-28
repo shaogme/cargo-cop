@@ -129,7 +129,7 @@ impl SymbolRecord {
         self.definition_id
     }
 
-    pub(crate) fn set_definition_id(&mut self, definition_id: DefinitionId) {
+    fn set_definition_id(&mut self, definition_id: DefinitionId) {
         self.definition_id = definition_id;
     }
 

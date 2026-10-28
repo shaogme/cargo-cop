@@ -152,15 +152,27 @@ impl CandidateAnalysis {
         }
         for module in snapshot.modules() {
             for reference in snapshot.facts().references_for_module(module) {
-                self.scan_path(
-                    module,
-                    reference,
-                    PathScanOptions {
-                        condition: reference.condition(),
-                        force_required: false,
-                        api_dependency: self.api_dependency_references.contains(&reference.id()),
-                    },
-                );
+                if reference.kind() == ReferenceKind::MethodCall {
+                    if reference.is_supported() {
+                        if let Some(method) = reference.segments().first() {
+                            self.mark_method_call(module, method, reference.condition());
+                        }
+                    } else {
+                        self.mark_context_uncertain(module, reference.condition());
+                    }
+                } else {
+                    self.scan_path(
+                        module,
+                        reference,
+                        PathScanOptions {
+                            condition: reference.condition(),
+                            force_required: false,
+                            api_dependency: self
+                                .api_dependency_references
+                                .contains(&reference.id()),
+                        },
+                    );
+                }
                 if reference.kind() == ReferenceKind::Use && reference.is_glob() {
                     let resolution = reference.resolution();
                     if Self::is_unresolved(resolution) {
@@ -277,6 +289,25 @@ impl CandidateAnalysis {
                 {
                     self.required[*index] = true;
                 }
+            }
+        }
+    }
+
+    fn mark_method_call(&mut self, module: &ModuleNode, method: &str, condition: Option<&str>) {
+        let Some(indices) = self.candidates_by_name.get(identifier_name(method)) else {
+            return;
+        };
+        for index in indices {
+            let candidate = &self.candidates[*index];
+            if candidate.symbol.kind() == SymbolKind::AssociatedItem
+                && candidate.symbol.context_index() == module.context_index()
+                && SyntaxSupport::conditions_may_coexist(
+                    candidate.symbol.cfg_condition(),
+                    condition,
+                )
+                && !module.namespace().starts_with(&candidate.private_namespace)
+            {
+                self.required[*index] = true;
             }
         }
     }

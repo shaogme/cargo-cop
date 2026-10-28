@@ -3956,6 +3956,57 @@ fn keeps_candidate_visible_through_used_api_despite_unrelated_self() {
 }
 
 #[test]
+fn tracks_crate_visible_apis_in_control_flow_and_method_calls() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "src/lib.rs",
+        r#"mod api {
+    pub(crate) struct Runner;
+    pub(crate) struct Payload;
+
+    impl Runner {
+        pub(crate) fn load(&self) -> Payload { Payload }
+        pub(crate) fn create() -> Payload { Payload }
+    }
+}
+mod client {
+    use crate::api::Runner;
+
+    fn run(runner: &Runner) {
+        if true { let _ = runner.load(); }
+        for _ in 0..1 { let _ = Runner::create(); }
+    }
+}
+mod implementation_only {
+    pub(crate) struct Helper;
+
+    impl Helper {
+        pub(crate) fn call(&self) {}
+    }
+
+    fn use_local(helper: &Helper) { helper.call(); }
+}
+"#,
+    );
+
+    let output = fixture.run(&["--format", "json"]);
+    let diagnostics = rule_diagnostics(&output, "unnecessary_pub_crate");
+    let mut names = diagnostics
+        .iter()
+        .map(|diagnostic| {
+            diagnostic["arguments"]["name"]
+                .as_str()
+                .expect("诊断声明名称")
+        })
+        .collect::<Vec<_>>();
+    names.sort_unstable();
+
+    assert_eq!(names, ["Helper", "call"], "{}", output.stdout);
+    assert!(output.stdout.contains("\"status\":\"complete\""));
+}
+
+#[test]
 fn reports_pub_crate_constant_despite_cfg_test_macro_coverage() {
     let fixture = Fixture::new();
     fixture.write(

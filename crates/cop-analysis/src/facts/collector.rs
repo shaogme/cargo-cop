@@ -12,6 +12,7 @@ use crate::{CfgDecision, ModuleNode};
 pub enum ReferenceKind {
     Path,
     Call,
+    MethodCall,
     Macro,
     Use,
 }
@@ -175,6 +176,7 @@ impl SyntaxFactCollector {
 
 fn has_typed_ancestor(module: &ModuleNode, node: &SyntaxNode) -> bool {
     let output = module.parse_output();
+    let node_bounds = node.start()..node.end();
     let mut current = node.parent();
     while let Some(id) = current {
         let Some(ancestor) = output.node(id) else {
@@ -186,11 +188,26 @@ fn has_typed_ancestor(module: &ModuleNode, node: &SyntaxNode) -> bool {
             || ancestor.generic_parameter_syntax().is_some()
             || ancestor.where_predicate_syntax().is_some();
         if has_typed_data && ancestor.start() <= node.start() && node.end() <= ancestor.end() {
-            return true;
+            return !ancestor
+                .expression_syntax()
+                .is_some_and(|expression| expression_body_omits_paths(expression, &node_bounds));
         }
         current = ancestor.parent();
     }
     false
+}
+
+fn expression_body_omits_paths(expression: &ExpressionSyntax, node_bounds: &Range<usize>) -> bool {
+    let body = match expression.kind() {
+        ExpressionSyntaxKind::Block { body, .. }
+        | ExpressionSyntaxKind::LabelBlock { body, .. }
+        | ExpressionSyntaxKind::Loop { body, .. }
+        | ExpressionSyntaxKind::While { body, .. }
+        | ExpressionSyntaxKind::For { body, .. } => Some(body),
+        ExpressionSyntaxKind::If { then_block, .. } => Some(then_block),
+        _ => None,
+    };
+    body.is_some_and(|body| body.start <= node_bounds.start && node_bounds.end <= body.end)
 }
 
 fn node_is_in_module_scope(module: &ModuleNode, node: &SyntaxNode) -> bool {
@@ -275,10 +292,19 @@ fn collect_expression_paths(expression: &ExpressionSyntax, references: &mut Vec<
         }
         ExpressionSyntaxKind::MethodCall {
             receiver,
+            method,
             generic_arguments,
             arguments,
-            ..
         } => {
+            references.push(RawReference {
+                kind: ReferenceKind::MethodCall,
+                segments: vec![method.clone()],
+                bounds: expression.bounds(),
+                condition: None,
+                supported: true,
+                alias: None,
+                glob: false,
+            });
             collect_expression_paths(receiver, references);
             for argument in generic_arguments {
                 collect_generic_argument_paths(argument, references);
