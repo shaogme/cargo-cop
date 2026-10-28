@@ -29,7 +29,7 @@ pub(crate) use kind::{
     NamedDeclaration, Parameter, TraitItem,
 };
 pub use kind::{ImplSyntaxData, MacroDefinition, MacroInvocation};
-pub use macro_input::{MacroInput, MacroInputStatus, MacroTokenTree};
+pub use macro_input::{CfgCandidate, MacroInput, MacroInputStatus, MacroTokenTree};
 pub(crate) use syntax::GenericParameterParts;
 pub use syntax::{
     ClosureParameterSyntax, ExpressionBlockKind, ExpressionErrorKind, ExpressionFieldSyntax,

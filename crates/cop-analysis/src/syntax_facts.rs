@@ -444,7 +444,7 @@ impl SyntaxFactsCollector {
                             condition: module
                                 .configured_ast()
                                 .node(child.id())
-                                .and_then(|configured| configured.effective_condition())
+                                .and_then(|configured| configured.availability_condition())
                                 .map(str::to_owned),
                             use_tree,
                             supported: use_tree
@@ -474,7 +474,7 @@ impl SyntaxFactsCollector {
                 .configured_ast()
                 .node_for_range(bounds.start, bounds.end)
                 .map_or(true, |configured| {
-                    configured.decision() != CfgDecision::False
+                    configured.availability_decision() != CfgDecision::False
                 });
             let supported =
                 module
@@ -551,7 +551,7 @@ impl SyntaxFactsCollector {
         let Some(configured) = module.configured_ast().node(tree.id()) else {
             return;
         };
-        if configured.decision() == CfgDecision::False {
+        if configured.availability_decision() == CfgDecision::False {
             return;
         }
         let Some(attribute) = tree
@@ -752,7 +752,7 @@ fn node_is_enabled(module: &ModuleNode, node: &SyntaxNode) -> bool {
     module
         .configured_ast()
         .node(node.id())
-        .is_some_and(|configured| configured.decision() != CfgDecision::False)
+        .is_some_and(|configured| configured.availability_decision() != CfgDecision::False)
 }
 
 fn condition_for_node(module: &ModuleNode, node: &SyntaxNode) -> Option<String> {

@@ -284,9 +284,10 @@ impl ItemSyntaxParser {
 
     pub(super) fn parse_macro_definition(
         context: ParserContext<'_, '_>,
+        parent: AstNodeId,
     ) -> Option<MacroDefinition> {
         let (definition, next_index) =
-            SyntaxCollector::macro_definition(context.tokens, *context.cursor)?;
+            SyntaxCollector::macro_definition(context.tokens, *context.cursor, Some(parent))?;
         *context.cursor = next_index;
         Some(definition)
     }

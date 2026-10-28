@@ -1,25 +1,25 @@
+mod target_config;
+
 use std::{
     collections::{BTreeMap, BTreeSet},
-    env, fs,
+    env,
     path::{Path, PathBuf},
-    process::Command,
 };
 
-use cop_cfg::{CfgContext, CfgDecision, CfgEvaluator, CfgExpression, CfgValue};
+use cop_cfg::{CfgValue, ScopedCfgValue};
 use cop_model::{
-    LocalizedMessage, ToolErrorKind, CARGO_CONFIG_TARGET_TYPE, CARGO_ERROR,
-    CARGO_FEATURE_CONTEXT_MISSING, CARGO_FEATURE_NOT_DECLARED, CARGO_FEATURE_NOT_FOUND,
-    CARGO_FEATURE_PACKAGE_NOT_SELECTED, CARGO_HOST_TRIPLE_MISSING, CARGO_NO_SCAN_PACKAGES,
-    CARGO_OPERATION_ERROR, CARGO_PACKAGE_AMBIGUOUS, CARGO_PACKAGE_DUPLICATE,
-    CARGO_PACKAGE_NOT_FOUND, CARGO_TARGET_CFG_INVALID, CARGO_TARGET_CFG_MISSING,
-    CARGO_TARGET_CFG_QUERY_ERROR, CARGO_WORKSPACE_CONFLICT, IO_ERROR,
+    LocalizedMessage, ToolErrorKind, CARGO_FEATURE_CONTEXT_MISSING, CARGO_FEATURE_NOT_DECLARED,
+    CARGO_FEATURE_NOT_FOUND, CARGO_FEATURE_PACKAGE_NOT_SELECTED, CARGO_NO_SCAN_PACKAGES,
+    CARGO_PACKAGE_AMBIGUOUS, CARGO_PACKAGE_DUPLICATE, CARGO_PACKAGE_NOT_FOUND,
+    CARGO_TARGET_CFG_MISSING, CARGO_WORKSPACE_CONFLICT, IO_ERROR,
 };
-use toml::{from_str, Value};
 
 use crate::{
     feature_resolver::FeatureResolver, CargoDiscovery, CargoError, CargoPackage, CargoTarget,
     DependencyIndex, DependencyKind, FeatureSelection, ResolvedFeatures,
 };
+
+use target_config::TargetConfiguration;
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct CargoSelection {
@@ -29,6 +29,7 @@ pub struct CargoSelection {
     target: Option<String>,
     features: Option<FeatureSelection>,
     current_directory: Option<PathBuf>,
+    cfg_overrides: Vec<ScopedCfgValue>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -75,12 +76,30 @@ struct FeatureContextKey {
     build_script: bool,
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct FeatureContextRoots {
+    root_packages: BTreeSet<usize>,
+    target_names: BTreeMap<usize, BTreeSet<String>>,
+}
+
 struct FeatureContext<'a> {
     target_triple: &'a str,
     cfg_values: &'a [CfgValue],
+    cfg_overrides: &'a [ScopedCfgValue],
     cfg_test: bool,
     build_script: bool,
     root_packages: &'a BTreeSet<usize>,
+    target_names: &'a BTreeMap<usize, BTreeSet<String>>,
+}
+
+struct TargetContextOptions<'a> {
+    package_name: &'a str,
+    target: &'a CargoTarget,
+    target_triple: &'a str,
+    features: &'a ResolvedFeatures,
+    cfg_values: &'a [CfgValue],
+    cfg_test: bool,
+    cfg_overrides: &'a [ScopedCfgValue],
 }
 
 pub struct TargetSelector;
@@ -115,6 +134,11 @@ impl CargoSelection {
 
     pub fn with_current_directory(mut self, current_directory: PathBuf) -> Self {
         self.current_directory = Some(current_directory);
+        self
+    }
+
+    pub fn with_cfg_overrides(mut self, cfg_overrides: Vec<ScopedCfgValue>) -> Self {
+        self.cfg_overrides = cfg_overrides;
         self
     }
 }
@@ -219,7 +243,8 @@ impl TargetSelector {
                 )
             })?,
         };
-        let target_triple = resolve_target(selection.target.as_deref(), &current_directory)?;
+        let target_triple =
+            TargetConfiguration::resolve_target(selection.target.as_deref(), &current_directory)?;
         let selected_targets = selected_packages
             .iter()
             .enumerate()
@@ -235,12 +260,12 @@ impl TargetSelector {
             .iter()
             .any(|(_, target)| target_uses_host(target))
         {
-            Some(rustc_host_triple()?)
+            Some(TargetConfiguration::host_triple()?)
         } else {
             None
         };
         let mut cfg_by_target = BTreeMap::<String, Vec<CfgValue>>::new();
-        let mut context_roots = BTreeMap::<FeatureContextKey, BTreeSet<usize>>::new();
+        let mut context_roots = BTreeMap::<FeatureContextKey, FeatureContextRoots>::new();
         for (package_index, target) in &selected_targets {
             let effective_triple = if target_uses_host(target) {
                 host_triple.as_deref().unwrap_or(&target_triple)
@@ -248,7 +273,7 @@ impl TargetSelector {
                 &target_triple
             };
             if !cfg_by_target.contains_key(effective_triple) {
-                let cfg_values = query_cfg(effective_triple)?;
+                let cfg_values = TargetConfiguration::query_cfg(effective_triple)?;
                 cfg_by_target.insert(effective_triple.to_owned(), cfg_values);
             }
             for cfg_test in target_test_modes(target, selection.all_targets) {
@@ -257,11 +282,17 @@ impl TargetSelector {
                     cfg_test,
                     build_script: target.kind().iter().any(|kind| kind == "custom-build"),
                 };
-                context_roots.entry(key).or_default().insert(*package_index);
+                let roots = context_roots.entry(key).or_default();
+                roots.root_packages.insert(*package_index);
+                roots
+                    .target_names
+                    .entry(*package_index)
+                    .or_default()
+                    .insert(target.name().to_owned());
             }
         }
         let mut feature_contexts = BTreeMap::new();
-        for (key, root_packages) in context_roots {
+        for (key, roots) in context_roots {
             let cfg_values = cfg_by_target.get(&key.target_triple).ok_or_else(|| {
                 CargoError::new(
                     ToolErrorKind::CargoMetadata,
@@ -272,9 +303,11 @@ impl TargetSelector {
             let context = FeatureContext {
                 target_triple: &key.target_triple,
                 cfg_values,
+                cfg_overrides: &selection.cfg_overrides,
                 cfg_test: key.cfg_test,
                 build_script: key.build_script,
-                root_packages: &root_packages,
+                root_packages: &roots.root_packages,
+                target_names: &roots.target_names,
             };
             let resolved_features =
                 resolve_workspace_features(&selected_packages, &feature_selection, context)?;
@@ -318,13 +351,15 @@ impl TargetSelector {
                             )
                         })?;
                     if target_required_features_are_enabled(target, features) {
-                        targets.push(make_target_context(
+                        targets.push(make_target_context(TargetContextOptions {
+                            package_name: package.name(),
                             target,
-                            effective_triple,
+                            target_triple: effective_triple,
                             features,
                             cfg_values,
                             cfg_test,
-                        ));
+                            cfg_overrides: &selection.cfg_overrides,
+                        }));
                     }
                 }
             }
@@ -437,12 +472,31 @@ fn resolve_workspace_features(
                     continue;
                 }
                 if let Some(condition) = dependency.target_condition() {
-                    if !target_condition_matches(
-                        condition,
-                        context.target_triple,
-                        context.cfg_values,
-                        states[parent_index].resolved.enabled(),
-                    )? {
+                    let names = context
+                        .target_names
+                        .get(&parent_index)
+                        .cloned()
+                        .unwrap_or_else(|| BTreeSet::from([String::new()]));
+                    let mut condition_matches = false;
+                    for target_name in names {
+                        let cfg_values = TargetConfiguration::cfg_values_for_package(
+                            context.cfg_values,
+                            context.cfg_overrides,
+                            package.name(),
+                            &target_name,
+                            context.target_triple,
+                        );
+                        if TargetConfiguration::target_condition_matches(
+                            condition,
+                            context.target_triple,
+                            &cfg_values,
+                            states[parent_index].resolved.enabled(),
+                        )? {
+                            condition_matches = true;
+                            break;
+                        }
+                    }
+                    if !condition_matches {
                         continue;
                     }
                 }
@@ -623,221 +677,23 @@ fn target_test_modes(target: &CargoTarget, all_targets: bool) -> Vec<bool> {
     }
 }
 
-fn make_target_context(
-    target: &CargoTarget,
-    target_triple: &str,
-    features: &ResolvedFeatures,
-    cfg_values: &[CfgValue],
-    cfg_test: bool,
-) -> TargetContext {
+fn make_target_context(options: TargetContextOptions<'_>) -> TargetContext {
+    let cfg_values = TargetConfiguration::cfg_values_for_package(
+        options.cfg_values,
+        options.cfg_overrides,
+        options.package_name,
+        options.target.name(),
+        options.target_triple,
+    );
     TargetContext {
-        name: target.name().to_owned(),
-        kind: target.kind().to_vec(),
-        crate_types: target.crate_types().to_vec(),
-        edition: target.edition().to_owned(),
-        crate_root: target.crate_root().to_path_buf(),
-        target_triple: target_triple.to_owned(),
-        features: features.clone(),
-        cfg_values: cfg_values.to_vec(),
-        cfg_test,
-    }
-}
-
-fn target_condition_matches(
-    condition: &str,
-    target_triple: &str,
-    values: &[CfgValue],
-    features: &BTreeSet<String>,
-) -> Result<bool, CargoError> {
-    let condition = condition.trim();
-    if !condition.starts_with("cfg(") {
-        return Ok(condition == target_triple);
-    }
-    let expression = CfgExpression::parse(condition).map_err(|_| {
-        CargoError::new(
-            ToolErrorKind::CargoMetadata,
-            LocalizedMessage::new(CARGO_TARGET_CFG_INVALID).with_text("condition", condition),
-        )
-    })?;
-    let context = CfgContext::new(values, Some(features));
-    let decision = CfgEvaluator::new(&context).evaluate(&expression);
-    Ok(decision == CfgDecision::True)
-}
-
-fn resolve_target(
-    configured_target: Option<&str>,
-    current_directory: &Path,
-) -> Result<String, CargoError> {
-    if let Some(configured_target) = configured_target {
-        return if configured_target == "host" {
-            rustc_host_triple()
-        } else {
-            Ok(configured_target.to_owned())
-        };
-    }
-    if let Ok(target) = env::var("CARGO_BUILD_TARGET") {
-        return Ok(target);
-    }
-    if let Some(target) = cargo_config_target(current_directory)? {
-        return Ok(target);
-    }
-    rustc_host_triple()
-}
-
-fn cargo_config_target(current_directory: &Path) -> Result<Option<String>, CargoError> {
-    let cargo_home = env::var_os("CARGO_HOME")
-        .map(PathBuf::from)
-        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".cargo")));
-    let mut target = match cargo_home {
-        Some(cargo_home) => read_target_setting(&cargo_home, false)?,
-        None => None,
-    };
-    let mut directories = current_directory
-        .ancestors()
-        .map(Path::to_path_buf)
-        .collect::<Vec<_>>();
-    directories.reverse();
-    for directory in directories {
-        if let Some(configured) = read_target_setting(&directory, true)? {
-            target = Some(configured);
-        }
-    }
-    Ok(target)
-}
-
-fn read_target_setting(
-    directory: &Path,
-    nested_cargo_directory: bool,
-) -> Result<Option<String>, CargoError> {
-    let config_directory = if nested_cargo_directory {
-        directory.join(".cargo")
-    } else {
-        directory.to_path_buf()
-    };
-    let toml_path = config_directory.join("config.toml");
-    let legacy_path = config_directory.join("config");
-    let path = if toml_path.is_file() {
-        toml_path
-    } else if legacy_path.is_file() {
-        legacy_path
-    } else {
-        return Ok(None);
-    };
-    let contents = fs::read_to_string(&path).map_err(|error| {
-        CargoError::new(
-            ToolErrorKind::Io,
-            LocalizedMessage::new(CARGO_OPERATION_ERROR)
-                .with_text("path", path.display().to_string())
-                .with_opaque("detail", error.to_string()),
-        )
-    })?;
-    let value = from_str::<Value>(&contents).map_err(|error| {
-        CargoError::new(
-            ToolErrorKind::CargoMetadata,
-            LocalizedMessage::new(CARGO_OPERATION_ERROR)
-                .with_text("path", path.display().to_string())
-                .with_opaque("detail", error.to_string()),
-        )
-    })?;
-    let configured = value
-        .get("build")
-        .and_then(Value::as_table)
-        .and_then(|build| build.get("target"));
-    configured
-        .map(|configured| {
-            configured
-                .as_str()
-                .map(|target| target.to_owned())
-                .ok_or_else(|| {
-                    CargoError::new(
-                        ToolErrorKind::CargoMetadata,
-                        LocalizedMessage::new(CARGO_CONFIG_TARGET_TYPE)
-                            .with_text("path", path.display().to_string()),
-                    )
-                })
-        })
-        .transpose()
-}
-
-fn rustc_host_triple() -> Result<String, CargoError> {
-    let output = rustc_command().arg("-vV").output().map_err(|error| {
-        CargoError::new(
-            ToolErrorKind::CargoMetadata,
-            LocalizedMessage::new(CARGO_ERROR).with_opaque("detail", error.to_string()),
-        )
-    })?;
-    if !output.status.success() {
-        return Err(CargoError::new(
-            ToolErrorKind::CargoMetadata,
-            LocalizedMessage::new(CARGO_ERROR).with_opaque(
-                "detail",
-                String::from_utf8_lossy(&output.stderr).trim().to_owned(),
-            ),
-        ));
-    }
-    let version = String::from_utf8_lossy(&output.stdout);
-    version
-        .lines()
-        .find_map(|line| {
-            line.strip_prefix("host: ")
-                .map(|host_triple| host_triple.to_owned())
-        })
-        .ok_or_else(|| {
-            CargoError::new(
-                ToolErrorKind::CargoMetadata,
-                LocalizedMessage::new(CARGO_HOST_TRIPLE_MISSING),
-            )
-        })
-}
-
-fn query_cfg(target: &str) -> Result<Vec<CfgValue>, CargoError> {
-    let output = rustc_command()
-        .arg("--print")
-        .arg("cfg")
-        .arg("--target")
-        .arg(target)
-        .output()
-        .map_err(|error| {
-            CargoError::new(
-                ToolErrorKind::CargoMetadata,
-                LocalizedMessage::new(CARGO_TARGET_CFG_QUERY_ERROR)
-                    .with_text("target", target)
-                    .with_opaque("detail", error.to_string()),
-            )
-        })?;
-    if !output.status.success() {
-        return Err(CargoError::new(
-            ToolErrorKind::CargoMetadata,
-            LocalizedMessage::new(CARGO_TARGET_CFG_QUERY_ERROR)
-                .with_text("target", target)
-                .with_opaque("detail", String::from_utf8_lossy(&output.stderr).trim()),
-        ));
-    }
-    let mut cfg_values = String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .filter_map(parse_cfg_value)
-        .collect::<Vec<_>>();
-    cfg_values.sort();
-    Ok(cfg_values)
-}
-
-fn parse_cfg_value(line: &str) -> Option<CfgValue> {
-    if let Some((name, value)) = line.split_once('=') {
-        let value = value
-            .strip_prefix('"')
-            .and_then(|value| value.strip_suffix('"'))
-            .unwrap_or(value);
-        Some(CfgValue::new(name, Some(value.to_owned())))
-    } else if !line.is_empty() {
-        Some(CfgValue::new(line, None))
-    } else {
-        None
-    }
-}
-
-fn rustc_command() -> Command {
-    match env::var_os("RUSTC") {
-        Some(rustc) => Command::new(rustc),
-        None => Command::new("rustc"),
+        name: options.target.name().to_owned(),
+        kind: options.target.kind().to_vec(),
+        crate_types: options.target.crate_types().to_vec(),
+        edition: options.target.edition().to_owned(),
+        crate_root: options.target.crate_root().to_path_buf(),
+        target_triple: options.target_triple.to_owned(),
+        features: options.features.clone(),
+        cfg_values,
+        cfg_test: options.cfg_test,
     }
 }

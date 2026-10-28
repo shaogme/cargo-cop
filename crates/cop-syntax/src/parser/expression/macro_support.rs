@@ -1,12 +1,12 @@
 use std::ops::Range;
 
-use cop_cfg::CfgCondition;
+use cop_cfg::CfgExpression;
 use cop_model::{LocalizedMessage, SYNTAX_MACRO_OPAQUE};
 
 use crate::{
     ast::{
-        AstFactory, AstNodeId, CoverageStatus, MacroInputStatus, MacroInvocation, ParseIssue,
-        ParseIssueKind, PathSyntax, SyntaxNode, SyntaxNodeData, SyntaxNodeKind,
+        AstFactory, AstNodeId, CfgCandidate, CoverageStatus, MacroInputStatus, MacroInvocation,
+        ParseIssue, ParseIssueKind, PathSyntax, SyntaxNode, SyntaxNodeData, SyntaxNodeKind,
     },
     parser::{patterns::PatternParser, types::TypeParser},
     recovery::Recovery,
@@ -39,6 +39,25 @@ impl MacroInputSupport {
         ast_nodes: &mut Vec<SyntaxNode>,
         issues: &mut Vec<ParseIssue>,
     ) -> bool {
+        if let Some(candidate) = Self::cfg_candidate(
+            invocation.path(),
+            &invocation.input().bounds(),
+            request.tokens,
+            request.source,
+        ) {
+            let updated = invocation
+                .with_input_status(request.tokens, MacroInputStatus::CfgCandidate(candidate));
+            AstFactory::set_macro_invocation(ast_nodes, request.parent, updated);
+            AstFactory::set_ast_node_coverage(ast_nodes, request.parent, CoverageStatus::Complete);
+            AstFactory::push_ast_node(
+                ast_nodes,
+                Some(request.parent),
+                SyntaxNodeKind::MacroInput,
+                invocation.input().bounds(),
+                Vec::new(),
+            );
+            return true;
+        }
         let mut context = EmitContext {
             source: request.source,
             tokens: request.tokens,
@@ -50,13 +69,12 @@ impl MacroInputSupport {
             invocation.path(),
             &invocation.input().bounds(),
             context.tokens,
-            context.source,
         )
         .filter(|fragments| Self::validate_fragments(fragments, &context));
         let Some(fragments) = profile else {
             return false;
         };
-        let updated = invocation.with_input_status(context.tokens, MacroInputStatus::Parsed);
+        let updated = invocation.with_input_status(context.tokens, MacroInputStatus::KnownProfile);
         AstFactory::set_macro_invocation(context.ast_nodes, request.parent, updated);
         AstFactory::set_ast_node_coverage(
             context.ast_nodes,
@@ -81,7 +99,36 @@ impl MacroInputSupport {
         parent: AstNodeId,
         context: &mut EmitContext<'_>,
     ) {
-        let profile = Self::profile(path, input, context.tokens, context.source)
+        if let Some(candidate) = Self::cfg_candidate(path, input, context.tokens, context.source) {
+            let invocation = AstFactory::macro_invocation(
+                path.clone(),
+                bounds.clone(),
+                context.tokens,
+                input.clone(),
+                MacroInputStatus::CfgCandidate(candidate),
+            );
+            let macro_id = AstFactory::push_data_node(
+                context.ast_nodes,
+                parent,
+                SyntaxNodeKind::Macro,
+                bounds,
+                SyntaxNodeData::Macro(invocation),
+            );
+            AstFactory::set_ast_node_coverage(
+                context.ast_nodes,
+                macro_id,
+                CoverageStatus::Complete,
+            );
+            AstFactory::push_ast_node(
+                context.ast_nodes,
+                Some(macro_id),
+                SyntaxNodeKind::MacroInput,
+                input.clone(),
+                Vec::new(),
+            );
+            return;
+        }
+        let profile = Self::profile(path, input, context.tokens)
             .filter(|fragments| Self::validate_fragments(fragments, context));
         let Some(fragments) = profile else {
             Self::emit_opaque(path, bounds, input, parent, context);
@@ -92,7 +139,7 @@ impl MacroInputSupport {
             bounds.clone(),
             context.tokens,
             input.clone(),
-            MacroInputStatus::Parsed,
+            MacroInputStatus::KnownProfile,
         );
         let macro_id = AstFactory::push_data_node(
             context.ast_nodes,
@@ -131,7 +178,7 @@ impl MacroInputSupport {
             bounds.clone(),
             context.tokens,
             input.clone(),
-            MacroInputStatus::Partial,
+            MacroInputStatus::Opaque,
         );
         let macro_id = AstFactory::push_data_node(
             context.ast_nodes,
@@ -172,12 +219,10 @@ impl MacroInputSupport {
         path: &PathSyntax,
         input: &Range<usize>,
         tokens: &[Token],
-        source: &SourceFile,
     ) -> Option<Vec<MacroFragment>> {
         let name = path.segments().last()?.name();
         let range = Self::input_token_range(tokens, input)?;
         match name {
-            "cfg" => Self::cfg_profile(tokens, range, source),
             "assert" => Self::assert_profile(tokens, range, 1),
             "assert_eq" | "assert_ne" => Self::assert_profile(tokens, range, 2),
             "matches" => Self::matches_profile(tokens, range),
@@ -194,27 +239,84 @@ impl MacroInputSupport {
         }
     }
 
-    fn cfg_profile(
+    fn cfg_candidate(
+        path: &PathSyntax,
+        input: &Range<usize>,
         tokens: &[Token],
-        range: Range<usize>,
         source: &SourceFile,
-    ) -> Option<Vec<MacroFragment>> {
-        let expression = Self::cfg_expression_text(tokens, range, source)?;
-        CfgCondition::parse(expression).ok()?;
-        Some(Vec::new())
-    }
-
-    fn cfg_expression_text<'a>(
-        tokens: &[Token],
-        range: Range<usize>,
-        source: &'a SourceFile,
-    ) -> Option<&'a str> {
-        if range.is_empty() {
+    ) -> Option<CfgCandidate> {
+        if !path
+            .segments()
+            .last()
+            .is_some_and(|segment| segment.name() == "cfg")
+        {
             return None;
         }
-        let start = tokens.get(range.start)?.start();
-        let end = tokens.get(range.end.checked_sub(1)?)?.end();
-        source.slice(start, end)
+        let (input_start, input_end) =
+            Self::input_bounds(tokens, input).unwrap_or((input.start, input.end));
+        let Some(token_range) = Self::full_input_token_range(tokens, input) else {
+            return Some(CfgCandidate::new(
+                None,
+                input_start..input_end,
+                Some(input_start),
+            ));
+        };
+        let Some(open) = tokens.get(token_range.start) else {
+            return Some(CfgCandidate::new(
+                None,
+                input_start..input_end,
+                Some(input_start),
+            ));
+        };
+        let Some(close) = token_range
+            .end
+            .checked_sub(1)
+            .and_then(|index| tokens.get(index))
+        else {
+            return Some(CfgCandidate::new(
+                None,
+                input_start..input_end,
+                Some(input_start),
+            ));
+        };
+        let predicate_start = open.end();
+        let predicate_end = close.start();
+        let predicate_source = source.slice(predicate_start, predicate_end)?;
+        match CfgExpression::parse_at(predicate_source, predicate_start) {
+            Ok(predicate) => {
+                let predicate_bounds = predicate.source_range();
+                Some(CfgCandidate::new(Some(predicate), predicate_bounds, None))
+            }
+            Err(error) => {
+                let start = error.offset().min(predicate_end);
+                let end = start.saturating_add(1).min(predicate_end);
+                Some(CfgCandidate::new(None, start..end, Some(error.offset())))
+            }
+        }
+    }
+
+    fn full_input_token_range(tokens: &[Token], input: &Range<usize>) -> Option<Range<usize>> {
+        let start = tokens
+            .iter()
+            .position(|token| token.start() == input.start)?;
+        let end = tokens
+            .iter()
+            .enumerate()
+            .skip(start)
+            .find(|(_, token)| token.end() == input.end)
+            .map(|(index, _)| index + 1)?;
+        (start < end).then_some(start..end)
+    }
+
+    fn input_bounds(tokens: &[Token], input: &Range<usize>) -> Option<(usize, usize)> {
+        let range = Self::full_input_token_range(tokens, input)?;
+        let start = tokens.get(range.start)?.end();
+        let end = range
+            .end
+            .checked_sub(1)
+            .and_then(|index| tokens.get(index))?
+            .start();
+        Some((start, end))
     }
 
     fn static_loader_profile(tokens: &[Token], range: Range<usize>) -> Option<Vec<MacroFragment>> {

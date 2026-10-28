@@ -209,7 +209,7 @@ impl LocalBindings {
         let Some(configured) = module.configured_ast().node(node.id()) else {
             return;
         };
-        if configured.decision() == CfgDecision::False {
+        if configured.availability_decision() == CfgDecision::False {
             return;
         }
         self.bindings.push(LocalBinding {
@@ -219,7 +219,7 @@ impl LocalBindings {
             target_path,
             scope: scope.clone(),
             visible_from,
-            condition: configured.effective_condition().map(str::to_owned),
+            condition: configured.availability_condition().map(str::to_owned),
         });
     }
 }
@@ -463,7 +463,7 @@ fn node_is_potentially_enabled(module: &ModuleNode, node: &SyntaxNode) -> bool {
     module
         .configured_ast()
         .node(node.id())
-        .is_some_and(|configured| configured.decision() != CfgDecision::False)
+        .is_some_and(|configured| configured.availability_decision() != CfgDecision::False)
 }
 
 fn local_item_binding(item: &SyntaxNode) -> Option<(String, Option<Vec<String>>)> {

@@ -24,6 +24,8 @@ The project provides 20 configurable rules, human-readable and JSON reports, and
 
 At runtime the tool queries Cargo metadata and Rust target `cfg` information. It does not build the inspected package or its dependencies.
 
+`#[cfg(...)]` controls source availability. `cfg!(...)` is a boolean expression: its value is recorded without removing code, so both branches of `if cfg!(...)` remain in normal analysis. The tool evaluates only `cfg!` calls it can confirm as the built-in macro. It does not execute build scripts, so custom cfg values injected by a build script must be supplied with repeated `--cfg name` or `--cfg 'name="value"'` options, or with `[[cfg]]` entries in the config file. An unprovided custom value remains Unknown.
+
 ## Install
 
 ```sh
@@ -54,7 +56,7 @@ steps:
   - uses: actions/checkout@main
   - uses: shaogme/cargo-cop@main
     with:
-      version: 0.1.17
+      version: 0.2.0
   - run: cargo cop --workspace
 ```
 
@@ -65,7 +67,7 @@ steps:
   - uses: actions/checkout@main
   - uses: shaogme/cargo-cop@main
     with:
-      version: 0.1.17
+      version: 0.2.0
       from-source: true
   - run: cargo cop --workspace
 ```
@@ -118,6 +120,7 @@ By default the tool scans `lib`, `bin`, and `proc-macro` targets. `--all-targets
 | `-p, --package <NAME>` | Select a workspace package; repeat to select multiple packages. |
 | `--target <TRIPLE>` | Target triple for target-dependent analysis. `host` selects the host triple. |
 | `--features <LIST>` | Enable comma-separated package features; the option may be repeated. `PACKAGE/FEATURE` may qualify a feature. |
+| `--cfg <CFG>` | Provide a custom cfg flag (for example `custom_mode`) or key/value (for example `custom_mode="fast"`); repeat the option as needed. |
 | `--all-features` | Enable all features for selected root packages. |
 | `--no-default-features` | Disable default features for selected root packages. |
 | `--all-targets` | Include every Cargo target declared by selected packages. |
@@ -148,7 +151,7 @@ All rules are enabled by default and use `error` severity unless configured othe
 | `child_module_line_count` | Each out-of-line child-module file must contain 70–800 effective code lines. Blank lines, comments, and `#[cfg(test)]` code are excluded. |
 | `impl_locality` | Keep inherent impls with the repository type's definition; restrict external trait impl targets to the permitted built-in and standard-library roots. |
 | `private_fields_for_behavior_types` | Fields of a struct, enum, or union with an impl block must be private. |
-| `unnecessary_pub_crate` | A `pub(crate)` item or associated item needs crate visibility only when a reference outside its private module scope or a retained crate-visible API signature requires it. Unresolved syntax and macro invocations are handled conservatively. |
+| `unnecessary_pub_crate` | A `pub(crate)` item or associated item is retained when an outside reference or a retained crate-visible API's visible type interface requires it. Dependencies propagate through signatures, constraints, aliases, visible fields, enum payloads, and supported foreign items; function bodies and private fields do not count. Unresolved syntax and macro invocations are handled conservatively. |
 | `child_public_free_functions` | Free functions in child modules must be private. |
 | `declaration_before_use` | A named declaration must precede references to it within the applicable source scope. |
 | `parameter_limit` | Functions, methods, and closures may have at most five parameters. |

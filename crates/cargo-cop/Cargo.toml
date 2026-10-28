@@ -17,6 +17,7 @@ clap.workspace = true
 cop-config.workspace = true
 cop-cargo.workspace = true
 cop-analysis.workspace = true
+cop-cfg.workspace = true
 cop-rules.workspace = true
 cop-report.workspace = true
 cop-i18n.workspace = true

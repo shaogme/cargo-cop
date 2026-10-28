@@ -1,7 +1,7 @@
 use std::ops::Range;
 
 use crate::{
-    ast::{Attribute, MacroInput, MacroInputStatus, PathSyntax, TypeSyntax},
+    ast::{AstNodeId, Attribute, MacroInput, MacroInputStatus, PathSyntax, TypeSyntax},
     Token,
 };
 
@@ -30,6 +30,8 @@ pub struct MacroInvocation {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MacroDefinition {
+    name: String,
+    scope: Option<AstNodeId>,
     start: usize,
     end: usize,
 }
@@ -258,11 +260,21 @@ impl MacroInvocation {
 }
 
 impl MacroDefinition {
-    pub(crate) fn new(bounds: Range<usize>) -> Self {
+    pub(crate) fn new(name: String, scope: Option<AstNodeId>, bounds: Range<usize>) -> Self {
         Self {
+            name,
+            scope,
             start: bounds.start,
             end: bounds.end,
         }
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn scope(&self) -> Option<AstNodeId> {
+        self.scope
     }
 
     pub fn start(&self) -> usize {

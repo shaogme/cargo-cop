@@ -49,14 +49,18 @@ struct ExpressionParser<'a> {
 
 impl CfgExpression {
     pub fn parse(source: &str) -> Result<Self, CfgParseError> {
+        Self::parse_at(source, 0)
+    }
+
+    pub fn parse_at(source: &str, absolute_offset: usize) -> Result<Self, CfgParseError> {
         let leading = source.len() - source.trim_start().len();
         let trimmed = source.trim();
         let (expression, base_offset) = match trimmed
             .strip_prefix("cfg(")
             .and_then(|value| value.strip_suffix(')'))
         {
-            Some(expression) => (expression, leading + 4),
-            None => (trimmed, leading),
+            Some(expression) => (expression, absolute_offset + leading + 4),
+            None => (trimmed, absolute_offset + leading),
         };
         let mut parser = ExpressionParser {
             source: expression,
@@ -234,7 +238,16 @@ impl ExpressionParser<'_> {
                     expression: Box::new(expressions.into_iter().next().ok_or(self.error())?),
                     range,
                 }),
-                _ => Err(self.error()),
+                ("not", _) => Err(CfgParseError {
+                    offset: expressions
+                        .get(1)
+                        .map_or(self.base_offset + start + name.len() + 1, |expression| {
+                            expression.source_range().start
+                        }),
+                }),
+                _ => Err(CfgParseError {
+                    offset: self.base_offset + start,
+                }),
             };
         }
         if self.consume(b'=') {
@@ -276,11 +289,20 @@ impl ExpressionParser<'_> {
 
     fn parse_identifier(&mut self) -> Result<String, CfgParseError> {
         let start = self.cursor;
+        if !self
+            .source
+            .as_bytes()
+            .get(self.cursor)
+            .is_some_and(|byte| byte.is_ascii_alphabetic() || *byte == b'_')
+        {
+            return Err(self.error());
+        }
+        self.cursor += 1;
         while self
             .source
             .as_bytes()
             .get(self.cursor)
-            .is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_' || *byte == b'-')
+            .is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
         {
             self.cursor += 1;
         }
@@ -530,6 +552,21 @@ mod tests {
         assert!(CfgExpression::parse("not()").is_err());
         assert!(CfgExpression::parse("unix extra").is_err());
         assert!(CfgExpression::parse("all(unix").is_err());
+    }
+
+    #[test]
+    fn parses_with_absolute_byte_offsets() {
+        let prefix = "// café\nlet value = ";
+        let predicate = "all(unix, target_os = \"linux\")";
+        let parsed = CfgExpression::parse_at(predicate, prefix.len()).expect("绝对范围解析");
+
+        assert_eq!(
+            parsed.source_range(),
+            prefix.len()..prefix.len() + predicate.len()
+        );
+        let error = CfgExpression::parse_at("not(unix, windows)", prefix.len())
+            .expect_err("not 只接受一个参数");
+        assert!(error.offset() >= prefix.len());
     }
 
     #[test]

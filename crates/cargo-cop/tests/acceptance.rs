@@ -13,6 +13,7 @@ use cop_analysis::{
 use cop_cargo::{
     CargoDiscoveryRequest, CargoProjectLoader, CargoSelection, FeatureSelection, TargetSelector,
 };
+use cop_config::{ConfigLoader, ConfigRequest};
 
 static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
 
@@ -136,6 +137,248 @@ fn write_package(root: &Path, name: &str, source: &str) {
 }
 
 #[test]
+fn cfg_macro_values_are_target_scoped_and_do_not_change_availability() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "Cargo.toml",
+        "[package]\nname = \"sample\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[[test]]\nname = \"integration\"\npath = \"tests/integration.rs\"\n",
+    );
+    fixture.write(
+        "src/lib.rs",
+        "pub fn check() { let _ = cfg!(flavor = \"fast\"); let _ = cfg!(any()); let _ = cfg!(test); }\n",
+    );
+    fixture.write(
+        "tests/integration.rs",
+        "#[test]\nfn check() { let _ = cfg!(flavor = \"fast\"); let _ = cfg!(test); }\n",
+    );
+    fixture.write(
+        "cargo-cop.toml",
+        "version = 3\n\n[[cfg]]\npackage = \"sample\"\ntarget = \"sample\"\nname = \"flavor\"\nvalue = \"fast\"\n\n[[cfg]]\npackage = \"sample\"\ntarget = \"integration\"\nname = \"flavor\"\nvalue = \"slow\"\n",
+    );
+    let config = ConfigLoader::load(ConfigRequest::new(
+        Some(fixture.root.join("cargo-cop.toml")),
+        fixture.root.clone(),
+        fixture.root.clone(),
+    ))
+    .expect("读取 cfg 配置");
+    let discovery =
+        CargoProjectLoader::discover(CargoDiscoveryRequest::new(fixture.root.join("Cargo.toml")))
+            .expect("Cargo 元数据");
+    let project = TargetSelector::select(
+        discovery,
+        CargoSelection::new(FeatureSelection::new(Vec::new(), false, true))
+            .with_all_targets(true)
+            .with_cfg_overrides(config.cfg_overrides().to_vec())
+            .with_current_directory(fixture.root.clone()),
+    )
+    .expect("选择所有 targets");
+    let package = project.packages().first().expect("选中的 package");
+    let snapshot = ProjectAnalyzer::analyze(AnalysisRequest::new(package));
+    let mut lib_flavor = Vec::new();
+    let mut integration_flavor = Vec::new();
+    let mut lib_test = Vec::new();
+    let mut false_predicates = 0;
+    for fact in snapshot.facts().cfg_macros() {
+        let module = snapshot
+            .modules()
+            .get(fact.module_id().index())
+            .expect("cfg macro module");
+        let configured = module
+            .configured_ast()
+            .node(fact.ast_node_id())
+            .expect("cfg macro AST node");
+        assert_eq!(configured.availability_decision(), CfgDecision::True);
+        match fact.predicate().normalized().as_str() {
+            "flavor = \"fast\"" if module.target_name() == "sample" => {
+                lib_flavor.push(fact.decision());
+            }
+            "flavor = \"fast\"" if module.target_name() == "integration" => {
+                integration_flavor.push(fact.decision());
+            }
+            "test" if module.target_name() == "sample" => lib_test.push(fact.decision()),
+            "any()" => {
+                assert_eq!(fact.decision(), CfgDecision::False);
+                false_predicates += 1;
+            }
+            _ => {}
+        }
+    }
+
+    assert!(!lib_flavor.is_empty());
+    assert!(lib_flavor
+        .iter()
+        .all(|decision| *decision == CfgDecision::True));
+    assert_eq!(integration_flavor, [CfgDecision::False]);
+    assert!(lib_test.contains(&CfgDecision::False));
+    assert!(lib_test.contains(&CfgDecision::True));
+    assert!(false_predicates > 0);
+}
+
+#[test]
+fn cfg_macro_unknown_reports_predicate_span_and_cli_values_resolve_it() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    let source = "pub fn check() { let _ = cfg!(custom_mode = \"fast\"); }\n";
+    fixture.write("src/lib.rs", source);
+
+    let unknown = fixture.run(&["--format", "json"]);
+    let unknown_report = from_str::<Value>(&unknown.stdout).expect("JSON 报告");
+    let unknown_diagnostic = unknown_report["diagnostics"]
+        .as_array()
+        .expect("诊断数组")
+        .iter()
+        .find(|diagnostic| diagnostic["analysis_issue"] == "unknown_cfg")
+        .expect("unknown_cfg 诊断");
+    let start = source.find("custom_mode").expect("predicate 起点");
+
+    assert_eq!(unknown.status, 0, "{}", unknown.stdout);
+    assert_eq!(unknown_report["status"], "partial");
+    assert_eq!(
+        unknown_diagnostic["arguments"]["condition"],
+        "custom_mode = \"fast\""
+    );
+    assert_eq!(unknown_diagnostic["start"]["column"], start + 1);
+    assert_eq!(
+        unknown_diagnostic["end"]["column"],
+        start + "custom_mode = \"fast\"".len() + 1
+    );
+
+    let resolved = fixture.run(&["--format", "json", "--cfg", "custom_mode=\"fast\""]);
+    assert_eq!(resolved.status, 0, "{}", resolved.stdout);
+    assert!(!resolved
+        .stdout
+        .contains("\"analysis_issue\":\"unknown_cfg\""));
+}
+
+#[test]
+fn cfg_candidate_shadowed_by_macro_rules_stays_opaque() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "src/lib.rs",
+        "macro_rules! cfg { ($($tokens:tt)*) => { false } }\npub fn check() { let _ = cfg!(custom_mode); }\n",
+    );
+
+    let output = fixture.run(&["--format", "json"]);
+    let report = from_str::<Value>(&output.stdout).expect("JSON 报告");
+    let diagnostics = report["diagnostics"].as_array().expect("诊断数组");
+
+    assert_eq!(output.status, 0, "{}", output.stdout);
+    assert!(!diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic["analysis_issue"] == "unknown_cfg"));
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic["analysis_issue"] == "parser_coverage"
+            && diagnostic["message_id"] == "cfg-macro-identity-unknown"
+    }));
+}
+
+#[test]
+fn cfg_candidate_with_macro_use_import_stays_opaque() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "src/lib.rs",
+        "#[macro_use]\nextern crate std;\npub fn check() { let _ = cfg!(custom_mode); }\n",
+    );
+
+    let output = fixture.run(&["--format", "json"]);
+    let report = from_str::<Value>(&output.stdout).expect("JSON 报告");
+    let diagnostics = report["diagnostics"].as_array().expect("诊断数组");
+
+    assert_eq!(output.status, 0, "{}", output.stdout);
+    assert!(!diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic["analysis_issue"] == "unknown_cfg"));
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic["analysis_issue"] == "parser_coverage"
+            && diagnostic["message_id"] == "cfg-macro-identity-unknown"
+    }));
+}
+
+#[test]
+fn cfg_candidate_with_macro_use_module_stays_opaque() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "cargo-cop.toml",
+        "version = 3\n\n[rules.child_module_line_count]\nenabled = false\n",
+    );
+    fixture.write(
+        "src/lib.rs",
+        "#[macro_use]\nmod macros;\npub fn check() { let _ = cfg!(custom_mode); }\n",
+    );
+    fixture.write(
+        "src/macros.rs",
+        "macro_rules! cfg { ($($tokens:tt)*) => { false } }\n",
+    );
+
+    let output = fixture.run(&["--format", "json"]);
+    let report = from_str::<Value>(&output.stdout).expect("JSON 报告");
+    let diagnostics = report["diagnostics"].as_array().expect("诊断数组");
+
+    assert_eq!(output.status, 0, "{}", output.stdout);
+    assert!(!diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic["analysis_issue"] == "unknown_cfg"));
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic["analysis_issue"] == "parser_coverage"
+            && diagnostic["message_id"] == "cfg-macro-identity-unknown"
+    }));
+}
+
+#[test]
+fn malformed_builtin_cfg_predicate_reports_the_failing_source_position() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    let source = "pub fn check() { let _ = cfg!(not(unix, windows)); }\n";
+    fixture.write("src/lib.rs", source);
+
+    let output = fixture.run(&["--format", "json"]);
+    let report = from_str::<Value>(&output.stdout).expect("JSON 报告");
+    let diagnostic = report["diagnostics"]
+        .as_array()
+        .expect("诊断数组")
+        .iter()
+        .find(|diagnostic| {
+            diagnostic["analysis_issue"] == "parser_coverage"
+                && diagnostic["message_id"] == "malformed-cfg-expression"
+        })
+        .expect("malformed cfg predicate 诊断");
+    let failing_token = source.find("windows").expect("错误参数位置");
+
+    assert_eq!(output.status, 2, "{}", output.stdout);
+    assert_eq!(diagnostic["start"]["column"], failing_token + 1);
+    assert_eq!(diagnostic["end"]["column"], failing_token + 2);
+    assert!(!output.stdout.contains("\"analysis_issue\":\"unknown_cfg\""));
+}
+
+#[test]
+fn scoped_custom_cfg_values_apply_to_target_specific_dependencies() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "Cargo.toml",
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[workspace]\nmembers = [\"vendor\"]\nresolver = \"2\"\n\n[target.'cfg(custom_link)'.dependencies]\nvendor = { path = \"vendor\" }\n",
+    );
+    fixture.write("src/lib.rs", "fn direct() { let _ = vendor::Thing; }\n");
+    fixture.write(
+        "vendor/Cargo.toml",
+        "[package]\nname = \"vendor\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    fixture.write("vendor/src/lib.rs", "pub struct Thing;\n");
+    fixture.write(
+        "cargo-cop.toml",
+        "version = 3\n\n[[cfg]]\npackage = \"app\"\ntarget = \"app\"\nname = \"custom_link\"\n",
+    );
+
+    let output = fixture.run(&["--format", "json", "--package", "app"]);
+
+    assert_eq!(output.status, 1, "{}", output.stdout);
+    assert!(output.has_rule("no_inline_qualified_path"));
+    assert!(!output.stdout.contains("\"analysis_issue\":\"unknown_cfg\""));
+}
+
+#[test]
 fn scans_direct_binary_and_cargo_subcommand_with_identical_output() {
     let fixture = Fixture::new();
     fixture.write("Cargo.toml", &package_manifest("sample"));
@@ -210,7 +453,7 @@ fn applies_config_severity_and_command_line_precedence() {
     fixture.write("src/lib.rs", "#[allow(dead_code)]\nfn unused() {}\n");
     fixture.write(
         "cargo-cop.toml",
-        "version = 2\n\n[rules.no_lint_relaxation]\nseverity = \"warning\"\n",
+        "version = 3\n\n[rules.no_lint_relaxation]\nseverity = \"warning\"\n",
     );
     let configured = fixture.run(&["--format", "json"]);
     let overridden = fixture.run(&["--format", "json", "--severity", "no_lint_relaxation=error"]);
@@ -270,7 +513,7 @@ fn suppresses_warnings_but_preserves_errors_and_partial_status() {
     fixture.write("src/generated.rs", "pub fn generated() {}\n");
     fixture.write(
         "cargo-cop.toml",
-        "version = 2\nallow_warnings = true\n\n[rules.no_lint_relaxation]\nseverity = \"warning\"\n\n[rules.item_spacing]\nseverity = \"warning\"\n",
+        "version = 3\nallow_warnings = true\n\n[rules.no_lint_relaxation]\nseverity = \"warning\"\n\n[rules.item_spacing]\nseverity = \"warning\"\n",
     );
 
     let output = fixture.run(&["--format", "json"]);
@@ -316,7 +559,7 @@ fn uses_one_resolved_locale_for_help_and_json_messages() {
     );
     fixture.write(
         "cargo-cop.toml",
-        "version = 2\n\n[i18n]\nlocale = \"en-US\"\n",
+        "version = 3\n\n[i18n]\nlocale = \"en-US\"\n",
     );
 
     let help = fixture.run(&["--manifest-path", "member/Cargo.toml", "--help"]);
@@ -368,11 +611,11 @@ fn resolves_relative_explicit_config_without_merging_discovered_config() {
     fixture.write("src/lib.rs", "#[allow(dead_code)]\nfn ready() {}\n");
     fixture.write(
         "cargo-cop.toml",
-        "version = 2\n\n[rules.no_lint_relaxation]\nenabled = false\n",
+        "version = 3\n\n[rules.no_lint_relaxation]\nenabled = false\n",
     );
     fixture.write(
         "config/alternate.toml",
-        "version = 2\n\n[rules.no_lint_relaxation]\nseverity = \"warning\"\n",
+        "version = 3\n\n[rules.no_lint_relaxation]\nseverity = \"warning\"\n",
     );
 
     let explicit = fixture.run(&["--format", "json", "--config", "config/alternate.toml"]);
@@ -591,28 +834,28 @@ fn keeps_false_and_unknown_configured_nodes_queryable_by_ast_id() {
     let nested = configured
         .node(node_at("fn nested").id())
         .expect("false 后代节点");
-    assert_eq!(nested.decision(), CfgDecision::False);
+    assert_eq!(nested.availability_decision(), CfgDecision::False);
     let mut parent = nested.parent();
     while let Some(parent_id) = parent {
         let ancestor = configured.node(parent_id).expect("父节点配置记录");
         if ancestor.parent().is_none() {
             break;
         }
-        assert_eq!(ancestor.decision(), CfgDecision::False);
+        assert_eq!(ancestor.availability_decision(), CfgDecision::False);
         parent = ancestor.parent();
     }
 
     let uncertain = configured
         .node(node_at("fn uncertain").id())
         .expect("unknown 节点");
-    assert_eq!(uncertain.decision(), CfgDecision::Unknown);
+    assert_eq!(uncertain.availability_decision(), CfgDecision::Unknown);
     assert!(uncertain
-        .effective_condition()
+        .availability_condition()
         .is_some_and(|condition| condition.contains("mystery_function")));
     let hidden_local = configured
         .node(node_at("fn hidden_local").id())
         .expect("false local item");
-    assert_eq!(hidden_local.decision(), CfgDecision::False);
+    assert_eq!(hidden_local.availability_decision(), CfgDecision::False);
 
     let chosen = configured
         .node(node_at("mod chosen").id())
@@ -647,7 +890,7 @@ fn keeps_false_and_unknown_configured_nodes_queryable_by_ast_id() {
     );
     assert!(configured
         .enabled_nodes()
-        .all(|node| node.decision() == CfgDecision::True));
+        .all(|node| node.availability_decision() == CfgDecision::True));
     assert!(configured.potentially_enabled_nodes().count() > configured.enabled_nodes().count());
 }
 
@@ -802,13 +1045,13 @@ fn preserves_cfg_decisions_across_configured_ast_node_kinds() {
             });
         let configured_node = configured.node(node.id()).expect("配置 AST 节点");
         assert_eq!(
-            configured_node.decision(),
+            configured_node.availability_decision(),
             expectation.decision,
             "{}",
             expectation.marker
         );
         if expectation.decision != CfgDecision::True {
-            assert!(configured_node.effective_condition().is_some());
+            assert!(configured_node.availability_condition().is_some());
         }
     }
 }
@@ -2004,7 +2247,7 @@ fn resolves_cli_target_over_configured_target_and_reports_invalid_target() {
     fixture.write("src/lib.rs", "pub fn ready() {}\n");
     fixture.write(
         "cargo-cop.toml",
-        "version = 2\n\n[scan]\ntarget = \"not-a-rust-target\"\n",
+        "version = 3\n\n[scan]\ntarget = \"not-a-rust-target\"\n",
     );
     let invalid = fixture.run(&["--format", "json"]);
     let overridden = fixture.run(&["--format", "json", "--target", "host"]);
@@ -2163,13 +2406,13 @@ fn replaces_private_child_module_id_in_configuration_and_cli() {
     fixture.write("src/lib.rs", "pub mod api { fn implementation() {} }\n");
     fixture.write(
         "cargo-cop.toml",
-        "version = 2\n\n[rules.private_child_modules]\nenabled = false\n",
+        "version = 3\n\n[rules.private_child_modules]\nenabled = false\n",
     );
 
     let old_config = fixture.run(&["--format", "json"]);
     fixture.write(
         "cargo-cop.toml",
-        "version = 2\n\n[rules.child_module_visibility]\nseverity = \"warning\"\n",
+        "version = 3\n\n[rules.child_module_visibility]\nseverity = \"warning\"\n",
     );
     let new_config = fixture.run(&["--format", "json"]);
     let old_cli = fixture.run(&[
@@ -2773,7 +3016,7 @@ fn configures_extern_crate_order_rule_and_allows_disabling_it() {
     fixture.write("src/lib.rs", "fn run() {}\nextern crate std;\n");
     fixture.write(
         "cargo-cop.toml",
-        "version = 2\n\n[rules.extern_crate_at_scope_start]\nenabled = false\nseverity = \"warning\"\n",
+        "version = 3\n\n[rules.extern_crate_at_scope_start]\nenabled = false\nseverity = \"warning\"\n",
     );
 
     let configured_disabled = fixture.run(&["--format", "json"]);
@@ -2786,7 +3029,7 @@ fn configures_extern_crate_order_rule_and_allows_disabling_it() {
 
     fixture.write(
         "cargo-cop.toml",
-        "version = 2\n\n[rules.extern_crate_at_scope_start]\nenabled = true\nseverity = \"warning\"\n",
+        "version = 3\n\n[rules.extern_crate_at_scope_start]\nenabled = true\nseverity = \"warning\"\n",
     );
     let warning = fixture.run(&["--format", "json"]);
     let error = fixture.run(&[
@@ -2910,7 +3153,7 @@ fn configures_out_of_line_module_order_rule_and_allows_disabling_it() {
     fixture.write("src/child.rs", "pub struct Child;\n");
     fixture.write(
         "cargo-cop.toml",
-        "version = 2\n\n[rules.out_of_line_modules_at_scope_start]\nseverity = \"warning\"\n",
+        "version = 3\n\n[rules.out_of_line_modules_at_scope_start]\nseverity = \"warning\"\n",
     );
 
     let warning = fixture.run(&[
@@ -2992,7 +3235,7 @@ fn rejects_invalid_configuration_without_falling_back_to_defaults() {
     let fixture = Fixture::new();
     fixture.write("Cargo.toml", &package_manifest("sample"));
     fixture.write("src/lib.rs", "pub fn ready() {}\n");
-    fixture.write("cargo-cop.toml", "version = 2\nunknown = true\n");
+    fixture.write("cargo-cop.toml", "version = 3\nunknown = true\n");
 
     let output = fixture.run(&["--format", "json"]);
     assert_eq!(output.status, 2, "{}", output.stderr);
@@ -3664,6 +3907,38 @@ fn reports_only_unnecessary_pub_crate_declarations() {
 }
 
 #[test]
+fn keeps_candidate_visible_through_used_crate_api() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "Cargo.toml",
+        &package_manifest("sample").replace("2021", "2024"),
+    );
+    fixture.write(
+        "src/lib.rs",
+        "mod candidate_selection;\nfn use_candidate_api<P>() { let _ = crate::candidate_selection::CandidateSelection::candidates::<P>; }\n",
+    );
+    fixture.write(
+        "src/candidate_selection.rs",
+        include_str!("fixtures/candidate_selection.rs"),
+    );
+
+    let output = fixture.run(&["--format", "json"]);
+    let diagnostics = rule_diagnostics(&output, "unnecessary_pub_crate");
+    let reported_candidates = diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic["arguments"]["name"] == "Candidate")
+        .collect::<Vec<_>>();
+
+    assert!(
+        reported_candidates.is_empty(),
+        "Candidate was reported as unnecessary:\n{}\n{}",
+        output.stdout,
+        output.stderr
+    );
+    assert!(output.stdout.contains("\"status\":\"complete\""));
+}
+
+#[test]
 fn reports_pub_crate_constant_despite_cfg_test_macro_coverage() {
     let fixture = Fixture::new();
     fixture.write(
@@ -3745,6 +4020,30 @@ fn accounts_for_cfg_and_unknown_conditions_when_checking_pub_crate() {
 }
 
 #[test]
+fn does_not_propagate_api_dependencies_across_incompatible_cfgs() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "src/lib.rs",
+        "mod api { #[cfg(custom_cfg)] pub(crate) fn expose() -> crate::types::Hidden { panic!() } }\nmod types { #[cfg(not(custom_cfg))] pub(crate) struct Hidden; }\n#[cfg(custom_cfg)] mod client { fn call() { let _ = crate::api::expose(); } }\n",
+    );
+
+    let output = fixture.run(&["--format", "json"]);
+    let diagnostics = rule_diagnostics(&output, "unnecessary_pub_crate");
+    let names = diagnostics
+        .iter()
+        .map(|diagnostic| {
+            diagnostic["arguments"]["name"]
+                .as_str()
+                .expect("诊断声明名称")
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(names, ["Hidden"], "{}\n{}", output.stdout, output.stderr);
+    assert!(output.stdout.contains("\"status\":\"partial\""));
+}
+
+#[test]
 fn skips_pub_crate_candidates_when_macro_expansion_is_unavailable() {
     let fixture = Fixture::new();
     fixture.write("Cargo.toml", &package_manifest("sample"));
@@ -3780,4 +4079,206 @@ fn isolates_pub_crate_references_between_target_contexts() {
 
     assert_eq!(diagnostics.len(), 1, "{}", output.stdout);
     assert_eq!(diagnostics[0]["target"], "sample");
+}
+
+#[test]
+fn respects_restricted_field_visibility_when_propagating_pub_crate() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    let source = "mod api {\n    pub(crate) struct Container {\n        pub(in crate::api) local: LocalType,\n        pub exposed: crate::types::ExposedType,\n        private: PrivateType,\n    }\n    pub(crate) struct LocalType;\n    pub(crate) struct PrivateType;\n    pub(crate) struct BodyOnly;\n    pub(crate) fn retained() { let _ = crate::api::BodyOnly; }\n}\nmod types { pub(crate) struct ExposedType; }\nmod consumer { fn use_api(_: crate::api::Container) {} fn call() { crate::api::retained(); } }\n";
+    fixture.write("src/lib.rs", source);
+
+    let output = fixture.run(&["--format", "json"]);
+    let diagnostics = rule_diagnostics(&output, "unnecessary_pub_crate");
+    let names = diagnostics
+        .iter()
+        .map(|diagnostic| {
+            diagnostic["arguments"]["name"]
+                .as_str()
+                .expect("诊断声明名称")
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        names,
+        ["LocalType", "PrivateType", "BodyOnly"],
+        "{}",
+        output.stdout
+    );
+    for diagnostic in diagnostics {
+        let line = usize::try_from(diagnostic["start"]["line"].as_u64().expect("诊断起始行"))
+            .expect("诊断起始行范围");
+        let start = usize::try_from(diagnostic["start"]["column"].as_u64().expect("诊断起始列"))
+            .expect("诊断起始列范围");
+        let end = usize::try_from(diagnostic["end"]["column"].as_u64().expect("诊断结束列"))
+            .expect("诊断结束列范围");
+        let source_line = source.lines().nth(line - 1).expect("诊断对应源码行");
+        assert_eq!(&source_line[start - 1..end - 1], "pub(crate)");
+    }
+    assert!(output.stdout.contains("\"status\":\"complete\""));
+}
+
+#[test]
+fn propagates_pub_crate_through_signature_enum_and_trait_api_types() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "src/lib.rs",
+        r#"mod api {
+    pub(crate) fn build() -> Option<crate::types::Alias> { None }
+    pub(crate) fn constrained<T: crate::types::Bound>() {}
+    pub(crate) fn where_bound<T>() where T: crate::types::WhereBound {}
+    pub(crate) enum State { Tuple(crate::types::Payload), Named { value: crate::types::Payload } }
+    pub(crate) union Shared { pub payload: crate::types::UnionPayload }
+    pub(crate) trait Contract: crate::types::Super {
+        type Item: crate::types::Payload;
+        fn value(&self) -> Option<Self::Item>;
+        const DEFAULT: crate::types::Payload;
+    }
+    pub(crate) struct Carrier;
+    impl Carrier {
+        pub(crate) fn load() -> crate::types::MethodResult { panic!() }
+    }
+}
+mod types {
+    pub(crate) struct Deep;
+    pub(crate) type Alias = Deep;
+    pub(crate) struct Payload;
+    pub(crate) struct UnionPayload;
+    pub(crate) struct MethodResult;
+    pub(crate) trait Bound {}
+    pub(crate) trait WhereBound {}
+    pub(crate) trait Super {}
+}
+mod client {
+    fn call() {
+        let _ = crate::api::build();
+        crate::api::constrained::<()>();
+        crate::api::where_bound::<()>();
+        let _ = crate::api::Carrier::load();
+    }
+    fn state(_: crate::api::State) {}
+    fn shared(_: crate::api::Shared) {}
+    fn contract(_: &dyn crate::api::Contract) {}
+}
+"#,
+    );
+
+    let output = fixture.run(&["--format", "json"]);
+    let diagnostics = rule_diagnostics(&output, "unnecessary_pub_crate");
+
+    assert!(
+        diagnostics.is_empty(),
+        "{}\n{}",
+        output.stdout,
+        output.stderr
+    );
+    assert!(output.stdout.contains("\"status\":\"complete\""));
+}
+
+#[test]
+fn propagates_pub_crate_through_supported_foreign_item_types() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "src/lib.rs",
+        r#"mod ffi {
+    extern "C" {
+        pub(crate) fn send(value: crate::types::ForeignInput) -> crate::types::ForeignOutput;
+        pub(crate) static VALUE: crate::types::ForeignStatic;
+    }
+}
+mod types {
+    pub(crate) struct ForeignInput;
+    pub(crate) struct ForeignOutput;
+    pub(crate) struct ForeignStatic;
+}
+mod client {
+    fn call() {
+        let _ = crate::ffi::send;
+        let _ = crate::ffi::VALUE;
+    }
+}
+"#,
+    );
+
+    let output = fixture.run(&["--format", "json"]);
+    let diagnostics = rule_diagnostics(&output, "unnecessary_pub_crate");
+
+    assert!(
+        diagnostics.is_empty(),
+        "{}\n{}",
+        output.stdout,
+        output.stderr
+    );
+    assert!(output.stdout.contains("\"status\":\"complete\""));
+}
+
+#[test]
+fn propagates_pub_crate_dependency_chains_and_ignores_unretained_apis() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    let source = "mod graph {\n    pub(crate) struct A(pub(crate) B);\n    pub(crate) struct B(pub(crate) C);\n    pub(crate) struct C(pub(crate) A);\n    pub(crate) struct D(pub(crate) E);\n    pub(crate) struct E;\n}\nmod client { fn root(_: crate::graph::A) {} }\nmod orphan_api { pub(crate) fn unused(_: crate::orphan_types::NeverUsed) {} }\nmod orphan_types { pub(crate) struct NeverUsed; }\n";
+    fixture.write("src/lib.rs", source);
+
+    let output = fixture.run(&["--format", "json"]);
+    let diagnostics = rule_diagnostics(&output, "unnecessary_pub_crate");
+    let names = diagnostics
+        .iter()
+        .map(|diagnostic| {
+            diagnostic["arguments"]["name"]
+                .as_str()
+                .expect("诊断声明名称")
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        names,
+        ["D", "E", "unused", "NeverUsed"],
+        "{}\n{}",
+        output.stdout,
+        output.stderr
+    );
+    for diagnostic in diagnostics {
+        let line = usize::try_from(diagnostic["start"]["line"].as_u64().expect("诊断起始行"))
+            .expect("诊断起始行范围");
+        let start = usize::try_from(diagnostic["start"]["column"].as_u64().expect("诊断起始列"))
+            .expect("诊断起始列范围");
+        let end = usize::try_from(diagnostic["end"]["column"].as_u64().expect("诊断结束列"))
+            .expect("诊断结束列范围");
+        let source_line = source.lines().nth(line - 1).expect("诊断对应源码行");
+        assert_eq!(&source_line[start - 1..end - 1], "pub(crate)");
+    }
+    assert!(output.stdout.contains("\"status\":\"complete\""));
+}
+
+#[test]
+fn tracks_api_dependencies_by_definition_identity_with_raw_identifiers() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    let source = "mod source_types { pub(crate) struct Shared; }\nmod shadow_types { pub(crate) struct Shared; }\nmod raw_types { pub(crate) struct r#type; }\nmod api { pub(crate) fn input(_: crate::source_types::Shared) {} pub(crate) fn raw(_: crate::raw_types::r#type) {} }\nmod client { fn call() { crate::api::input(loop {}); crate::api::raw(loop {}); } }\n";
+    fixture.write("src/lib.rs", source);
+
+    let output = fixture.run(&["--format", "json"]);
+    let diagnostics = rule_diagnostics(&output, "unnecessary_pub_crate");
+    let names = diagnostics
+        .iter()
+        .map(|diagnostic| {
+            diagnostic["arguments"]["name"]
+                .as_str()
+                .expect("诊断声明名称")
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(names, ["Shared"], "{}\n{}", output.stdout, output.stderr);
+    let diagnostic = &diagnostics[0];
+    assert_eq!(diagnostic["path"], "src/lib.rs");
+    assert_eq!(diagnostic["start"]["line"], 2);
+    let line = source.lines().nth(1).expect("同名但无依赖的声明行");
+    let start = usize::try_from(diagnostic["start"]["column"].as_u64().expect("诊断起始列"))
+        .expect("诊断起始列范围");
+    let end = usize::try_from(diagnostic["end"]["column"].as_u64().expect("诊断结束列"))
+        .expect("诊断结束列范围");
+    assert_eq!(&line[start - 1..end - 1], "pub(crate)");
+    assert!(output.stdout.contains("\"status\":\"complete\""));
 }

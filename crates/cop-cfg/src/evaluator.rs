@@ -8,6 +8,13 @@ pub struct CfgValue {
     value: Option<String>,
 }
 
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct ScopedCfgValue {
+    package: Option<String>,
+    target: Option<String>,
+    value: CfgValue,
+}
+
 pub struct CfgContext<'a> {
     values: &'a [CfgValue],
     features: Option<&'a BTreeSet<String>>,
@@ -40,6 +47,67 @@ impl CfgValue {
 
     pub fn value(&self) -> Option<&str> {
         self.value.as_deref()
+    }
+
+    pub fn is_builtin_name(name: &str) -> bool {
+        matches!(
+            name,
+            "all"
+                | "any"
+                | "debug_assertions"
+                | "feature"
+                | "not"
+                | "panic"
+                | "proc_macro"
+                | "target_abi"
+                | "target_arch"
+                | "target_endian"
+                | "target_env"
+                | "target_family"
+                | "target_feature"
+                | "target_has_atomic"
+                | "target_has_atomic_equal_alignment"
+                | "target_has_atomic_load_store"
+                | "target_has_atomic_primitive_alignment"
+                | "target_os"
+                | "target_pointer_width"
+                | "target_thread_local"
+                | "target_vendor"
+                | "test"
+                | "unix"
+                | "windows"
+        )
+    }
+}
+
+impl ScopedCfgValue {
+    pub fn new(package: Option<String>, target: Option<String>, value: CfgValue) -> Self {
+        Self {
+            package,
+            target,
+            value,
+        }
+    }
+
+    pub fn package(&self) -> Option<&str> {
+        self.package.as_deref()
+    }
+
+    pub fn target(&self) -> Option<&str> {
+        self.target.as_deref()
+    }
+
+    pub fn value(&self) -> &CfgValue {
+        &self.value
+    }
+
+    pub fn applies_to(&self, package: &str, target_name: &str, target_triple: &str) -> bool {
+        self.package
+            .as_deref()
+            .map_or(true, |configured| configured == package)
+            && self.target.as_deref().map_or(true, |configured| {
+                configured == target_name || configured == target_triple
+            })
     }
 }
 
@@ -112,18 +180,22 @@ impl<'context, 'values> CfgEvaluator<'context, 'values> {
     }
 
     pub fn evaluate(&self, expression: &CfgExpression) -> CfgDecision {
+        self.evaluate_expression(expression)
+    }
+
+    pub fn evaluate_expression(&self, expression: &CfgExpression) -> CfgDecision {
         match expression {
             CfgExpression::Flag { name, .. } => self.evaluate_atom(name, None),
             CfgExpression::KeyValue { name, value, .. } => self.evaluate_atom(name, Some(value)),
             CfgExpression::All { expressions, .. } => expressions
                 .iter()
-                .map(|expression| self.evaluate(expression))
+                .map(|expression| self.evaluate_expression(expression))
                 .fold(CfgDecision::True, CfgDecision::and),
             CfgExpression::Any { expressions, .. } => expressions
                 .iter()
-                .map(|expression| self.evaluate(expression))
+                .map(|expression| self.evaluate_expression(expression))
                 .fold(CfgDecision::False, CfgDecision::or),
-            CfgExpression::Not { expression, .. } => self.evaluate(expression).negate(),
+            CfgExpression::Not { expression, .. } => self.evaluate_expression(expression).negate(),
         }
     }
 
@@ -184,27 +256,7 @@ impl<'context, 'values> CfgEvaluator<'context, 'values> {
 }
 
 fn is_known_cfg_name(name: &str) -> bool {
-    matches!(
-        name,
-        "debug_assertions"
-            | "panic"
-            | "target_abi"
-            | "target_arch"
-            | "target_endian"
-            | "target_env"
-            | "target_family"
-            | "target_feature"
-            | "target_has_atomic"
-            | "target_has_atomic_equal_alignment"
-            | "target_has_atomic_load_store"
-            | "target_has_atomic_primitive_alignment"
-            | "target_os"
-            | "target_pointer_width"
-            | "target_thread_local"
-            | "target_vendor"
-            | "unix"
-            | "windows"
-    )
+    CfgValue::is_builtin_name(name)
 }
 
 #[cfg(test)]
@@ -267,6 +319,34 @@ mod tests {
         assert_eq!(
             evaluator.evaluate(&CfgExpression::parse("any(custom_mode, all())").expect("cfg")),
             CfgDecision::True
+        );
+    }
+
+    #[test]
+    fn evaluates_explicit_custom_flags_and_multiple_values() {
+        let values = [
+            CfgValue::new("custom_mode", None),
+            CfgValue::new("backend", Some("fast".to_owned())),
+            CfgValue::new("backend", Some("safe".to_owned())),
+        ];
+        let context = CfgContext::new(&values, None);
+        let evaluator = CfgEvaluator::new(&context);
+
+        assert_eq!(
+            evaluator.evaluate_expression(&CfgExpression::parse("custom_mode").expect("flag")),
+            CfgDecision::True
+        );
+        assert_eq!(
+            evaluator.evaluate_expression(
+                &CfgExpression::parse("backend = \"safe\"").expect("key/value")
+            ),
+            CfgDecision::True
+        );
+        assert_eq!(
+            evaluator.evaluate_expression(
+                &CfgExpression::parse("backend = \"other\"").expect("key/value")
+            ),
+            CfgDecision::False
         );
     }
 }

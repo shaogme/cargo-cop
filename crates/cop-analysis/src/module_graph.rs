@@ -14,9 +14,10 @@ use std::{
 use cop_cargo::{SelectedPackage, TargetContext};
 use cop_model::{
     AnalysisIssueKind, Diagnostic, LocalizedMessage, Severity, SourceSpan, ToolErrorKind,
-    INCLUDE_DYNAMIC_INPUT, MACRO_GENERATED_MODULE, MALFORMED_CFG_ATTRIBUTE, MODULE_CYCLE,
-    MODULE_FILE_METADATA_ERROR, MODULE_LAYOUT_AMBIGUOUS, MODULE_MISSING, MODULE_SOURCE_READ_ERROR,
-    PATH_MODULE_MISSING, UNKNOWN_CFG,
+    CFG_MACRO_IDENTITY_UNKNOWN, INCLUDE_DYNAMIC_INPUT, MACRO_GENERATED_MODULE,
+    MALFORMED_CFG_ATTRIBUTE, MALFORMED_CFG_EXPRESSION, MODULE_CYCLE, MODULE_FILE_METADATA_ERROR,
+    MODULE_LAYOUT_AMBIGUOUS, MODULE_MISSING, MODULE_SOURCE_READ_ERROR, PATH_MODULE_MISSING,
+    UNKNOWN_CFG,
 };
 use cop_syntax::{
     AstNodeId, Attribute, CoverageStatus, ItemSyntaxKind, ParseIssueCode, ParseOptions,
@@ -175,7 +176,9 @@ impl ModuleNode {
             .filter(|node| {
                 self.configured_ast
                     .node(node.id())
-                    .is_some_and(|configured| configured.decision() != CfgDecision::False)
+                    .is_some_and(|configured| {
+                        configured.availability_decision() != CfgDecision::False
+                    })
             })
             .collect()
     }
@@ -287,12 +290,12 @@ impl GraphBuilder<'_> {
             .unwrap_or_default();
         let scope_condition = configured_ast
             .node(scope_node.id())
-            .and_then(|node| node.effective_condition())
+            .and_then(|node| node.availability_condition())
             .map(str::to_owned);
         scope.active &= scope_effects.decision() != Some(CfgDecision::False);
         scope.active &= configured_ast
             .node(scope_node.id())
-            .is_some_and(|node| node.decision() != CfgDecision::False);
+            .is_some_and(|node| node.availability_decision() != CfgDecision::False);
         scope.cfg_condition = scope_condition;
         self.report_parse_issues(&scope.file_path, &source, &configured_ast);
         self.report_configured_ast_issues(&scope, &configured_ast);
@@ -305,10 +308,10 @@ impl GraphBuilder<'_> {
                 .map(|node| node.attribute_evaluation().clone())
                 .unwrap_or_default();
             let effective_condition = configured_item
-                .and_then(|node| node.effective_condition())
+                .and_then(|node| node.availability_condition())
                 .map(str::to_owned);
-            let item_enabled =
-                configured_item.is_some_and(|node| node.decision() != CfgDecision::False);
+            let item_enabled = configured_item
+                .is_some_and(|node| node.availability_decision() != CfgDecision::False);
             if !scope.active {
                 if let ItemSyntaxKind::Module { name, inline } = item_data.kind() {
                     if *inline {
@@ -716,6 +719,34 @@ impl GraphBuilder<'_> {
                         kind: AnalysisIssueKind::ParserCoverage,
                         severity: Severity::Error,
                         message: LocalizedMessage::new(MALFORMED_CFG_ATTRIBUTE),
+                    }
+                }
+                ConfiguredAstIssueKind::MalformedCfgExpression => {
+                    if !self.reported_malformed.insert(MalformedIssueKey {
+                        path: scope.file_path.clone(),
+                        start: issue.start(),
+                        end: issue.end(),
+                    }) {
+                        continue;
+                    }
+                    ConfiguredIssueDetails {
+                        kind: AnalysisIssueKind::ParserCoverage,
+                        severity: Severity::Error,
+                        message: LocalizedMessage::new(MALFORMED_CFG_EXPRESSION),
+                    }
+                }
+                ConfiguredAstIssueKind::OpaqueCfgMacro => {
+                    if !self.reported_parse.insert(ParseIssueKey {
+                        path: scope.file_path.clone(),
+                        start: issue.start(),
+                        end: issue.end(),
+                    }) {
+                        continue;
+                    }
+                    ConfiguredIssueDetails {
+                        kind: AnalysisIssueKind::ParserCoverage,
+                        severity: Severity::Warning,
+                        message: LocalizedMessage::new(CFG_MACRO_IDENTITY_UNKNOWN),
                     }
                 }
             };

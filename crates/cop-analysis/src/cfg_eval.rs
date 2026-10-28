@@ -10,14 +10,14 @@ use cop_syntax::{
 pub use cop_cfg::CfgDecision;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct UnknownCondition {
+pub(super) struct UnknownCondition {
     pub(crate) condition: String,
     pub(crate) start: usize,
     pub(crate) end: usize,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct ConditionalAttribute {
+pub(super) struct ConditionalAttribute {
     pub(crate) condition: Option<String>,
     pub(crate) decision: CfgDecision,
     pub(crate) start: usize,
@@ -25,7 +25,7 @@ pub(crate) struct ConditionalAttribute {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct ConditionalPathAttribute {
+pub(super) struct ConditionalPathAttribute {
     pub(crate) condition: Option<String>,
     pub(crate) decision: CfgDecision,
     pub(crate) path: Option<String>,
@@ -66,8 +66,12 @@ impl<'a> CfgEvaluator<'a> {
         let Ok(expression) = CfgExpression::parse(condition) else {
             return CfgDecision::Unknown;
         };
+        self.evaluate_expression(&expression)
+    }
+
+    pub(crate) fn evaluate_expression(&self, expression: &CfgExpression) -> CfgDecision {
         let context = self.cfg_context();
-        SharedCfgEvaluator::new(&context).evaluate(&expression)
+        SharedCfgEvaluator::new(&context).evaluate_expression(expression)
     }
 
     pub(crate) fn normalized_condition(&self, condition: &str) -> String {

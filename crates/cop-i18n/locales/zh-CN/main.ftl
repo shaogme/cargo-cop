@@ -38,6 +38,8 @@ module-source-read-error = 读取 Rust 源文件失败 { $path}：{ $detail }
 module-file-metadata-error = 检查模块文件失败 { $path}：{ $detail }
 parser-coverage = { $issue }
 malformed-cfg-attribute = cfg/path 属性无法可靠解释，相关模块分析可能不完整
+malformed-cfg-expression = 无法解析此处的 cfg! predicate
+cfg-macro-identity-unknown = 无法确认此 cfg! 调用是内置宏；其输入按不透明内容处理
 unknown-cfg = 无法静态确定 cfg 条件 { $condition }
 syntax-unclosed-block-comment = 块注释缺少结束符 */
 syntax-unknown-character = 无法识别字符 { $character }
@@ -147,6 +149,7 @@ cli-help = 用法：cargo-cop [选项]
       -p, --package <NAME>      选择要扫描的 package（可重复指定）
       --target <TRIPLE>         指定目标三元组
       --features <LIST>         启用逗号分隔的 features
+      --cfg <CFG>               添加自定义 cfg flag 或键值；可重复指定
       --all-features            启用所有 features
       --no-default-features     禁用默认 features
       --all-targets             扫描所有 targets

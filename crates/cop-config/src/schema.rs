@@ -3,6 +3,7 @@ use std::{
     path::Path,
 };
 
+use cop_cfg::{CfgValue, ScopedCfgValue};
 use cop_model::{
     LocalizedMessage, RuleId, Severity, CONFIG_INVALID_FIELD, CONFIG_INVALID_ROOT,
     CONFIG_PARSE_ERROR, CONFIG_UNSUPPORTED_VERSION, CONFIG_VERSION_TYPE,
@@ -31,6 +32,7 @@ pub(super) struct ConfigDocument {
     scan: ScanDefaults,
     rules: BTreeMap<RuleId, (bool, Severity)>,
     locale: Option<String>,
+    cfg_overrides: Vec<ScopedCfgValue>,
 }
 
 pub(super) struct ConfigDocumentParts {
@@ -38,6 +40,7 @@ pub(super) struct ConfigDocumentParts {
     pub(super) scan: ScanDefaults,
     pub(super) rules: BTreeMap<RuleId, (bool, Severity)>,
     pub(super) locale: Option<String>,
+    pub(super) cfg_overrides: Vec<ScopedCfgValue>,
 }
 
 impl ScanDefaults {
@@ -92,6 +95,7 @@ impl ConfigDocument {
             scan: ScanDefaults::default(),
             rules: BTreeMap::new(),
             locale: None,
+            cfg_overrides: Vec::new(),
         }
     }
 
@@ -116,7 +120,7 @@ impl ConfigDocument {
             path,
             "",
             root,
-            &["version", "allow_warnings", "i18n", "scan", "rules"],
+            &["version", "allow_warnings", "i18n", "scan", "rules", "cfg"],
         )?;
         let version = root
             .get("version")
@@ -128,13 +132,13 @@ impl ConfigDocument {
                         .with_text("path", path.display().to_string()),
                 )
             })?;
-        if version != 2 {
+        if version != 3 {
             return Err(ConfigError::new(
                 path.to_path_buf(),
                 LocalizedMessage::new(CONFIG_UNSUPPORTED_VERSION)
                     .with_text("path", path.display().to_string())
                     .with_number("version", version)
-                    .with_number("supported", 2),
+                    .with_number("supported", 3),
             ));
         }
 
@@ -147,11 +151,13 @@ impl ConfigDocument {
         let locale = parse_locale(path, root.get("i18n"))?;
         let scan = parse_scan(path, root.get("scan"))?;
         let rules = parse_rules(path, root.get("rules"))?;
+        let cfg_overrides = parse_cfg_overrides(path, root.get("cfg"))?;
         Ok(Self {
             allow_warnings,
             scan,
             rules,
             locale,
+            cfg_overrides,
         })
     }
 
@@ -161,6 +167,7 @@ impl ConfigDocument {
             scan: self.scan,
             rules: self.rules,
             locale: self.locale,
+            cfg_overrides: self.cfg_overrides,
         }
     }
 
@@ -339,6 +346,83 @@ fn parse_rules(
     Ok(rules)
 }
 
+fn parse_cfg_overrides(
+    path: &Path,
+    value: Option<&Value>,
+) -> Result<Vec<ScopedCfgValue>, ConfigError> {
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+    let entries = value
+        .as_array()
+        .ok_or_else(|| field_error(path, "cfg", "must-be-array-of-tables", ""))?;
+    let mut overrides = Vec::with_capacity(entries.len());
+    let mut unique = BTreeSet::new();
+    for (index, entry) in entries.iter().enumerate() {
+        let field = format!("cfg[{index}]");
+        let table = entry
+            .as_table()
+            .ok_or_else(|| field_error(path, &field, "must-be-table", ""))?;
+        check_fields(path, &field, table, &["package", "target", "name", "value"])?;
+        let package = optional_nonempty_string(path, table, &field, "package")?;
+        let target = optional_nonempty_string(path, table, &field, "target")?;
+        let name = table
+            .get("name")
+            .and_then(Value::as_str)
+            .filter(|name| is_cfg_identifier(name))
+            .map(str::to_owned)
+            .ok_or_else(|| field_error(path, &format!("{field}.name"), "invalid-cfg-name", ""))?;
+        let cfg_value = table
+            .get("value")
+            .map(|value| {
+                value.as_str().map(str::to_owned).ok_or_else(|| {
+                    field_error(path, &format!("{field}.value"), "must-be-string", "")
+                })
+            })
+            .transpose()?;
+        let override_value = ScopedCfgValue::new(package, target, CfgValue::new(name, cfg_value));
+        if !unique.insert(override_value.clone()) {
+            return Err(field_error(path, "cfg", "duplicate", ""));
+        }
+        overrides.push(override_value);
+    }
+    Ok(overrides)
+}
+
+fn optional_nonempty_string(
+    path: &Path,
+    table: &Map<String, Value>,
+    prefix: &str,
+    name: &str,
+) -> Result<Option<String>, ConfigError> {
+    table
+        .get(name)
+        .map(|value| {
+            value
+                .as_str()
+                .filter(|value| !value.trim().is_empty())
+                .map(str::to_owned)
+                .ok_or_else(|| {
+                    field_error(
+                        path,
+                        &format!("{prefix}.{name}"),
+                        "must-be-nonempty-string",
+                        "",
+                    )
+                })
+        })
+        .transpose()
+}
+
+fn is_cfg_identifier(name: &str) -> bool {
+    let mut characters = name.chars();
+    characters
+        .next()
+        .is_some_and(|first| first == '_' || first.is_ascii_alphabetic())
+        && characters.all(|character| character == '_' || character.is_ascii_alphanumeric())
+        && !CfgValue::is_builtin_name(name)
+}
+
 fn check_fields(
     path: &Path,
     prefix: &str,
@@ -390,16 +474,16 @@ mod tests {
             ("", "config-version-type"),
             ("version = 1", "config-unsupported-version"),
             (
-                "version = 2\nallow_warnings = \"yes\"",
+                "version = 3\nallow_warnings = \"yes\"",
                 "config-invalid-field",
             ),
             (
-                "version = 2\n[scan]\nfeatures = [\"fast\", \"fast\"]",
+                "version = 3\n[scan]\nfeatures = [\"fast\", \"fast\"]",
                 "config-invalid-field",
             ),
-            ("version = 2\n[rules.unknown_rule]", "config-invalid-field"),
+            ("version = 3\n[rules.unknown_rule]", "config-invalid-field"),
             (
-                "version = 2\n[rules.parameter_limit]\nseverity = \"fatal\"",
+                "version = 3\n[rules.parameter_limit]\nseverity = \"fatal\"",
                 "config-invalid-field",
             ),
         ];
@@ -408,6 +492,49 @@ mod tests {
             let error = ConfigDocument::parse(Path::new("cargo-cop.toml"), contents)
                 .expect_err("无效配置必须失败");
             assert_eq!(error.message().id().as_str(), expected);
+        }
+    }
+
+    #[test]
+    fn loads_scoped_custom_cfg_values_and_rejects_unknown_fields() {
+        let contents = "version = 3\n\n[[cfg]]\npackage = \"core\"\ntarget = \"x86_64-unknown-linux-gnu\"\nname = \"backend\"\nvalue = \"fast\"\n\n[[cfg]]\nname = \"custom_gate\"\n";
+        let document =
+            ConfigDocument::parse(Path::new("cargo-cop.toml"), contents).expect("解析 scoped cfg");
+
+        assert_eq!(document.cfg_overrides.len(), 2);
+        assert_eq!(document.cfg_overrides[0].package(), Some("core"));
+        assert_eq!(
+            document.cfg_overrides[0].target(),
+            Some("x86_64-unknown-linux-gnu")
+        );
+        assert_eq!(document.cfg_overrides[0].value().name(), "backend");
+        assert_eq!(document.cfg_overrides[0].value().value(), Some("fast"));
+        assert_eq!(document.cfg_overrides[1].value().value(), None);
+
+        let error = ConfigDocument::parse(
+            Path::new("cargo-cop.toml"),
+            "version = 3\n\n[[cfg]]\nname = \"custom_gate\"\nunknown = true\n",
+        )
+        .expect_err("未知 cfg 字段必须拒绝");
+        assert_eq!(error.message().id().as_str(), "config-invalid-field");
+    }
+
+    #[test]
+    fn requires_version_three_for_cfg_schema() {
+        let error = ConfigDocument::parse(Path::new("cargo-cop.toml"), "version = 2")
+            .expect_err("旧 schema 必须显式迁移");
+
+        assert_eq!(error.message().id().as_str(), "config-unsupported-version");
+    }
+
+    #[test]
+    fn rejects_builtin_names_in_custom_cfg_overrides() {
+        for name in ["unix", "feature", "target_os", "test", "proc_macro"] {
+            let contents = format!("version = 3\n\n[[cfg]]\nname = \"{name}\"\n");
+            let error = ConfigDocument::parse(Path::new("cargo-cop.toml"), &contents)
+                .expect_err("内置 cfg 名称不能作为自定义覆盖");
+
+            assert_eq!(error.message().id().as_str(), "config-invalid-field");
         }
     }
 }

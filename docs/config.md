@@ -2,12 +2,12 @@
 
 [简体中文](config_CN.md) · [Project README](../README.md)
 
-`cargo-cop` reads an optional TOML configuration file named `cargo-cop.toml`. Configuration has schema version `2`. Unknown fields, rule IDs, values, and duplicate feature entries are errors; they are not silently ignored.
+`cargo-cop` reads an optional TOML configuration file named `cargo-cop.toml`. Configuration has schema version `3`. Unknown fields, rule IDs, values, and duplicate entries are errors; they are not silently ignored.
 
 ## Example
 
 ```toml
-version = 2
+version = 3
 allow_warnings = false
 
 [i18n]
@@ -18,6 +18,12 @@ targets = "default"
 target = "host"
 features = ["serde", "logging"]
 default_features = true
+
+[[cfg]]
+package = "my-crate"
+target = "x86_64-unknown-linux-gnu"
+name = "custom_mode"
+value = "fast"
 
 [rules.no_parent_private_dependency]
 enabled = false
@@ -41,19 +47,20 @@ An omitted `[rules.<ID>]` entry keeps that rule enabled at `error` severity. Wit
 - Command-line settings override matching TOML settings. TOML settings override built-in defaults.
 - Configuration settings do not change manifest and package selection. Use CLI options such as `--manifest-path`, `--workspace`, and `--package` for that.
 
-The config file must contain the integer `version = 2`. The top-level fields are `version`, `allow_warnings`, `i18n`, `scan`, and `rules` only. Tables and fields not documented here are rejected.
+The config file must contain the integer `version = 3`. The top-level fields are `version`, `allow_warnings`, `i18n`, `scan`, `rules`, and `cfg` only. Tables and fields not documented here are rejected. Version 2 files must update the version number to 3; existing fields keep their meaning.
 
 ## Top-level fields
 
 | Field | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `version` | integer | Required | Must be `2`. |
+| `version` | integer | Required | Must be `3`. |
 | `allow_warnings` | boolean | `false` | When `true`, warning diagnostics are omitted from the diagnostic list and counted in `summary.suppressed_warnings`. Errors remain visible. This applies to rule and analysis warnings. |
 | `[i18n].locale` | non-empty string | Environment locale; English unless it identifies the `zh` language | Diagnostic and report language. Use `en-US` or `zh-CN`. CLI `--locale` takes precedence. |
 | `[scan].targets` | `"default"` or `"all"` | `"default"` | Select default `lib`/`bin`/`proc-macro` targets, or all declared Cargo targets. CLI `--all-targets` selects `all`. |
 | `[scan].target` | non-empty string | Unset | Target triple, or `"host"` to use the host triple. CLI `--target` takes precedence. |
 | `[scan].features` | array of unique non-empty strings | `[]` | Features requested for selected root packages. CLI `--features` replaces this list when supplied. |
 | `[scan].default_features` | boolean | `true` | Whether selected root packages enable their `default` feature. CLI `--no-default-features` can turn this off. |
+| `[[cfg]]` | array of tables | `[]` | Custom cfg values shared by `cfg!`, `#[cfg]`, `cfg_attr`, and target-specific dependencies. Each entry accepts `package`, `target`, `name`, and optional `value`. |
 | `[rules.<ID>].enabled` | boolean | `true` | Whether the named rule runs. CLI `--disable-rule <ID>` can turn it off. |
 | `[rules.<ID>].severity` | `"warning"` or `"error"` | `"error"` | Severity assigned to diagnostics from the named rule. CLI `--severity ID=LEVEL` takes precedence. |
 
@@ -75,7 +82,7 @@ Available IDs:
 
 `module_file_layout`, `no_lint_relaxation`, `item_spacing`, `child_module_visibility`, `no_parent_path_attribute`, `no_parent_private_dependency`, `child_module_line_count`, `impl_locality`, `private_fields_for_behavior_types`, `unnecessary_pub_crate`, `child_public_free_functions`, `declaration_before_use`, `parameter_limit`, `tuple_arity`, `no_inline_qualified_path`, `merge_common_prefix_imports`, `extern_crate_at_scope_start`, `imports_at_scope_start`, `out_of_line_modules_at_scope_start`, `cfg_use_group_spacing`, and `cfg_inside_use_tree`.
 
-The former `private_child_modules` ID was replaced by `child_module_visibility`. Update `[rules.private_child_modules]`, `--disable-rule private_child_modules`, and `--severity private_child_modules=...` to use the new ID. The schema version remains `2`.
+The former `private_child_modules` ID was replaced by `child_module_visibility`. Update `[rules.private_child_modules]`, `--disable-rule private_child_modules`, and `--severity private_child_modules=...` to use the new ID. The schema version is `3`.
 
 Rule diagnostics can be disabled or changed to `warning`. Tool errors and analysis issues are not rules, so rule settings cannot hide them. An analysis warning can still make the overall scan status `partial` even when `allow_warnings = true` suppresses it from the printed diagnostic list.
 
@@ -97,12 +104,14 @@ Feature requests are resolved using feature definitions and dependency declarati
 
 The CLI `--all-features` option is not a TOML field. Use it when all features should be enabled for a particular run.
 
+In `[[cfg]]`, `name` is the cfg flag or key and `value` is its optional string value. `package` and `target` can be set independently or together; `target` matches either the Cargo target name or target triple. An entry with no scope applies to every selected package/target. Repeated entries can provide multiple values for the same key. Repeat `--cfg name` or `--cfg 'name="value"'` on the CLI; each key provided on the command line replaces all configured values for that key and applies globally. An unprovided custom cfg remains Unknown, emits an `unknown_cfg` warning, and makes the scan status `partial`. The tool does not execute build scripts to discover custom cfg values.
+
 ## Built-in defaults
 
 If no config file is found, the effective defaults are:
 
 ```toml
-version = 2
+version = 3
 allow_warnings = false
 
 [scan]

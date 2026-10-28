@@ -61,7 +61,7 @@ impl MacroScanner {
                 continue;
             }
             if configured_ast.node(node.id()).map_or(true, |configured| {
-                configured.decision() == CfgDecision::False
+                configured.availability_decision() == CfgDecision::False
             }) {
                 continue;
             }

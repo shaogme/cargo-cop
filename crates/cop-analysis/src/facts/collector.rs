@@ -104,7 +104,7 @@ impl SyntaxFactCollector {
             let Some(configured) = module.configured_ast().node(node.id()) else {
                 return;
             };
-            if configured.decision() == CfgDecision::False {
+            if configured.availability_decision() == CfgDecision::False {
                 return;
             }
             let mut path = node
@@ -130,7 +130,7 @@ impl SyntaxFactCollector {
                     kind: ReferenceKind::Use,
                     segments: path,
                     bounds: node.start()..node.end(),
-                    condition: configured.effective_condition().map(str::to_owned),
+                    condition: configured.availability_condition().map(str::to_owned),
                     supported: true,
                     alias: tree.alias().map(str::to_owned),
                     glob: tree.is_glob(),
@@ -226,7 +226,7 @@ fn range_is_disabled(module: &ModuleNode, start: usize, end: usize) -> bool {
     module
         .configured_ast()
         .node_for_range(start, end)
-        .is_some_and(|node| node.decision() == CfgDecision::False)
+        .is_some_and(|node| node.availability_decision() == CfgDecision::False)
 }
 
 fn collect_expression_paths(expression: &ExpressionSyntax, references: &mut Vec<RawReference>) {

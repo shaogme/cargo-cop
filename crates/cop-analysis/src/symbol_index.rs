@@ -74,19 +74,19 @@ impl DefinitionId {
     }
 }
 
-pub(crate) struct SymbolRecordData {
-    pub(crate) name: String,
-    pub(crate) kind: SymbolKind,
-    pub(crate) visibility: SymbolVisibility,
-    pub(crate) context_index: usize,
-    pub(crate) target_name: String,
-    pub(crate) namespace: Vec<String>,
-    pub(crate) target_namespace: Option<Vec<String>>,
-    pub(crate) target_path: Option<Vec<String>>,
-    pub(crate) external_crate: Option<String>,
-    pub(crate) file_path: PathBuf,
-    pub(crate) span: Option<SourceSpan>,
-    pub(crate) cfg_condition: Option<String>,
+struct SymbolRecordData {
+    name: String,
+    kind: SymbolKind,
+    visibility: SymbolVisibility,
+    context_index: usize,
+    target_name: String,
+    namespace: Vec<String>,
+    target_namespace: Option<Vec<String>>,
+    target_path: Option<Vec<String>>,
+    external_crate: Option<String>,
+    file_path: PathBuf,
+    span: Option<SourceSpan>,
+    cfg_condition: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -107,7 +107,7 @@ pub struct SymbolRecord {
 }
 
 impl SymbolRecord {
-    pub(crate) fn new(data: SymbolRecordData) -> Self {
+    fn new(data: SymbolRecordData) -> Self {
         Self {
             definition_id: DefinitionId(usize::MAX),
             name: data.name,
@@ -187,25 +187,25 @@ impl SymbolRecord {
         } else {
             &self.namespace
         };
-        match &self.visibility {
-            SymbolVisibility::Public => VisibilityResult::Public,
-            SymbolVisibility::Private => {
-                if namespace.starts_with(visibility_namespace) {
-                    VisibilityResult::Reachable
-                } else {
-                    VisibilityResult::Private
-                }
-            }
-            SymbolVisibility::Restricted(scope) => {
-                let Some(restricted) = restricted_namespace(scope, visibility_namespace) else {
-                    return VisibilityResult::Unknown;
-                };
-                if namespace.starts_with(&restricted) {
-                    VisibilityResult::Reachable
-                } else {
-                    VisibilityResult::Private
-                }
-            }
+        let Some(visible_scope) = self.visibility.visible_scope(visibility_namespace) else {
+            return VisibilityResult::Unknown;
+        };
+        if matches!(self.visibility, SymbolVisibility::Public) {
+            VisibilityResult::Public
+        } else if namespace.starts_with(&visible_scope) {
+            VisibilityResult::Reachable
+        } else {
+            VisibilityResult::Private
+        }
+    }
+}
+
+impl SymbolVisibility {
+    pub(crate) fn visible_scope(&self, declaration_namespace: &[String]) -> Option<Vec<String>> {
+        match self {
+            Self::Private => Some(declaration_namespace.to_vec()),
+            Self::Public => Some(Vec::new()),
+            Self::Restricted(scope) => restricted_namespace(scope, declaration_namespace),
         }
     }
 }
@@ -474,7 +474,7 @@ impl SymbolIndexBuilder {
         let cfg_condition = module
             .configured_ast()
             .node(node.id())
-            .and_then(|configured| configured.effective_condition())
+            .and_then(|configured| configured.availability_condition())
             .map(str::to_owned)
             .or_else(|| configured_condition(module, root_item));
         self.push_node_symbol(
@@ -518,11 +518,11 @@ impl SymbolIndexBuilder {
         let Some(configured) = module.configured_ast().node(node.id()) else {
             return;
         };
-        if configured.decision() == CfgDecision::False {
+        if configured.availability_decision() == CfgDecision::False {
             return;
         }
         let cfg_condition = configured
-            .effective_condition()
+            .availability_condition()
             .map(str::to_owned)
             .or_else(|| module.cfg_condition().map(str::to_owned));
         match owner_item.kind() {
@@ -613,7 +613,7 @@ impl SymbolIndexBuilder {
         let cfg_condition = module
             .configured_ast()
             .node(node.id())
-            .and_then(|configured| configured.effective_condition())
+            .and_then(|configured| configured.availability_condition())
             .map(str::to_owned)
             .or_else(|| configured_condition(module, owner));
         self.push_node_symbol(
@@ -733,14 +733,14 @@ fn node_is_enabled(module: &ModuleNode, node: &SyntaxNode) -> bool {
     module
         .configured_ast()
         .node(node.id())
-        .is_some_and(|configured| configured.decision() != CfgDecision::False)
+        .is_some_and(|configured| configured.availability_decision() != CfgDecision::False)
 }
 
 fn configured_condition(module: &ModuleNode, node: &SyntaxNode) -> Option<String> {
     module
         .configured_ast()
         .node(node.id())
-        .and_then(|configured| configured.effective_condition())
+        .and_then(|configured| configured.availability_condition())
         .map(str::to_owned)
         .or_else(|| module.cfg_condition().map(str::to_owned))
 }

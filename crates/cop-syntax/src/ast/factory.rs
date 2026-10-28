@@ -99,8 +99,12 @@ impl AstFactory {
         )
     }
 
-    pub(crate) fn macro_definition(bounds: Range<usize>) -> MacroDefinition {
-        MacroDefinition::new(bounds)
+    pub(crate) fn macro_definition(
+        name: String,
+        scope: Option<AstNodeId>,
+        bounds: Range<usize>,
+    ) -> MacroDefinition {
+        MacroDefinition::new(name, scope, bounds)
     }
 
     pub(crate) fn parse_issue(

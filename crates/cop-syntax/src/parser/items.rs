@@ -15,6 +15,8 @@ use super::{
     block::LocalItemInput,
     expression::{ImplHeaderInput, MacroInputRequest, SyntaxCollector},
     generic_parameters::{GenericParameterInput, GenericParameterParser},
+    token_cursor::TokenCursor,
+    types::{TypeInput, TypeParser},
     where_clause::{WhereClauseInput, WhereClauseParser},
 };
 use crate::{
@@ -252,7 +254,8 @@ impl<'a> Parser<'a> {
                     self.parse_function(node_id).map(ItemKind::Function)
                 }
                 _ if SyntaxCollector::macro_definition_end(self.tokens, self.cursor).is_some() => {
-                    self.parse_macro_definition().map(ItemKind::MacroDefinition)
+                    self.parse_macro_definition(parent)
+                        .map(ItemKind::MacroDefinition)
                 }
                 _ if SyntaxCollector::macro_item_end(self.tokens, self.cursor).is_some() => {
                     self.parse_macro_item().map(ItemKind::Macro)
@@ -446,6 +449,22 @@ impl<'a> Parser<'a> {
             );
             return Some(AstFactory::trait_item(name));
         };
+        let trait_header_end = TokenCursor::new(self.tokens, self.cursor..open_index)
+            .and_then(|cursor| cursor.find_top_level_identifier("where"))
+            .unwrap_or(open_index);
+        if let Some(colon) = TokenCursor::new(self.tokens, self.cursor..trait_header_end)
+            .and_then(|cursor| cursor.find_top_level_punctuation(":"))
+        {
+            if colon + 1 < trait_header_end {
+                TypeParser::collect_bounds(TypeInput {
+                    tokens: self.tokens,
+                    bounds: colon + 1..trait_header_end,
+                    parent,
+                    ast_nodes: &mut self.ast_nodes,
+                    issues: &mut self.issues,
+                });
+            }
+        }
         WhereClauseParser::collect(WhereClauseInput {
             tokens: self.tokens,
             bounds: self.cursor..open_index,
@@ -545,8 +564,8 @@ impl<'a> Parser<'a> {
         ItemSyntaxParser::parse_macro_item(self.context())
     }
 
-    fn parse_macro_definition(&mut self) -> Option<MacroDefinition> {
-        ItemSyntaxParser::parse_macro_definition(self.context())
+    fn parse_macro_definition(&mut self, parent: AstNodeId) -> Option<MacroDefinition> {
+        ItemSyntaxParser::parse_macro_definition(self.context(), parent)
     }
 
     fn parse_unsupported(

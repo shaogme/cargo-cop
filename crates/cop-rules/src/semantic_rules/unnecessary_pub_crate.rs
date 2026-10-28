@@ -5,7 +5,7 @@ use std::{
 
 use cop_analysis::{
     AnalysisReference, AnalysisSnapshot, DefinitionId, ModuleNode, PathResolution,
-    PathResolutionKind, ReferenceKind, SymbolKind, SymbolRecord, SymbolVisibility,
+    PathResolutionKind, ReferenceId, ReferenceKind, SymbolKind, SymbolRecord, SymbolVisibility,
 };
 use cop_model::{Diagnostic, LocalizedMessage, RuleId, UNNECESSARY_PUB_CRATE};
 
@@ -23,6 +23,7 @@ struct PubCrateCandidate {
 struct PathScanOptions<'a> {
     condition: Option<&'a str>,
     force_required: bool,
+    api_dependency: bool,
 }
 
 struct CandidateAnalysis {
@@ -32,6 +33,7 @@ struct CandidateAnalysis {
     candidates_by_name: BTreeMap<String, Vec<usize>>,
     candidates_by_namespace: BTreeMap<(usize, Vec<String>), Vec<usize>>,
     associated_candidates_by_context: BTreeMap<usize, Vec<usize>>,
+    api_dependency_references: BTreeSet<ReferenceId>,
     required: Vec<bool>,
     uncertain: Vec<bool>,
 }
@@ -94,6 +96,15 @@ impl CandidateAnalysis {
                     .push(index);
             }
         }
+        let api_dependency_references = candidates
+            .iter()
+            .flat_map(|candidate| {
+                snapshot
+                    .facts()
+                    .api_dependencies_for(candidate.symbol.definition_id())
+            })
+            .map(|dependency| dependency.reference())
+            .collect();
         Self {
             candidates,
             required: vec![false; count],
@@ -103,6 +114,7 @@ impl CandidateAnalysis {
             candidates_by_name,
             candidates_by_namespace,
             associated_candidates_by_context,
+            api_dependency_references,
         }
     }
 
@@ -155,6 +167,7 @@ impl CandidateAnalysis {
                     PathScanOptions {
                         condition: reference.condition(),
                         force_required: false,
+                        api_dependency: self.api_dependency_references.contains(&reference.id()),
                     },
                 );
                 if reference.kind() == ReferenceKind::Use && reference.is_glob() {
@@ -197,13 +210,23 @@ impl CandidateAnalysis {
             return;
         }
         for (prefix_index, resolution) in reference.prefix_resolutions().iter().enumerate() {
-            self.record_resolution(resolution, module, condition, options.force_required);
+            if !options.api_dependency {
+                self.record_resolution(resolution, module, condition, options.force_required);
+            }
             if Self::is_unresolved(resolution) {
-                self.mark_unresolved_candidates(
-                    module,
-                    &reference.segments()[..=prefix_index],
-                    condition,
-                );
+                let self_prefix_of_qualified_path = prefix_index == 0
+                    && reference
+                        .segments()
+                        .first()
+                        .is_some_and(|segment| segment == "Self")
+                    && reference.segments().len() > 1;
+                if !self_prefix_of_qualified_path {
+                    self.mark_unresolved_candidates(
+                        module,
+                        &reference.segments()[..=prefix_index],
+                        condition,
+                    );
+                }
             }
         }
     }
@@ -288,7 +311,7 @@ impl CandidateAnalysis {
                 candidates.extend(indices.iter().copied());
             }
         }
-        if segments.first().is_some_and(|segment| segment == "Self") {
+        if segments.len() == 1 && segments.first().is_some_and(|segment| segment == "Self") {
             if let Some(indices) = self
                 .associated_candidates_by_context
                 .get(&module.context_index())
@@ -322,16 +345,28 @@ impl CandidateAnalysis {
             if !processed.insert(source) {
                 continue;
             }
+            let Some(&source_index) = self.candidate_by_definition.get(&source) else {
+                continue;
+            };
+            let source_candidate = &self.candidates[source_index];
             for dependency in snapshot.facts().api_dependencies_for(source) {
+                if dependency.source() != source {
+                    continue;
+                }
                 let Some(&target_index) = self.candidate_by_definition.get(&dependency.target())
                 else {
                     continue;
                 };
                 let target = &self.candidates[target_index];
-                if !SyntaxSupport::conditions_may_coexist(
-                    dependency.condition(),
-                    target.symbol.cfg_condition(),
-                ) || self.required[target_index]
+                if dependency
+                    .visible_scope()
+                    .starts_with(&target.private_namespace)
+                    || !SyntaxSupport::conditions_may_coexist_all(&[
+                        source_candidate.symbol.cfg_condition(),
+                        dependency.condition(),
+                        target.symbol.cfg_condition(),
+                    ])
+                    || self.required[target_index]
                 {
                     continue;
                 }

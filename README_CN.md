@@ -24,6 +24,8 @@
 
 运行时工具会查询 Cargo 元数据和 Rust target 的 `cfg` 信息，但不会构建被检查的 package 或其依赖。
 
+`#[cfg(...)]` 控制源码可用性；`cfg!(...)` 是布尔表达式，只记录求值结果，不会删除代码，因此 `if cfg!(...)` 的两个分支都会继续接受常规分析。工具只对可确认的内置 `cfg!` 求值。它不会执行 build script；build script 注入的自定义 cfg 值需通过重复的 `--cfg name`、`--cfg 'name="value"'` 参数或配置文件中的 `[[cfg]]` 显式提供。未提供的自定义值会报告为 Unknown。
+
 ## 构建与安装
 
 ```sh
@@ -54,7 +56,7 @@ steps:
   - uses: actions/checkout@main
   - uses: shaogme/cargo-cop@main
     with:
-      version: 0.1.17
+      version: 0.2.0
   - run: cargo cop --workspace
 ```
 
@@ -65,7 +67,7 @@ steps:
   - uses: actions/checkout@main
   - uses: shaogme/cargo-cop@main
     with:
-      version: 0.1.17
+      version: 0.2.0
       from-source: true
   - run: cargo cop --workspace
 ```
@@ -118,6 +120,7 @@ cargo cop --format json > cargo-cop-report.json
 | `-p, --package <NAME>` | 选择 workspace package；可重复指定多个 package。 |
 | `--target <TRIPLE>` | target 相关分析使用的 triple。`host` 表示当前 host triple。 |
 | `--features <LIST>` | 启用逗号分隔的 package features；可重复指定。可用 `PACKAGE/FEATURE` 限定 package。 |
+| `--cfg <CFG>` | 提供自定义 cfg flag（如 `custom_mode`）或 key/value（如 `custom_mode="fast"`）；可重复指定。 |
 | `--all-features` | 为所选根 package 启用全部 features。 |
 | `--no-default-features` | 为所选根 package 禁用 default features。 |
 | `--all-targets` | 纳入所选 package 声明的所有 Cargo targets。 |
@@ -148,7 +151,7 @@ Feature 选择根据所选 package 的 Cargo feature 定义计算，处理 defau
 | `child_module_line_count` | 每个外部子模块文件须有 70–800 行有效代码；空行、注释和 `#[cfg(test)]` 代码不计入。 |
 | `impl_locality` | 固有 impl 应与仓库类型定义放在同一文件；外部 trait impl 的目标仅限允许的内置类型和标准库根路径。 |
 | `private_fields_for_behavior_types` | 有 impl 块的 struct、enum 或 union，其字段必须保持私有。 |
-| `unnecessary_pub_crate` | 只有当私有模块范围之外的引用或仍保留为 crate 可见的 API 签名需要时，item 或关联 item 才应使用 `pub(crate)`；遇到无法解析的语法或宏调用时会保守跳过。 |
+| `unnecessary_pub_crate` | 只有当私有模块范围之外的引用或仍保留的 crate 可见 API 的可见类型接口需要时，item 或关联 item 才保留 `pub(crate)`。依赖会沿函数签名、约束、别名、可见字段、枚举 payload 和受支持的 foreign item 传递；函数体和私有字段不计入。遇到无法解析的语法或宏调用时会保守处理。 |
 | `child_public_free_functions` | 子模块中的独立函数必须保持私有。 |
 | `declaration_before_use` | 在适用的源码作用域中，具名声明必须先于对它的引用。 |
 | `parameter_limit` | 函数、方法和闭包的参数数量最多为 5 个。 |

@@ -80,6 +80,8 @@ pub const MODULE_SOURCE_READ_ERROR: MessageId = MessageId::new("module-source-re
 pub const MODULE_FILE_METADATA_ERROR: MessageId = MessageId::new("module-file-metadata-error");
 pub const PARSER_COVERAGE: MessageId = MessageId::new("parser-coverage");
 pub const MALFORMED_CFG_ATTRIBUTE: MessageId = MessageId::new("malformed-cfg-attribute");
+pub const MALFORMED_CFG_EXPRESSION: MessageId = MessageId::new("malformed-cfg-expression");
+pub const CFG_MACRO_IDENTITY_UNKNOWN: MessageId = MessageId::new("cfg-macro-identity-unknown");
 pub const UNKNOWN_CFG: MessageId = MessageId::new("unknown-cfg");
 pub const SYNTAX_UNCLOSED_BLOCK_COMMENT: MessageId =
     MessageId::new("syntax-unclosed-block-comment");
@@ -245,6 +247,8 @@ impl MessageId {
         MODULE_FILE_METADATA_ERROR,
         PARSER_COVERAGE,
         MALFORMED_CFG_ATTRIBUTE,
+        MALFORMED_CFG_EXPRESSION,
+        CFG_MACRO_IDENTITY_UNKNOWN,
         UNKNOWN_CFG,
         SYNTAX_UNCLOSED_BLOCK_COMMENT,
         SYNTAX_UNKNOWN_CHARACTER,

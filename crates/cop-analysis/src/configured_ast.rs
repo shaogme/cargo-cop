@@ -1,15 +1,22 @@
 use std::{collections::BTreeMap, ops::Range, slice::from_ref};
 
 use cop_cargo::TargetContext;
-use cop_cfg::CfgCondition;
-use cop_syntax::{AstNodeId, Attribute, CoverageStatus, ParseIssue, ParseOutput, SyntaxNodeKind};
+use cop_cfg::{CfgCondition, CfgExpression};
+use cop_syntax::{
+    AstNodeId, Attribute, CoverageStatus, MacroInputStatus, ParseIssue, ParseOutput, SyntaxNodeKind,
+};
 
-use crate::cfg_eval::{AttributeEffects, CfgDecision, CfgEvaluator};
+use crate::{
+    cfg_eval::{AttributeEffects, CfgDecision, CfgEvaluator},
+    macro_resolver::{MacroResolution, MacroResolver},
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ConfiguredAstIssueKind {
     UnknownCfg,
     MalformedAttribute,
+    MalformedCfgExpression,
+    OpaqueCfgMacro,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -59,11 +66,19 @@ pub struct ConfiguredNode {
     end: usize,
     attributes: Vec<Attribute>,
     inside_macro_input: bool,
-    decision: CfgDecision,
-    local_decision: CfgDecision,
-    effective_condition: Option<String>,
+    availability_decision: CfgDecision,
+    availability_local_decision: CfgDecision,
+    availability_condition: Option<String>,
     attribute_evaluation: ConfiguredAttributeEvaluation,
     issues: Vec<ConfiguredAstIssue>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConfiguredCfgMacro {
+    ast_node_id: AstNodeId,
+    predicate: CfgExpression,
+    predicate_bounds: Range<usize>,
+    decision: CfgDecision,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -88,6 +103,8 @@ pub struct ConfiguredAst {
     by_id: BTreeMap<AstNodeId, usize>,
     range_index: ConfiguredRangeIndex,
     issues: Vec<ConfiguredAstIssue>,
+    cfg_macros: Vec<ConfiguredCfgMacro>,
+    unresolved_cfg_macro_ranges: Vec<Range<usize>>,
 }
 
 impl ConfiguredNode {
@@ -115,16 +132,16 @@ impl ConfiguredNode {
         &self.attributes
     }
 
-    pub fn decision(&self) -> CfgDecision {
-        self.decision
+    pub fn availability_decision(&self) -> CfgDecision {
+        self.availability_decision
     }
 
-    pub fn local_decision(&self) -> CfgDecision {
-        self.local_decision
+    pub fn availability_local_decision(&self) -> CfgDecision {
+        self.availability_local_decision
     }
 
-    pub fn effective_condition(&self) -> Option<&str> {
-        self.effective_condition.as_deref()
+    pub fn availability_condition(&self) -> Option<&str> {
+        self.availability_condition.as_deref()
     }
 
     fn inside_macro_input(&self) -> bool {
@@ -271,6 +288,24 @@ impl ConfiguredAstIssue {
     }
 }
 
+impl ConfiguredCfgMacro {
+    pub fn ast_node_id(&self) -> AstNodeId {
+        self.ast_node_id
+    }
+
+    pub fn predicate(&self) -> &CfgExpression {
+        &self.predicate
+    }
+
+    pub fn predicate_bounds(&self) -> Range<usize> {
+        self.predicate_bounds.clone()
+    }
+
+    pub fn decision(&self) -> CfgDecision {
+        self.decision
+    }
+}
+
 impl ConfiguredAst {
     pub(crate) fn project(
         output: &ParseOutput,
@@ -293,8 +328,8 @@ impl ConfiguredAst {
             let (parent_decision, parent_condition) = match node.parent() {
                 Some(parent) => match projected.node(parent) {
                     Some(parent_node) => (
-                        parent_node.decision(),
-                        parent_node.effective_condition().map(str::to_owned),
+                        parent_node.availability_decision(),
+                        parent_node.availability_condition().map(str::to_owned),
                     ),
                     None => (CfgDecision::Unknown, None),
                 },
@@ -342,6 +377,56 @@ impl ConfiguredAst {
                         });
                     }
                 }
+                if let Some(invocation) = node.macro_invocation() {
+                    if let MacroInputStatus::CfgCandidate(candidate) = invocation.input().status() {
+                        match MacroResolver::resolve(output, node.id(), invocation) {
+                            MacroResolution::BuiltinCfg => {
+                                if let Some(predicate) = candidate.predicate() {
+                                    let decision = evaluator.evaluate_expression(predicate);
+                                    let predicate_bounds = candidate.predicate_bounds();
+                                    projected.cfg_macros.push(ConfiguredCfgMacro {
+                                        ast_node_id: node.id(),
+                                        predicate: predicate.clone(),
+                                        predicate_bounds: predicate_bounds.clone(),
+                                        decision,
+                                    });
+                                    if decision == CfgDecision::Unknown {
+                                        node_issues.push(ConfiguredAstIssue {
+                                            ast_node_id: node.id(),
+                                            kind: ConfiguredAstIssueKind::UnknownCfg,
+                                            start: predicate_bounds.start,
+                                            end: predicate_bounds.end,
+                                            condition: Some(predicate.normalized()),
+                                            effective_condition: parent_condition.clone(),
+                                        });
+                                    }
+                                } else {
+                                    let bounds = candidate.predicate_bounds();
+                                    node_issues.push(ConfiguredAstIssue {
+                                        ast_node_id: node.id(),
+                                        kind: ConfiguredAstIssueKind::MalformedCfgExpression,
+                                        start: bounds.start,
+                                        end: bounds.end,
+                                        condition: None,
+                                        effective_condition: parent_condition.clone(),
+                                    });
+                                }
+                            }
+                            MacroResolution::NonBuiltin | MacroResolution::Ambiguous => {
+                                let bounds = invocation.start()..invocation.end();
+                                projected.unresolved_cfg_macro_ranges.push(bounds.clone());
+                                node_issues.push(ConfiguredAstIssue {
+                                    ast_node_id: node.id(),
+                                    kind: ConfiguredAstIssueKind::OpaqueCfgMacro,
+                                    start: bounds.start,
+                                    end: bounds.end,
+                                    condition: None,
+                                    effective_condition: parent_condition.clone(),
+                                });
+                            }
+                        }
+                    }
+                }
             }
             projected.issues.extend(node_issues.iter().cloned());
             let index = projected.nodes.len();
@@ -355,13 +440,20 @@ impl ConfiguredAst {
                 attributes: node.attributes().to_vec(),
                 inside_macro_input: parent_inside_macro_input
                     || node.kind() == SyntaxNodeKind::MacroInput,
-                decision,
-                local_decision,
-                effective_condition,
+                availability_decision: decision,
+                availability_local_decision: local_decision,
+                availability_condition: effective_condition,
                 attribute_evaluation: ConfiguredAttributeEvaluation::from_effects(&effects),
                 issues: node_issues,
             });
         }
+        projected.cfg_macros.sort_by(|left, right| {
+            left.predicate_bounds
+                .start
+                .cmp(&right.predicate_bounds.start)
+                .then_with(|| left.predicate_bounds.end.cmp(&right.predicate_bounds.end))
+                .then_with(|| left.ast_node_id.cmp(&right.ast_node_id))
+        });
         projected.range_index = ConfiguredRangeIndex::new(&projected.nodes);
         projected
     }
@@ -374,21 +466,26 @@ impl ConfiguredAst {
         &self.issues
     }
 
+    pub fn cfg_macros(&self) -> &[ConfiguredCfgMacro] {
+        &self.cfg_macros
+    }
+
     pub fn enabled_nodes(&self) -> impl Iterator<Item = &ConfiguredNode> {
         self.nodes
             .iter()
-            .filter(|node| node.decision() == CfgDecision::True)
+            .filter(|node| node.availability_decision() == CfgDecision::True)
     }
 
     pub fn potentially_enabled_nodes(&self) -> impl Iterator<Item = &ConfiguredNode> {
         self.nodes
             .iter()
-            .filter(|node| node.decision() != CfgDecision::False)
+            .filter(|node| node.availability_decision() != CfgDecision::False)
     }
 
     pub fn is_enabled_range(&self, start: usize, end: usize) -> bool {
-        self.node_for_range(start, end)
-            .map_or(true, |node| node.decision() != CfgDecision::False)
+        self.node_for_range(start, end).map_or(true, |node| {
+            node.availability_decision() != CfgDecision::False
+        })
     }
 
     pub fn is_issue_enabled(&self, issue: &ParseIssue) -> bool {
@@ -400,7 +497,7 @@ impl ConfiguredAst {
             .and_then(|id| self.node(id))
             .map_or_else(
                 || self.is_enabled_range(issue.start(), issue.end()),
-                |node| node.decision() != CfgDecision::False,
+                |node| node.availability_decision() != CfgDecision::False,
             )
     }
 
@@ -420,9 +517,9 @@ impl ConfiguredAst {
             node.kind() == SyntaxNodeKind::Opaque
                 && node.start() <= start
                 && end <= node.end()
-                && self
-                    .node(node.id())
-                    .is_some_and(|configured| configured.decision() == CfgDecision::False)
+                && self.node(node.id()).is_some_and(|configured| {
+                    configured.availability_decision() == CfgDecision::False
+                })
         });
         if inside_inactive_opaque {
             return coverage;
@@ -430,11 +527,18 @@ impl ConfiguredAst {
         for node in output.syntax_nodes().iter().filter(|node| {
             node.kind() == SyntaxNodeKind::Opaque
                 && ranges_overlap(start, end, node.start(), node.end())
-                && self
-                    .node(node.id())
-                    .is_some_and(|configured| configured.decision() != CfgDecision::False)
+                && self.node(node.id()).is_some_and(|configured| {
+                    configured.availability_decision() != CfgDecision::False
+                })
         }) {
             coverage = merge_coverage(coverage, node.coverage());
+        }
+        if self
+            .unresolved_cfg_macro_ranges
+            .iter()
+            .any(|bounds| ranges_overlap(start, end, bounds.start, bounds.end))
+        {
+            coverage = merge_coverage(coverage, CoverageStatus::Partial);
         }
         coverage
     }
@@ -445,7 +549,7 @@ impl ConfiguredAst {
 
     pub fn condition_for_span(&self, start: usize, end: usize) -> Option<&str> {
         self.node_for_range(start, end)
-            .and_then(ConfiguredNode::effective_condition)
+            .and_then(ConfiguredNode::availability_condition)
     }
 
     pub fn node(&self, id: AstNodeId) -> Option<&ConfiguredNode> {

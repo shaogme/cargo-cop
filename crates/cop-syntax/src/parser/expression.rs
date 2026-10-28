@@ -189,7 +189,7 @@ impl SyntaxCollector {
             path_bounds.start..end_offset,
             tokens,
             opaque_bounds,
-            MacroInputStatus::Partial,
+            MacroInputStatus::Opaque,
         );
         Some((invocation, end))
     }
@@ -197,6 +197,7 @@ impl SyntaxCollector {
     pub(super) fn macro_definition(
         tokens: &[Token],
         start: usize,
+        scope: Option<AstNodeId>,
     ) -> Option<(MacroDefinition, usize)> {
         let (path, path_end) = ImplHeaderParser::path_at(tokens, start, tokens.len())?;
         if !path
@@ -220,14 +221,18 @@ impl SyntaxCollector {
             end = tokens[next_index].end();
             next_index += 1;
         }
+        let name = match tokens.get(path_end + 1)?.kind() {
+            TokenKind::Identifier(name) => name.clone(),
+            _ => return None,
+        };
         Some((
-            AstFactory::macro_definition(path.bounds().start..end),
+            AstFactory::macro_definition(name, scope, path.bounds().start..end),
             next_index,
         ))
     }
 
     pub(super) fn macro_definition_end(tokens: &[Token], start: usize) -> Option<usize> {
-        Self::macro_definition(tokens, start).map(|(_, next_index)| next_index)
+        Self::macro_definition(tokens, start, None).map(|(_, next_index)| next_index)
     }
 
     pub(super) fn macro_item_end(tokens: &[Token], start: usize) -> Option<usize> {
@@ -288,7 +293,7 @@ impl SyntaxCollector {
                             path_bounds.start..tokens[group_end].end(),
                             tokens,
                             opaque.clone(),
-                            MacroInputStatus::Partial,
+                            MacroInputStatus::Opaque,
                         );
                         let macro_id = AstFactory::push_data_node(
                             ast_nodes,

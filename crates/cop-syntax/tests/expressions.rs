@@ -157,6 +157,60 @@ fn model(mut value: Option<Box<Thing>>, xs: &[i32]) {
 }
 
 #[test]
+fn cfg_macro_candidates_keep_structured_predicates_and_absolute_ranges() {
+    let text = "fn check() { let enabled = cfg!(all(unix, target_os = \"linux\")); }";
+    let parsed = parse(SourceFile::new("src/cfg_macro.rs", text));
+    let invocation = parsed
+        .syntax_nodes()
+        .iter()
+        .filter_map(|node| node.macro_invocation())
+        .find(|invocation| {
+            invocation
+                .path()
+                .segments()
+                .last()
+                .is_some_and(|segment| segment.name() == "cfg")
+        })
+        .expect("cfg! 调用");
+    let MacroInputStatus::CfgCandidate(candidate) = invocation.input().status() else {
+        panic!("预期 cfg candidate");
+    };
+    let predicate = candidate.predicate().expect("解析 predicate");
+    let bounds = candidate.predicate_bounds();
+
+    assert_eq!(&text[bounds.clone()], "all(unix, target_os = \"linux\")");
+    assert_eq!(predicate.source_range(), bounds);
+    assert_eq!(predicate.normalized(), "all(unix, target_os = \"linux\")");
+    assert!(parsed.issues().is_empty(), "{:?}", parsed.issues());
+}
+
+#[test]
+fn cfg_macro_candidate_retains_malformed_predicate_offset() {
+    let text = "fn check() { let enabled = cfg!(not(unix, windows)); }";
+    let parsed = parse(SourceFile::new("src/cfg_macro_invalid.rs", text));
+    let invocation = parsed
+        .syntax_nodes()
+        .iter()
+        .filter_map(|node| node.macro_invocation())
+        .find(|invocation| {
+            invocation
+                .path()
+                .segments()
+                .last()
+                .is_some_and(|segment| segment.name() == "cfg")
+        })
+        .expect("cfg! 调用");
+    let MacroInputStatus::CfgCandidate(candidate) = invocation.input().status() else {
+        panic!("预期 cfg candidate");
+    };
+
+    assert!(candidate.predicate().is_none());
+    let error_offset = candidate.error_offset().expect("配置表达式错误偏移");
+    assert_eq!(&text[error_offset..error_offset + 1], "w");
+    assert!(parsed.issues().is_empty(), "{:?}", parsed.issues());
+}
+
+#[test]
 fn parses_known_macro_profiles_and_keeps_unknown_inputs_opaque() {
     let text = r#"
 static_loader! {
@@ -184,7 +238,7 @@ fn inspect(value: Value) {
     let parsed_invocations = macro_nodes
         .iter()
         .filter_map(|node| node.macro_invocation())
-        .filter(|invocation| invocation.input().status() == MacroInputStatus::Parsed)
+        .filter(|invocation| matches!(invocation.input().status(), MacroInputStatus::KnownProfile))
         .count();
 
     assert_eq!(

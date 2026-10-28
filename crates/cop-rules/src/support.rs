@@ -40,6 +40,17 @@ enum SpacingDefinitionKind {
 pub(super) struct SyntaxSupport;
 
 impl SyntaxSupport {
+    pub(super) fn conditions_may_coexist_all(conditions: &[Option<&str>]) -> bool {
+        let mut parsed = Vec::new();
+        for condition in conditions.iter().flatten() {
+            let Ok(condition) = CfgCondition::parse(condition) else {
+                return true;
+            };
+            parsed.push(condition);
+        }
+        !matches!(CfgCondition::all(parsed), CfgCondition::Constant(false))
+    }
+
     pub(super) fn common_import_prefix(left: &[UseLeaf], right: &[UseLeaf]) -> Option<String> {
         let mut best_prefix: Option<Vec<String>> = None;
         for left_leaf in left {
@@ -129,7 +140,7 @@ impl RuleDiagnosticAdapter<'_> {
             module
                 .configured_ast()
                 .node_for_range(bounds.start, bounds.end)
-                .is_some_and(|node| node.decision() == CfgDecision::False)
+                .is_some_and(|node| node.availability_decision() == CfgDecision::False)
         }) {
             return;
         }
@@ -146,7 +157,7 @@ impl RuleDiagnosticAdapter<'_> {
                     module
                         .configured_ast()
                         .node_for_range(bounds.start, bounds.end)
-                        .and_then(|node| node.effective_condition())
+                        .and_then(|node| node.availability_condition())
                 })
             })
             .or(module.cfg_condition())

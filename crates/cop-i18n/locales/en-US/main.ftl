@@ -44,6 +44,8 @@ module-source-read-error = Could not read Rust source file { $path}: { $detail }
 module-file-metadata-error = Could not inspect module file { $path}: { $detail }
 parser-coverage = { $issue }
 malformed-cfg-attribute = Could not reliably interpret a cfg/path attribute; module analysis may be incomplete
+malformed-cfg-expression = Could not parse the cfg! predicate at this source location
+cfg-macro-identity-unknown = Could not confirm this cfg! call is the built-in macro; its input remains opaque
 unknown-cfg = Could not statically determine cfg condition { $condition }
 syntax-unclosed-block-comment = Block comment is missing its closing */
 syntax-unknown-character = Unrecognized character { $character }
@@ -153,6 +155,7 @@ cli-help = Usage: cargo-cop [OPTIONS]
       -p, --package <NAME>      Select packages to scan; may be repeated
       --target <TRIPLE>         Target triple to scan
       --features <LIST>         Enable comma-separated features
+      --cfg <CFG>               Add a custom cfg flag or key/value; may be repeated
       --all-features            Enable all features
       --no-default-features     Disable default features
       --all-targets             Scan all targets

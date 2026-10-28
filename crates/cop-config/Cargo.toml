@@ -13,5 +13,6 @@ keywords = ["configuration", "rust", "static-analysis"]
 categories.workspace = true
 
 [dependencies]
+cop-cfg.workspace = true
 cop-model.workspace = true
 toml.workspace = true

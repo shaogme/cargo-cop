@@ -1,11 +1,47 @@
 use std::ops::Range;
 
+use cop_cfg::CfgExpression;
+
 use crate::{Delimiter, Token, TokenKind};
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CfgCandidate {
+    predicate: Option<CfgExpression>,
+    predicate_bounds: Range<usize>,
+    error_offset: Option<usize>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MacroInputStatus {
-    Parsed,
-    Partial,
+    CfgCandidate(CfgCandidate),
+    KnownProfile,
+    Opaque,
+}
+
+impl CfgCandidate {
+    pub fn new(
+        predicate: Option<CfgExpression>,
+        predicate_bounds: Range<usize>,
+        error_offset: Option<usize>,
+    ) -> Self {
+        Self {
+            predicate,
+            predicate_bounds,
+            error_offset,
+        }
+    }
+
+    pub fn predicate(&self) -> Option<&CfgExpression> {
+        self.predicate.as_ref()
+    }
+
+    pub fn predicate_bounds(&self) -> Range<usize> {
+        self.predicate_bounds.clone()
+    }
+
+    pub fn error_offset(&self) -> Option<usize> {
+        self.error_offset
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -93,7 +129,7 @@ impl MacroInput {
                 delimiter: Delimiter::Parenthesis,
                 bounds,
                 trees: Vec::new(),
-                status: MacroInputStatus::Partial,
+                status: MacroInputStatus::Opaque,
                 balanced: false,
             };
         };
@@ -103,7 +139,7 @@ impl MacroInput {
                 delimiter: Delimiter::Parenthesis,
                 bounds,
                 trees: Vec::new(),
-                status: MacroInputStatus::Partial,
+                status: MacroInputStatus::Opaque,
                 balanced: false,
             };
         };
@@ -112,7 +148,7 @@ impl MacroInput {
                 delimiter: *delimiter,
                 bounds,
                 trees: Vec::new(),
-                status: MacroInputStatus::Partial,
+                status: MacroInputStatus::Opaque,
                 balanced: false,
             };
         };
@@ -135,7 +171,7 @@ impl MacroInput {
             status: if balanced {
                 status
             } else {
-                MacroInputStatus::Partial
+                MacroInputStatus::Opaque
             },
             balanced,
         }
@@ -195,8 +231,8 @@ impl MacroInput {
         &self.trees
     }
 
-    pub fn status(&self) -> MacroInputStatus {
-        self.status
+    pub fn status(&self) -> &MacroInputStatus {
+        &self.status
     }
 
     pub fn is_balanced(&self) -> bool {

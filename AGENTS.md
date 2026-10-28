@@ -287,6 +287,38 @@ mod shared;
 
 ```
 
+### 3.7 Avoid Unnecessary Crate Visibility
+
+Give an item or associated item `pub(crate)` only if it is referenced from outside its declaring module and that module's descendants, or if another crate-visible API signature that must remain available refers to it. If its references are confined to its declaring module tree, use private visibility instead.
+
+This rule applies only to named declarations whose visibility is exactly `pub(crate)`: module declarations (`mod`); `extern crate` names and individual `use` aliases; structs, enums, unions, type aliases, traits, functions, constants, and statics; foreign functions and statics; and associated functions, type aliases, constants, or statics in traits and `impl` blocks. It does not report `pub`, `pub(super)`, or other `pub(in path)` visibility, struct fields, enum variants, or glob imports themselves.
+
+```rust
+// Bad: Both items are used only within their private module.
+mod parser {
+    pub(crate) struct State;
+    pub(crate) fn reset() {}
+
+    fn parse() {
+        let _ = State;
+        reset();
+    }
+}
+
+// Good: A sibling module uses State, so it needs crate visibility.
+mod parser {
+    pub(crate) struct State;
+}
+
+mod driver {
+    use crate::parser::State;
+
+    fn run(_: State) {}
+}
+```
+
+When a crate-visible API declaration must remain accessible, types and other items referenced by its signature may also need `pub(crate)`. Do not reduce visibility based on an incomplete view: unresolved syntax or macro invocations can hide references, so retain visibility when usage cannot be determined reliably.
+
 ---
 
 ## 4. Type & Interface Quality

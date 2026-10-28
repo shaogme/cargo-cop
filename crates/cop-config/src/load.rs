@@ -5,6 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use cop_cfg::ScopedCfgValue;
 use cop_model::{LocalizedMessage, RuleId, Severity, CONFIG_FILE_MISSING, CONFIG_FILE_READ_ERROR};
 
 use crate::schema::{ConfigDocument, ConfigDocumentParts, ScanDefaults};
@@ -23,6 +24,7 @@ pub struct LoadedConfig {
     scan: ScanDefaults,
     rules: BTreeMap<RuleId, (bool, Severity)>,
     locale: Option<String>,
+    cfg_overrides: Vec<ScopedCfgValue>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -66,6 +68,10 @@ impl LoadedConfig {
 
     pub fn locale(&self) -> Option<&str> {
         self.locale.as_deref()
+    }
+
+    pub fn cfg_overrides(&self) -> &[ScopedCfgValue] {
+        &self.cfg_overrides
     }
 }
 
@@ -154,6 +160,7 @@ impl ConfigLoader {
                 scan,
                 rules,
                 locale,
+                cfg_overrides,
             } = ConfigDocument::defaults().into_parts();
             return Ok(LoadedConfig {
                 source_path: None,
@@ -161,6 +168,7 @@ impl ConfigLoader {
                 scan,
                 rules,
                 locale,
+                cfg_overrides,
             });
         }
 
@@ -178,6 +186,7 @@ impl ConfigLoader {
             scan,
             rules,
             locale,
+            cfg_overrides,
         } = document.into_parts();
         Ok(LoadedConfig {
             source_path: Some(path),
@@ -185,6 +194,7 @@ impl ConfigLoader {
             scan,
             rules,
             locale,
+            cfg_overrides,
         })
     }
 }

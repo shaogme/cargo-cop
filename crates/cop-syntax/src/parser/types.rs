@@ -305,7 +305,7 @@ impl TypeParser {
                     syntax.bounds(),
                     tokens,
                     input.clone(),
-                    MacroInputStatus::Partial,
+                    MacroInputStatus::Opaque,
                 );
                 let macro_id = AstFactory::push_data_node(
                     ast_nodes,

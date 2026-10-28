@@ -4,14 +4,16 @@ mod collector;
 use std::{collections::BTreeMap, mem, ops::Range, path::PathBuf};
 
 use cop_cargo::SelectedPackage;
+use cop_cfg::CfgExpression;
 use cop_syntax::{AstNodeId, CoverageStatus, SyntaxNode, SyntaxNodeKind};
 
 pub use collector::ReferenceKind;
 
-use api_surface::{ApiSurfaceCollector, PendingDeclaration};
+use api_surface::{ApiSurfaceCollector, ApiSurfaceRange, PendingDeclaration};
 use collector::SyntaxFactCollector;
 
 use crate::{
+    cfg_eval::CfgDecision,
     module_graph::ModuleNode,
     symbol_index::{
         DefinitionId, PathResolution, SymbolIndex, SymbolIndexBuilder, SymbolIndexSupport,
@@ -82,7 +84,10 @@ pub struct ImplOwnerRecord {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ApiDependency {
+    source: DefinitionId,
     target: DefinitionId,
+    reference: ReferenceId,
+    visible_scope: Vec<String>,
     condition: Option<String>,
 }
 
@@ -92,6 +97,15 @@ pub struct DeclarationFact {
     node_id: AstNodeId,
     visibility_bounds: Range<usize>,
     visibility: SymbolVisibility,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CfgMacroFact {
+    module_id: ModuleId,
+    ast_node_id: AstNodeId,
+    predicate: CfgExpression,
+    predicate_bounds: Range<usize>,
+    decision: CfgDecision,
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -124,7 +138,8 @@ pub struct AnalysisFacts {
     definitions_by_location: BTreeMap<DefinitionLocation, DefinitionId>,
     declarations_by_definition: BTreeMap<DefinitionId, DeclarationFact>,
     pending_declarations: Vec<PendingDeclaration>,
-    api_ranges_by_declaration: BTreeMap<(usize, AstNodeId), Vec<Range<usize>>>,
+    api_ranges_by_declaration: BTreeMap<(usize, AstNodeId), Vec<ApiSurfaceRange>>,
+    cfg_macros: Vec<CfgMacroFact>,
 }
 
 impl AnalysisReference {
@@ -226,8 +241,20 @@ impl ImplOwnerRecord {
 }
 
 impl ApiDependency {
+    pub fn source(&self) -> DefinitionId {
+        self.source
+    }
+
     pub fn target(&self) -> DefinitionId {
         self.target
+    }
+
+    pub fn reference(&self) -> ReferenceId {
+        self.reference
+    }
+
+    pub fn visible_scope(&self) -> &[String] {
+        &self.visible_scope
     }
 
     pub fn condition(&self) -> Option<&str> {
@@ -253,6 +280,28 @@ impl DeclarationFact {
     }
 }
 
+impl CfgMacroFact {
+    pub fn module_id(&self) -> ModuleId {
+        self.module_id
+    }
+
+    pub fn ast_node_id(&self) -> AstNodeId {
+        self.ast_node_id
+    }
+
+    pub fn predicate(&self) -> &CfgExpression {
+        &self.predicate
+    }
+
+    pub fn predicate_bounds(&self) -> Range<usize> {
+        self.predicate_bounds.clone()
+    }
+
+    pub fn decision(&self) -> CfgDecision {
+        self.decision
+    }
+}
+
 impl AnalysisFacts {
     pub(crate) fn build(package: &SelectedPackage, modules: &[ModuleNode]) -> Self {
         let mut facts = Self {
@@ -267,6 +316,19 @@ impl AnalysisFacts {
         }
         for (index, module) in modules.iter().enumerate() {
             let module_id = ModuleId(index);
+            facts.cfg_macros.extend(
+                module
+                    .configured_ast()
+                    .cfg_macros()
+                    .iter()
+                    .map(|cfg_macro| CfgMacroFact {
+                        module_id,
+                        ast_node_id: cfg_macro.ast_node_id(),
+                        predicate: cfg_macro.predicate().clone(),
+                        predicate_bounds: cfg_macro.predicate_bounds(),
+                        decision: cfg_macro.decision(),
+                    }),
+            );
             let mut syntax_collector = SyntaxFactsCollector::new(module);
             let mut reference_collector = SyntaxFactCollector::default();
             symbol_builder.begin_module();
@@ -347,6 +409,17 @@ impl AnalysisFacts {
         }
         facts.finish_declarations(modules);
         facts.collect_api_dependencies(modules);
+        facts.cfg_macros.sort_by(|left, right| {
+            left.module_id
+                .cmp(&right.module_id)
+                .then_with(|| {
+                    left.predicate_bounds
+                        .start
+                        .cmp(&right.predicate_bounds.start)
+                })
+                .then_with(|| left.predicate_bounds.end.cmp(&right.predicate_bounds.end))
+                .then_with(|| left.ast_node_id.cmp(&right.ast_node_id))
+        });
         facts
     }
 
@@ -393,6 +466,10 @@ impl AnalysisFacts {
 
     pub fn coverage_regions(&self) -> &[CoverageRegion] {
         &self.coverage_regions
+    }
+
+    pub fn cfg_macros(&self) -> &[CfgMacroFact] {
+        &self.cfg_macros
     }
 
     pub fn impl_owners(&self) -> &[ImplOwnerRecord] {
@@ -485,8 +562,13 @@ impl AnalysisFacts {
         module_id: ModuleId,
         node: &SyntaxNode,
     ) {
+        let coverage = module.configured_ast().coverage_for_range(
+            module.parse_output(),
+            node.start(),
+            node.end(),
+        );
         if matches!(node.kind(), SyntaxNodeKind::Opaque | SyntaxNodeKind::Macro)
-            && node.coverage() != CoverageStatus::Complete
+            && coverage != CoverageStatus::Complete
             && !SyntaxFactCollector::is_disabled(module, node.start(), node.end())
             && SyntaxFactCollector::is_in_module_scope(module, node)
         {
@@ -677,8 +759,13 @@ impl AnalysisFacts {
                 continue;
             };
             let references = if candidate.kind() == SymbolKind::UseAlias {
+                let visible_scope = candidate
+                    .visibility()
+                    .visible_scope(candidate.namespace())
+                    .unwrap_or_default();
                 self.use_references_for_module(module)
                     .filter(|reference| reference.bounds == symbol_bounds)
+                    .map(|reference| (reference, visible_scope.clone()))
                     .collect::<Vec<_>>()
             } else {
                 let Some(ranges) = self
@@ -688,27 +775,36 @@ impl AnalysisFacts {
                     continue;
                 };
                 self.references_for_module(module)
-                    .filter(|reference| {
-                        reference.kind != ReferenceKind::Use
-                            && ranges.iter().any(|range| {
-                                range.start <= reference.bounds.start
-                                    && reference.bounds.end <= range.end
+                    .filter(|reference| reference.kind != ReferenceKind::Use)
+                    .flat_map(|reference| {
+                        ranges
+                            .iter()
+                            .filter(|range| {
+                                range.bounds.start <= reference.bounds.start
+                                    && reference.bounds.end <= range.bounds.end
                             })
+                            .map(move |range| (reference, range.visible_scope.clone()))
                     })
                     .collect::<Vec<_>>()
             };
             let mut dependency_facts = Vec::new();
-            for reference in references {
+            for (reference, visible_scope) in references {
                 for resolution in &reference.prefix_resolutions {
                     if let Some(symbol) = resolution.symbol() {
                         dependency_facts.push(ApiDependency {
+                            source: candidate.definition_id(),
                             target: symbol.definition_id(),
+                            reference: reference.id,
+                            visible_scope: visible_scope.clone(),
                             condition: reference.condition.clone(),
                         });
                     }
                     for alias in resolution.alias_symbols() {
                         dependency_facts.push(ApiDependency {
+                            source: candidate.definition_id(),
                             target: alias.definition_id(),
+                            reference: reference.id,
+                            visible_scope: visible_scope.clone(),
                             condition: reference.condition.clone(),
                         });
                     }
@@ -722,6 +818,8 @@ impl AnalysisFacts {
             dependencies.sort_by(|left, right| {
                 left.target
                     .cmp(&right.target)
+                    .then_with(|| left.reference.cmp(&right.reference))
+                    .then_with(|| left.visible_scope.cmp(&right.visible_scope))
                     .then_with(|| left.condition.cmp(&right.condition))
             });
             dependencies.dedup();

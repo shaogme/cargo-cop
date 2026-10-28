@@ -49,19 +49,19 @@ impl LintAttributeCollector {
         let mut relaxations = configured_ast
             .nodes()
             .iter()
-            .filter(|node| node.decision() != CfgDecision::False)
+            .filter(|node| node.availability_decision() != CfgDecision::False)
             .flat_map(|node| {
                 node.attribute_evaluation()
                     .lint_relaxations()
                     .iter()
                     .filter_map(move |relaxation| {
-                        let decision = node.decision().and(relaxation.decision());
+                        let decision = node.availability_decision().and(relaxation.decision());
                         (decision != CfgDecision::False).then(|| {
                             ConfiguredAttribute::new(
                                 relaxation.start(),
                                 relaxation.end(),
                                 merge_condition(
-                                    node.effective_condition().map(str::to_owned),
+                                    node.availability_condition().map(str::to_owned),
                                     &relaxation
                                         .condition()
                                         .map(str::to_owned)

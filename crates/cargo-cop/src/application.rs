@@ -13,6 +13,7 @@ use cop_cargo::{
     CargoDiscovery, CargoDiscoveryRequest, CargoError, CargoProject, CargoProjectLoader,
     CargoSelection, FeatureSelection, TargetSelector,
 };
+use cop_cfg::{CfgExpression, CfgValue};
 use cop_config::{
     ConfigError, ConfigLoader, ConfigOverrides, ConfigRequest, ConfigResolutionInput,
     ConfigResolver, ResolvedConfig, ScanTargetScope,
@@ -21,9 +22,9 @@ use cop_i18n::{Locale, MessageFormatter};
 use cop_model::{
     Diagnostic, LocalizedMessage, RuleId, ScanResult, ScanStatus, Severity, ToolErrorKind,
     UnknownRuleId, ARGUMENT_DUPLICATE_RULE, ARGUMENT_SEVERITY_DUPLICATE, ARGUMENT_SEVERITY_FORMAT,
-    ARGUMENT_UNKNOWN_RULE, ARGUMENT_UNKNOWN_SEVERITY, CARGO_WORKSPACE_CONFLICT, CLI_HELP,
-    CLI_PARSE_ERROR, CLI_VERSION, IO_ERROR, LOCALE_INVALID_CLI, LOCALE_INVALID_CONFIG,
-    OUTPUT_WRITE_ERROR,
+    ARGUMENT_UNKNOWN_RULE, ARGUMENT_UNKNOWN_SEVERITY, CARGO_TARGET_CFG_INVALID,
+    CARGO_WORKSPACE_CONFLICT, CLI_HELP, CLI_PARSE_ERROR, CLI_VERSION, IO_ERROR, LOCALE_INVALID_CLI,
+    LOCALE_INVALID_CONFIG, OUTPUT_WRITE_ERROR,
 };
 use cop_report::{ReportFormat, Reporter};
 use cop_rules::RuleEngine;
@@ -48,6 +49,8 @@ struct CliOptions {
     target: Option<String>,
     #[arg(long, value_delimiter = ',', action = ArgAction::Append, value_name = "LIST")]
     features: Vec<String>,
+    #[arg(long = "cfg", action = ArgAction::Append, value_name = "CFG")]
+    cfg_values: Vec<String>,
     #[arg(long)]
     all_features: bool,
     #[arg(long)]
@@ -375,6 +378,7 @@ impl Application {
             .with_packages(options.packages.clone())
             .with_all_targets(scan.target_scope() == ScanTargetScope::All)
             .with_target(scan.target().map(str::to_owned))
+            .with_cfg_overrides(configuration.cfg_overrides().to_vec())
             .with_current_directory(current_directory);
         let project =
             TargetSelector::select(discovery, selection).map_err(ApplicationError::from_cargo)?;
@@ -396,6 +400,40 @@ impl Application {
             .with_all_features(options.all_features)
             .with_no_default_features(options.no_default_features)
             .with_all_targets(options.all_targets);
+        if !options.cfg_values.is_empty() {
+            let mut values = BTreeSet::new();
+            for value in &options.cfg_values {
+                let expression = CfgExpression::parse(value).map_err(|_| {
+                    ApplicationError::new(
+                        ToolErrorKind::Arguments,
+                        LocalizedMessage::new(CARGO_TARGET_CFG_INVALID)
+                            .with_text("condition", value),
+                    )
+                })?;
+                let cfg_value = match expression {
+                    CfgExpression::Flag { name, .. } => CfgValue::new(name, None),
+                    CfgExpression::KeyValue { name, value, .. } => CfgValue::new(name, Some(value)),
+                    CfgExpression::All { .. }
+                    | CfgExpression::Any { .. }
+                    | CfgExpression::Not { .. } => {
+                        return Err(ApplicationError::new(
+                            ToolErrorKind::Arguments,
+                            LocalizedMessage::new(CARGO_TARGET_CFG_INVALID)
+                                .with_text("condition", value),
+                        ));
+                    }
+                };
+                if CfgValue::is_builtin_name(cfg_value.name()) {
+                    return Err(ApplicationError::new(
+                        ToolErrorKind::Arguments,
+                        LocalizedMessage::new(CARGO_TARGET_CFG_INVALID)
+                            .with_text("condition", value),
+                    ));
+                }
+                values.insert(cfg_value);
+            }
+            overrides = overrides.with_cfg_values(Some(values.into_iter().collect()));
+        }
         let mut disabled = BTreeSet::new();
         for value in &options.disabled_rules {
             let rule: RuleId = value.parse().map_err(|error: UnknownRuleId| {
@@ -530,6 +568,7 @@ fn value_option(argument: &OsStr) -> bool {
             | "--package"
             | "--target"
             | "--features"
+            | "--cfg"
             | "--config"
             | "--locale"
             | "--format"

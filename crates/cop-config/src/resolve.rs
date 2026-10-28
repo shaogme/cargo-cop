@@ -3,6 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use cop_cfg::{CfgValue, ScopedCfgValue};
 use cop_model::{RuleId, Severity};
 
 use crate::{
@@ -23,6 +24,7 @@ pub struct ResolvedConfig {
     rules: BTreeMap<RuleId, RuleSetting>,
     source_path: Option<PathBuf>,
     all_features: bool,
+    cfg_overrides: Vec<ScopedCfgValue>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -34,6 +36,7 @@ pub struct ConfigOverrides {
     all_targets: bool,
     disabled_rules: BTreeSet<RuleId>,
     severities: BTreeMap<RuleId, Severity>,
+    cfg_values: Option<Vec<CfgValue>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -78,6 +81,10 @@ impl ResolvedConfig {
     pub fn all_features(&self) -> bool {
         self.all_features
     }
+
+    pub fn cfg_overrides(&self) -> &[ScopedCfgValue] {
+        &self.cfg_overrides
+    }
 }
 
 impl ConfigOverrides {
@@ -113,6 +120,11 @@ impl ConfigOverrides {
 
     pub fn set_severity(mut self, rule_id: RuleId, severity: Severity) -> Self {
         self.severities.insert(rule_id, severity);
+        self
+    }
+
+    pub fn with_cfg_values(mut self, cfg_values: Option<Vec<CfgValue>>) -> Self {
+        self.cfg_values = cfg_values;
         self
     }
 }
@@ -158,12 +170,83 @@ impl ConfigResolver {
             rules.insert(*rule_id, RuleSetting { enabled, severity });
         }
 
+        let mut cfg_overrides = config.cfg_overrides().to_vec();
+        if let Some(cfg_values) = overrides.cfg_values {
+            let overridden_names = cfg_values
+                .iter()
+                .map(|value| value.name().to_owned())
+                .collect::<BTreeSet<_>>();
+            cfg_overrides.retain(|value| !overridden_names.contains(value.value().name()));
+            cfg_overrides.extend(
+                cfg_values
+                    .into_iter()
+                    .map(|value| ScopedCfgValue::new(None, None, value)),
+            );
+        }
+
         ResolvedConfig {
             allow_warnings: config.allow_warnings(),
             scan,
             rules,
             source_path: config.source_path().map(Path::to_path_buf),
             all_features: overrides.all_features,
+            cfg_overrides,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        env, fs,
+        process::id,
+        sync::atomic::{AtomicU64, Ordering},
+    };
+
+    use cop_cfg::CfgValue;
+
+    use super::{ConfigOverrides, ConfigResolutionInput, ConfigResolver};
+    use crate::{ConfigLoader, ConfigRequest};
+
+    static NEXT_CONFIG: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn command_line_cfg_values_replace_scoped_config_values_by_key() {
+        let sequence = NEXT_CONFIG.fetch_add(1, Ordering::Relaxed);
+        let directory = env::temp_dir().join(format!("cargo-cop-config-{}-{sequence}", id()));
+        fs::create_dir_all(&directory).expect("创建临时配置目录");
+        let path = directory.join("cargo-cop.toml");
+        fs::write(
+            &path,
+            "version = 3\n\n[[cfg]]\npackage = \"sample\"\nname = \"custom_mode\"\nvalue = \"file\"\n\n[[cfg]]\nname = \"other_mode\"\n",
+        )
+        .expect("写入配置");
+        let config = ConfigLoader::load(ConfigRequest::new(
+            Some(path),
+            directory.clone(),
+            directory.clone(),
+        ))
+        .expect("读取配置");
+        let resolved = ConfigResolver::resolve(ConfigResolutionInput::new(
+            config,
+            ConfigOverrides::default().with_cfg_values(Some(vec![CfgValue::new(
+                "custom_mode",
+                Some("cli".to_owned()),
+            )])),
+        ));
+
+        assert_eq!(resolved.cfg_overrides().len(), 2);
+        let cli_override = resolved
+            .cfg_overrides()
+            .iter()
+            .find(|value| value.value().name() == "custom_mode")
+            .expect("CLI cfg 覆盖");
+        assert_eq!(cli_override.package(), None);
+        assert_eq!(cli_override.value().value(), Some("cli"));
+        assert!(resolved
+            .cfg_overrides()
+            .iter()
+            .any(|value| value.value().name() == "other_mode"));
+        fs::remove_dir_all(directory).expect("清理临时配置目录");
     }
 }
