@@ -49,6 +49,7 @@ enum SpacingDefinitionKind {
     Constant,
     Static,
     Function,
+    Impl,
 }
 
 pub(super) struct SyntaxSupport;
@@ -528,6 +529,7 @@ impl SyntaxSupport {
             ItemSyntaxKind::Constant(_) => Some(SpacingDefinitionKind::Constant),
             ItemSyntaxKind::Static(_) => Some(SpacingDefinitionKind::Static),
             ItemSyntaxKind::Function { .. } => Some(SpacingDefinitionKind::Function),
+            ItemSyntaxKind::Impl => Some(SpacingDefinitionKind::Impl),
             _ => None,
         }
     }

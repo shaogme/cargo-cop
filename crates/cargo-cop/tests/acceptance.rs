@@ -3115,6 +3115,26 @@ fn requires_one_line_between_different_and_regular_definition_kinds() {
 }
 
 #[test]
+fn requires_one_line_between_impl_blocks_and_every_checked_definition_kind() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "src/lib.rs",
+        "struct Target;\n\nimpl Target {}\nstruct StructAfterImpl;\nimpl Target {}\nenum EnumAfterImpl { Value }\nimpl Target {}\nunion UnionAfterImpl { value: u8 }\nimpl Target {}\ntype AliasAfterImpl = u8;\nimpl Target {}\ntrait TraitAfterImpl {}\nimpl Target {}\nconst CONSTANT: u8 = 0;\nimpl Target {}\nstatic STATIC: u8 = 0;\nimpl Target {}\nfn function_after_impl() {}\nimpl Target {}\nimpl Target {}\nstruct StructAfterImplPair;\n",
+    );
+
+    let output = fixture.run(&["--format", "json"]);
+    let diagnostics = item_spacing_diagnostics(&output);
+
+    assert_eq!(output.status, 1, "{}", output.stdout);
+    assert_eq!(diagnostics.len(), 18, "{}", output.stdout);
+    assert!(diagnostics.iter().all(|diagnostic| {
+        diagnostic["arguments"]["expected"].as_i64() == Some(1)
+            && diagnostic["arguments"]["actual"].as_i64() == Some(0)
+    }));
+}
+
+#[test]
 fn checks_item_spacing_independently_in_modules_traits_and_impls() {
     let fixture = Fixture::new();
     fixture.write("Cargo.toml", &package_manifest("sample"));
@@ -3322,10 +3342,10 @@ fn isolates_test_cfg_contexts_and_deduplicates_shared_diagnostics() {
 fn keeps_same_named_binary_and_library_targets_separate() {
     let fixture = Fixture::new();
     fixture.write("Cargo.toml", &package_manifest("sample"));
-    fixture.write("src/lib.rs", "struct Shared;\nimpl Shared {}\n");
+    fixture.write("src/lib.rs", "struct Shared;\n\nimpl Shared {}\n");
     fixture.write(
         "src/main.rs",
-        "struct Shared;\nimpl Shared {}\nfn main() {}\n",
+        "struct Shared;\n\nimpl Shared {}\n\nfn main() {}\n",
     );
 
     let output = fixture.run(&["--format", "json"]);
@@ -3341,7 +3361,7 @@ fn marks_rule_phase_resolution_failures_as_partial() {
     fixture.write("Cargo.toml", &package_manifest("sample"));
     fixture.write(
         "src/lib.rs",
-        "trait Local {}\nimpl Local for missing::Type {}\n",
+        "trait Local {}\n\nimpl Local for missing::Type {}\n",
     );
 
     let output = fixture.run(&["--format", "json"]);
