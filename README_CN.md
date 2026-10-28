@@ -15,7 +15,7 @@
 - 下方规则目录列出的源码规范。
 - 带稳定规则 ID 和源码位置的人类可读或 JSON 诊断。
 
-`cargo-cop` 使用自有词法分析器、解析器、模块分析和符号索引。它不替代 `rustc` 或 Clippy，也不会编译被检查的项目；它不会执行 build script 或展开宏。因此，`include!`、可能声明模块的 item macro、未知 `cfg` 或尚不支持的 Rust 语法可能导致扫描结果为部分完成或不完整。将扫描结果用于 CI 门禁时，请检查报告中的状态。
+`cargo-cop` 使用自有词法分析器、解析器、模块分析和符号索引。解析和 cfg 配置完成后，`cop-analysis` 会为每个模块实例只枚举一次 AST 节点，并在同一轮收集符号与局部绑定、引用、API 声明范围、impl 所有者、覆盖状态和模块语法事实。遍历结束后再统一解析路径并构建 API 依赖等索引，生成不可变的 `AnalysisFacts`；语义规则与结构规则查询这些事实处理路径、作用域、导入、字段和语法形状。它不替代 `rustc` 或 Clippy，也不会编译被检查的项目；它不会执行 build script 或展开宏。因此，`include!`、可能声明模块的 item macro、未知 `cfg` 或尚不支持的 Rust 语法可能导致扫描结果为部分完成或不完整。将扫描结果用于 CI 门禁时，请检查报告中的状态。
 
 ## 环境要求
 
@@ -54,7 +54,7 @@ steps:
   - uses: actions/checkout@main
   - uses: shaogme/cargo-cop@main
     with:
-      version: 0.1.15
+      version: 0.1.16
   - run: cargo cop --workspace
 ```
 
@@ -65,7 +65,7 @@ steps:
   - uses: actions/checkout@main
   - uses: shaogme/cargo-cop@main
     with:
-      version: 0.1.15
+      version: 0.1.16
       from-source: true
   - run: cargo cop --workspace
 ```
@@ -148,6 +148,7 @@ Feature 选择根据所选 package 的 Cargo feature 定义计算，处理 defau
 | `child_module_line_count` | 每个外部子模块文件须有 70–800 行有效代码；空行、注释和 `#[cfg(test)]` 代码不计入。 |
 | `impl_locality` | 固有 impl 应与仓库类型定义放在同一文件；外部 trait impl 的目标仅限允许的内置类型和标准库根路径。 |
 | `private_fields_for_behavior_types` | 有 impl 块的 struct、enum 或 union，其字段必须保持私有。 |
+| `unnecessary_pub_crate` | 只有当私有模块范围之外的引用或仍保留为 crate 可见的 API 签名需要时，item 或关联 item 才应使用 `pub(crate)`；遇到无法解析的语法或宏调用时会保守跳过。 |
 | `child_public_free_functions` | 子模块中的独立函数必须保持私有。 |
 | `declaration_before_use` | 在适用的源码作用域中，具名声明必须先于对它的引用。 |
 | `parameter_limit` | 函数、方法和闭包的参数数量最多为 5 个。 |
@@ -206,13 +207,13 @@ Workspace 将命令行应用与分析流程分层：
 | `cop-cargo` | Cargo 元数据、package 和 target 选择、features、依赖和 target `cfg`。 |
 | `cop-cfg` | 共享 `cfg` 表达式解析、规范化和三态求值。 |
 | `cop-syntax` | 自有 Rust 词法分析器、语法树、解析器和解析覆盖状态。 |
-| `cop-analysis` | `cfg` 求值、模块图发现、符号和路径解析、分析状态。 |
+| `cop-analysis` | `cfg` 求值、模块图发现、不可变定义/引用事实、路径解析、API 依赖和 impl 所有者索引、分析状态。 |
 | `cop-rules` | 20 条源码规范检查规则。 |
 | `cop-model` | 共享规则 ID、诊断、位置、消息和扫描状态类型。 |
 | `cop-report` | 诊断稳定排序、人类可读和 JSON 渲染。 |
 | `cop-i18n` | 英文和简体中文消息。 |
 
-扫描流程为：解析 CLI 和配置 → 查询 Cargo 元数据 → 选择 package 与 target → 解析可达模块文件 → 求值 `cfg` 并构建索引 → 执行启用规则 → 排序并渲染诊断。
+扫描流程为：解析 CLI 和配置 → 查询 Cargo 元数据 → 选择 package 与 target → 解析可达模块文件 → 收集定义和语法引用 → 解析引用并构建不可变索引 → 规则查询事实与源码位置 → 排序并渲染诊断。语法和布局规则仍会读取解析后的语法树来检查结构。
 
 ## 开发
 

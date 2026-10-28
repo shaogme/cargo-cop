@@ -1,14 +1,9 @@
-mod path_syntax;
-
 use std::ops::Range;
 
-use cop_analysis::{CfgCondition, CfgDecision, ModuleNode};
+use cop_analysis::{AnalysisFacts, CfgCondition, CfgDecision, ItemFact, ItemKindFact, ModuleNode};
 use cop_config::ResolvedConfig;
 use cop_model::{Diagnostic, LocalizedMessage, RuleId, SourceSpan};
-use cop_syntax::{
-    AstNodeId, Attribute, ExpressionSyntax, ItemSyntaxKind, ParseOutput, SyntaxNode,
-    SyntaxNodeKind, TriviaKind, VisibilityKind, WherePredicateKind,
-};
+use cop_syntax::{ParseOutput, TriviaKind};
 
 pub(super) struct RuleReport {
     rule_id: RuleId,
@@ -26,17 +21,7 @@ pub(super) struct UseLeaf {
     pub(super) path: Vec<String>,
     pub(super) alias: Option<String>,
     pub(super) glob: bool,
-    pub(super) start: usize,
-    pub(super) end: usize,
     pub(super) condition: Option<String>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct PathReference {
-    pub(super) segments: Vec<String>,
-    pub(super) start: usize,
-    pub(super) end: usize,
-    pub(super) is_macro: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -198,11 +183,11 @@ impl SyntaxSupport {
     }
 
     pub(super) fn expected_spacing_blank_lines(
-        previous: &SyntaxNode,
-        current: &SyntaxNode,
+        previous: &ItemFact,
+        current: &ItemFact,
     ) -> Option<usize> {
-        let previous_kind = Self::spacing_definition_kind(previous.item_syntax()?.kind())?;
-        let current_kind = Self::spacing_definition_kind(current.item_syntax()?.kind())?;
+        let previous_kind = Self::spacing_definition_kind(previous.kind())?;
+        let current_kind = Self::spacing_definition_kind(current.kind())?;
         Some(match (previous_kind, current_kind) {
             (SpacingDefinitionKind::Constant, SpacingDefinitionKind::Constant)
             | (SpacingDefinitionKind::Static, SpacingDefinitionKind::Static)
@@ -211,217 +196,24 @@ impl SyntaxSupport {
         })
     }
 
-    pub(super) fn is_non_private(item: &SyntaxNode) -> bool {
-        item.item_syntax()
-            .is_some_and(|data| !matches!(data.visibility().kind(), VisibilityKind::Private))
-    }
-
-    pub(super) fn is_cfg_test(attributes: &[Attribute]) -> bool {
-        attributes.iter().any(Attribute::is_cfg_test)
-    }
-
-    pub(super) fn for_each_path_reference(
+    pub(super) fn use_facts(
+        facts: &AnalysisFacts,
         module: &ModuleNode,
-        item: &SyntaxNode,
-        include_macros: bool,
-        visitor: &mut dyn FnMut(&PathReference),
-    ) {
-        if item
-            .item_syntax()
-            .is_some_and(|data| matches!(data.kind(), ItemSyntaxKind::Module { .. }))
-        {
-            return;
-        }
-        let output = module.parse_output();
-        let mut path_references = Vec::new();
-        let mut typed_ranges = Vec::new();
-        let mut pending = vec![item.id()];
-        while let Some(id) = pending.pop() {
-            let Some(node) = output.node(id) else {
-                continue;
-            };
-            if node.id() != item.id()
-                && node
-                    .item_syntax()
-                    .is_some_and(|data| matches!(data.kind(), ItemSyntaxKind::Module { .. }))
-            {
-                continue;
-            }
-            if let Some(expression) = node.expression_syntax() {
-                typed_ranges.push(node.start()..node.end());
-                path_syntax::PathSyntaxCollector::collect_expression(
-                    expression,
-                    &mut path_references,
-                );
-            }
-            if let Some(syntax) = node.impl_syntax() {
-                if let Some(path) = syntax.trait_path() {
-                    typed_ranges.push(path.bounds());
-                    path_syntax::PathSyntaxCollector::collect_path(path, &mut path_references);
-                }
-            }
-            if let Some(syntax) = node.type_syntax() {
-                typed_ranges.push(node.start()..node.end());
-                path_syntax::PathSyntaxCollector::collect_type(syntax, &mut path_references);
-            }
-            if let Some(syntax) = node.pattern_syntax() {
-                typed_ranges.push(node.start()..node.end());
-                path_syntax::PathSyntaxCollector::collect_pattern(syntax, &mut path_references);
-            }
-            if node.generic_parameter_syntax().is_some() {
-                typed_ranges.push(node.start()..node.end());
-                if let Some(parameter) = node.generic_parameter_syntax() {
-                    for bound in parameter.bounds() {
-                        path_syntax::PathSyntaxCollector::collect_trait_bound(
-                            bound,
-                            &mut path_references,
-                        );
-                    }
-                    if let Some(ty) = parameter.declared_type() {
-                        path_syntax::PathSyntaxCollector::collect_type(ty, &mut path_references);
-                    }
-                    if let Some(ty) = parameter.default_type() {
-                        path_syntax::PathSyntaxCollector::collect_type(ty, &mut path_references);
-                    }
-                }
-            }
-            if let Some(predicate) = node.where_predicate_syntax() {
-                typed_ranges.push(node.start()..node.end());
-                match predicate.kind() {
-                    WherePredicateKind::Lifetime { .. } => {}
-                    WherePredicateKind::Type {
-                        bounded_type,
-                        bounds,
-                        ..
-                    } => {
-                        path_syntax::PathSyntaxCollector::collect_type(
-                            bounded_type,
-                            &mut path_references,
-                        );
-                        for bound in bounds {
-                            path_syntax::PathSyntaxCollector::collect_trait_bound(
-                                bound,
-                                &mut path_references,
-                            );
-                        }
-                    }
-                }
-            }
-            pending.extend(node.children().iter().rev().copied());
-        }
-        if include_macros {
-            for node in output.syntax_nodes().iter().filter(|node| {
-                node.kind() == SyntaxNodeKind::Macro
-                    && is_descendant_of(output, node, item.id())
-                    && !typed_ranges
-                        .iter()
-                        .any(|range| range.start <= node.start() && node.end() <= range.end)
-            }) {
-                if let Some(invocation) = node.macro_invocation() {
-                    let bounds = invocation.path().bounds();
-                    path_references.push(PathReference {
-                        segments: path_syntax::PathSyntaxCollector::path_segments(
-                            invocation.path(),
-                        ),
-                        start: bounds.start,
-                        end: bounds.end,
-                        is_macro: true,
-                    });
-                }
-            }
-        }
-        path_references.sort_unstable_by_key(|path| (path.start, path.end));
-        path_references.dedup_by(|left, right| {
-            left.start == right.start
-                && left.end == right.end
-                && left.segments == right.segments
-                && left.is_macro == right.is_macro
-        });
-        for path in &path_references {
-            if path.is_macro && !include_macros {
-                continue;
-            }
-            if module
-                .configured_ast()
-                .node_for_range(path.start, path.end)
-                .is_some_and(|node| node.decision() == CfgDecision::False)
-            {
-                continue;
-            }
-            visitor(path);
-        }
-    }
-
-    pub(super) fn for_each_expression_syntax(
-        module: &ModuleNode,
-        item: &SyntaxNode,
-        visitor: &mut dyn FnMut(&ExpressionSyntax),
-    ) {
-        let output = module.parse_output();
-        let mut pending = vec![item.id()];
-        while let Some(id) = pending.pop() {
-            let Some(node) = output.node(id) else {
-                continue;
-            };
-            if node.id() != item.id()
-                && node
-                    .item_syntax()
-                    .is_some_and(|data| matches!(data.kind(), ItemSyntaxKind::Module { .. }))
-            {
-                continue;
-            }
-            if let Some(expression) = node.expression_syntax() {
-                let bounds = expression.bounds();
-                if !module
-                    .configured_ast()
-                    .node_for_range(bounds.start, bounds.end)
-                    .is_some_and(|configured| configured.decision() == CfgDecision::False)
-                    && module
-                        .configured_ast()
-                        .is_supported_range(output, bounds.start, bounds.end)
-                {
-                    visitor(expression);
-                }
-            }
-            pending.extend(node.children().iter().rev().copied());
-        }
-    }
-
-    pub(super) fn child_item_nodes_for_node<'a>(
-        module: &'a ModuleNode,
-        root: &SyntaxNode,
-    ) -> Vec<&'a SyntaxNode> {
-        let output = module.parse_output();
-        root.children()
-            .iter()
-            .filter_map(|id| output.node(*id))
-            .find(|node| node.kind() == SyntaxNodeKind::Scope)
-            .map(|scope| {
-                scope
-                    .children()
-                    .iter()
-                    .filter_map(|id| output.node(*id))
-                    .filter(|node| node.item_syntax().is_some())
-                    .collect()
+        item_bounds: Range<usize>,
+    ) -> Vec<UseLeaf> {
+        facts
+            .use_references_for_module(module)
+            .filter(|reference| {
+                let bounds = reference.bounds();
+                item_bounds.start <= bounds.start && bounds.end <= item_bounds.end
             })
-            .unwrap_or_default()
-    }
-
-    pub(super) fn use_leaves(module: &ModuleNode, tree: &SyntaxNode) -> Vec<UseLeaf> {
-        let mut leaves = Vec::new();
-        Self::collect_use_leaves(module, tree, &[], &mut leaves);
-        leaves
-    }
-
-    pub(super) fn use_tree_node_for_item<'a>(
-        module: &'a ModuleNode,
-        item: &SyntaxNode,
-    ) -> Option<&'a SyntaxNode> {
-        let output = module.parse_output();
-        item.children()
-            .iter()
-            .filter_map(|id| output.node(*id))
-            .find(|node| node.kind() == SyntaxNodeKind::UseTree)
+            .map(|reference| UseLeaf {
+                path: reference.segments().to_vec(),
+                alias: reference.alias().map(str::to_owned),
+                glob: reference.is_glob(),
+                condition: reference.condition().map(str::to_owned),
+            })
+            .collect()
     }
 
     pub(super) fn blank_lines_between(
@@ -472,78 +264,20 @@ impl SyntaxSupport {
             .count()
     }
 
-    fn collect_use_leaves(
-        module: &ModuleNode,
-        tree: &SyntaxNode,
-        prefix: &[String],
-        leaves: &mut Vec<UseLeaf>,
-    ) {
-        let start = tree.start();
-        let end = tree.end();
-        let Some(configured) = module.configured_ast().node(tree.id()) else {
-            return;
-        };
-        if configured.decision() == CfgDecision::False {
-            return;
-        }
-        let Some(tree_data) = tree.use_tree() else {
-            return;
-        };
-        let mut path = prefix.to_vec();
-        path.extend(tree_data.path().iter().cloned());
-        let children = tree
-            .children()
-            .iter()
-            .filter_map(|id| module.parse_output().node(*id))
-            .filter(|node| node.kind() == SyntaxNodeKind::UseTree)
-            .collect::<Vec<_>>();
-        if children.is_empty() {
-            if !module
-                .configured_ast()
-                .is_supported_range(module.parse_output(), start, end)
-            {
-                return;
-            }
-            leaves.push(UseLeaf {
-                path,
-                alias: tree_data.alias().map(str::to_owned),
-                glob: tree_data.is_glob(),
-                start,
-                end,
-                condition: configured.effective_condition().map(str::to_owned),
-            });
-            return;
-        }
-        for child in children {
-            Self::collect_use_leaves(module, child, &path, leaves);
-        }
-    }
-
-    fn spacing_definition_kind(kind: &ItemSyntaxKind) -> Option<SpacingDefinitionKind> {
+    fn spacing_definition_kind(kind: &ItemKindFact) -> Option<SpacingDefinitionKind> {
         match kind {
-            ItemSyntaxKind::Struct(_) => Some(SpacingDefinitionKind::Struct),
-            ItemSyntaxKind::Enum(_) => Some(SpacingDefinitionKind::Enum),
-            ItemSyntaxKind::Union(_) => Some(SpacingDefinitionKind::Union),
-            ItemSyntaxKind::TypeAlias(_) => Some(SpacingDefinitionKind::TypeAlias),
-            ItemSyntaxKind::Trait(_) => Some(SpacingDefinitionKind::Trait),
-            ItemSyntaxKind::Constant(_) => Some(SpacingDefinitionKind::Constant),
-            ItemSyntaxKind::Static(_) => Some(SpacingDefinitionKind::Static),
-            ItemSyntaxKind::Function { .. } => Some(SpacingDefinitionKind::Function),
-            ItemSyntaxKind::Impl => Some(SpacingDefinitionKind::Impl),
+            ItemKindFact::Struct => Some(SpacingDefinitionKind::Struct),
+            ItemKindFact::Enum => Some(SpacingDefinitionKind::Enum),
+            ItemKindFact::Union => Some(SpacingDefinitionKind::Union),
+            ItemKindFact::TypeAlias => Some(SpacingDefinitionKind::TypeAlias),
+            ItemKindFact::Trait => Some(SpacingDefinitionKind::Trait),
+            ItemKindFact::Constant => Some(SpacingDefinitionKind::Constant),
+            ItemKindFact::Static => Some(SpacingDefinitionKind::Static),
+            ItemKindFact::Function => Some(SpacingDefinitionKind::Function),
+            ItemKindFact::Impl => Some(SpacingDefinitionKind::Impl),
             _ => None,
         }
     }
-}
-
-fn is_descendant_of(output: &ParseOutput, node: &SyntaxNode, root: AstNodeId) -> bool {
-    let mut parent = node.parent();
-    while let Some(id) = parent {
-        if id == root {
-            return true;
-        }
-        parent = output.node(id).and_then(SyntaxNode::parent);
-    }
-    node.id() == root
 }
 
 fn namespace_name(namespace: &[String]) -> String {

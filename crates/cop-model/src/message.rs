@@ -53,6 +53,7 @@ pub const IMPL_INHERENT_TARGET: MessageId = MessageId::new("impl-inherent-target
 pub const IMPL_TARGET_UNRESOLVED: MessageId = MessageId::new("impl-target-unresolved");
 pub const PRIVATE_FIELDS_FOR_BEHAVIOR_TYPE: MessageId =
     MessageId::new("private-fields-for-behavior-type");
+pub const UNNECESSARY_PUB_CRATE: MessageId = MessageId::new("unnecessary-pub-crate");
 pub const CHILD_PUBLIC_FREE_FUNCTION: MessageId = MessageId::new("child-public-free-function");
 pub const NO_LINT_RELAXATION: MessageId = MessageId::new("no-lint-relaxation");
 pub const FUNCTION_PARAMETER_LIMIT: MessageId = MessageId::new("function-parameter-limit");
@@ -217,6 +218,7 @@ impl MessageId {
         IMPL_INHERENT_TARGET,
         IMPL_TARGET_UNRESOLVED,
         PRIVATE_FIELDS_FOR_BEHAVIOR_TYPE,
+        UNNECESSARY_PUB_CRATE,
         CHILD_PUBLIC_FREE_FUNCTION,
         NO_LINT_RELAXATION,
         FUNCTION_PARAMETER_LIMIT,
@@ -365,6 +367,7 @@ impl MessageId {
             IMPL_EXTERNAL_TRAIT_TARGET => &[("root", TEXT)],
             IMPL_TARGET_UNRESOLVED => &[("target", TEXT)],
             PRIVATE_FIELDS_FOR_BEHAVIOR_TYPE => &[("name", TEXT)],
+            UNNECESSARY_PUB_CRATE => &[("name", TEXT)],
             FUNCTION_PARAMETER_LIMIT | CLOSURE_PARAMETER_LIMIT | TUPLE_ARITY => {
                 &[("actual", NUMBER), ("maximum", NUMBER)]
             }

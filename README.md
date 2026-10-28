@@ -15,7 +15,7 @@ The project provides 20 configurable rules, human-readable and JSON reports, and
 - Source conventions represented by the rule catalog below.
 - Human-readable or JSON diagnostics, with stable rule IDs and source locations.
 
-`cargo-cop` uses its own lexer, parser, module analysis, and symbol index. It is not a replacement for `rustc` or Clippy and does not compile the checked project. It does not execute build scripts or expand macros. An `include!`, an item macro that may declare modules, an unknown `cfg`, or unsupported Rust syntax can therefore produce a partial or incomplete scan result. Check the reported status when using the result as a CI gate.
+`cargo-cop` uses its own lexer, parser, module analysis, and symbol index. After parsing and `cfg` configuration, `cop-analysis` enumerates each module instance's AST nodes once, collecting symbols and local bindings, references, API declaration ranges, impl ownership, coverage regions, and module syntax facts in the same pass. It resolves paths and builds API dependency indexes after the pass, then exposes them through an immutable `AnalysisFacts` snapshot. Semantic and structural rules query these facts for path resolution, item scopes, imports, fields, and syntax shapes. It is not a replacement for `rustc` or Clippy and does not compile the checked project. It does not execute build scripts or expand macros. An `include!`, an item macro that may declare modules, an unknown `cfg`, or unsupported Rust syntax can therefore produce a partial or incomplete scan result. Check the reported status when using the result as a CI gate.
 
 ## Requirements
 
@@ -54,7 +54,7 @@ steps:
   - uses: actions/checkout@main
   - uses: shaogme/cargo-cop@main
     with:
-      version: 0.1.15
+      version: 0.1.16
   - run: cargo cop --workspace
 ```
 
@@ -65,7 +65,7 @@ steps:
   - uses: actions/checkout@main
   - uses: shaogme/cargo-cop@main
     with:
-      version: 0.1.15
+      version: 0.1.16
       from-source: true
   - run: cargo cop --workspace
 ```
@@ -148,6 +148,7 @@ All rules are enabled by default and use `error` severity unless configured othe
 | `child_module_line_count` | Each out-of-line child-module file must contain 70–800 effective code lines. Blank lines, comments, and `#[cfg(test)]` code are excluded. |
 | `impl_locality` | Keep inherent impls with the repository type's definition; restrict external trait impl targets to the permitted built-in and standard-library roots. |
 | `private_fields_for_behavior_types` | Fields of a struct, enum, or union with an impl block must be private. |
+| `unnecessary_pub_crate` | A `pub(crate)` item or associated item needs crate visibility only when a reference outside its private module scope or a retained crate-visible API signature requires it. Unresolved syntax and macro invocations are handled conservatively. |
 | `child_public_free_functions` | Free functions in child modules must be private. |
 | `declaration_before_use` | A named declaration must precede references to it within the applicable source scope. |
 | `parameter_limit` | Functions, methods, and closures may have at most five parameters. |
@@ -206,13 +207,13 @@ The workspace separates the command-line application from the analysis pipeline:
 | `cop-cargo` | Cargo metadata, package and target selection, features, dependencies, and target `cfg`. |
 | `cop-cfg` | Shared `cfg` expression parsing, normalization, and three-valued evaluation. |
 | `cop-syntax` | Project-owned Rust lexer, syntax tree, parser, and parser coverage status. |
-| `cop-analysis` | `cfg` evaluation, module graph discovery, symbol and path resolution, analysis status. |
+| `cop-analysis` | `cfg` evaluation, module graph discovery, immutable definition/reference facts, path resolution, API dependency and impl-owner indexes, analysis status. |
 | `cop-rules` | The 20 source convention rules. |
 | `cop-model` | Shared rule IDs, diagnostic, location, message, and scan-status types. |
 | `cop-report` | Stable diagnostic ordering and human/JSON rendering. |
 | `cop-i18n` | English and Simplified Chinese messages. |
 
-The scan flow is: resolve CLI and configuration → query Cargo metadata → select packages and targets → parse reachable module files → evaluate `cfg` and build indexes → run enabled rules → sort and render diagnostics.
+The scan flow is: resolve CLI and configuration → query Cargo metadata → select packages and targets → parse reachable module files → collect definitions and syntax references → resolve references and build immutable indexes → run enabled rules against facts and source locations → sort and render diagnostics. Syntax and layout rules still read the parsed tree for structural checks.
 
 ## Development
 

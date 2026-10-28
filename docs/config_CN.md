@@ -57,7 +57,7 @@ severity = "error"
 | `[rules.<ID>].enabled` | 布尔值 | `true` | 是否运行该规则。命令行 `--disable-rule <ID>` 可将其关闭。 |
 | `[rules.<ID>].severity` | `"warning"` 或 `"error"` | `"error"` | 该规则诊断的级别。命令行 `--severity ID=LEVEL` 优先。 |
 
-`[rules]` 可以包含下方目录中的 20 个 ID。每个规则表只接受 `enabled` 和 `severity`。一条规则的设置不会影响其他规则。
+`[rules]` 可以包含下方目录中的 21 个 ID。每个规则表只接受 `enabled` 和 `severity`。一条规则的设置不会影响其他规则。
 
 ## 规则 ID
 
@@ -73,7 +73,7 @@ severity = "warning"
 
 可用 ID：
 
-`module_file_layout`、`no_lint_relaxation`、`item_spacing`、`child_module_visibility`、`no_parent_path_attribute`、`no_parent_private_dependency`、`child_module_line_count`、`impl_locality`、`private_fields_for_behavior_types`、`child_public_free_functions`、`declaration_before_use`、`parameter_limit`、`tuple_arity`、`no_inline_qualified_path`、`merge_common_prefix_imports`、`extern_crate_at_scope_start`、`imports_at_scope_start`、`out_of_line_modules_at_scope_start`、`cfg_use_group_spacing`、`cfg_inside_use_tree`。
+`module_file_layout`、`no_lint_relaxation`、`item_spacing`、`child_module_visibility`、`no_parent_path_attribute`、`no_parent_private_dependency`、`child_module_line_count`、`impl_locality`、`private_fields_for_behavior_types`、`unnecessary_pub_crate`、`child_public_free_functions`、`declaration_before_use`、`parameter_limit`、`tuple_arity`、`no_inline_qualified_path`、`merge_common_prefix_imports`、`extern_crate_at_scope_start`、`imports_at_scope_start`、`out_of_line_modules_at_scope_start`、`cfg_use_group_spacing`、`cfg_inside_use_tree`。
 
 原来的 `private_child_modules` ID 已替换为 `child_module_visibility`。请将 `[rules.private_child_modules]`、`--disable-rule private_child_modules` 和 `--severity private_child_modules=...` 改用新 ID。配置 schema 版本仍为 `2`。
 

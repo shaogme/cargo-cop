@@ -2,21 +2,24 @@ mod block_imports;
 
 use std::{collections::BTreeSet, ops::Range};
 
-use cop_analysis::{AnalysisSnapshot, CfgDecision, ModuleNode, PathResolutionKind};
+use cop_analysis::{
+    AnalysisReference, AnalysisSnapshot, ItemFact, ItemKindFact, ModuleNode, PathResolutionKind,
+    ReferenceKind,
+};
 use cop_config::ResolvedConfig;
 use cop_model::{
     Diagnostic, LocalizedMessage, RuleId, CFG_INSIDE_USE_TREE, CFG_USE_GROUP_SPACING,
     CFG_USE_GROUP_SPLIT, EXTERN_CRATE_AT_SCOPE_START, MERGE_IMPORT_PREFIX,
     NO_INLINE_QUALIFIED_PATH, USE_AT_SCOPE_START,
 };
-use cop_syntax::{ItemSyntaxKind, ParseOutput, SyntaxNode, SyntaxNodeKind};
+use cop_syntax::ParseOutput;
 
-use crate::support::{PathReference, RuleDiagnosticAdapter, RuleReport, SyntaxSupport, UseLeaf};
+use crate::support::{RuleDiagnosticAdapter, RuleReport, SyntaxSupport, UseLeaf};
 
 pub(super) struct ImportRuleSet;
 
 struct ImportRecord<'a> {
-    item: &'a SyntaxNode,
+    item: &'a ItemFact,
     leaves: Vec<UseLeaf>,
     condition: String,
 }
@@ -32,12 +35,13 @@ impl ImportRuleSet {
             if module.is_order_only() {
                 continue;
             }
-            Self::extern_crate_at_scope_start(module, diagnostics, &adapter);
-            let use_tree_ranges = Self::imports_at_scope_start(module, diagnostics, &adapter);
+            Self::extern_crate_at_scope_start(snapshot, module, diagnostics, &adapter);
+            let use_tree_ranges =
+                Self::imports_at_scope_start(module, snapshot, diagnostics, &adapter);
             Self::inline_qualified_paths(module, snapshot, &use_tree_ranges, diagnostics, &adapter);
-            Self::common_prefixes(module, diagnostics, &adapter);
-            Self::cfg_group_spacing(module, diagnostics, &adapter);
-            Self::cfg_inside_use_tree(module, diagnostics, &adapter);
+            Self::common_prefixes(module, snapshot, diagnostics, &adapter);
+            Self::cfg_group_spacing(snapshot, module, diagnostics, &adapter);
+            Self::cfg_inside_use_tree(snapshot, module, diagnostics, &adapter);
         }
     }
 
@@ -48,36 +52,33 @@ impl ImportRuleSet {
         diagnostics: &mut Vec<Diagnostic>,
         adapter: &RuleDiagnosticAdapter<'_>,
     ) {
-        for item in module.item_nodes() {
-            SyntaxSupport::for_each_path_reference(module, item, true, &mut |reference| {
-                if is_inside_use_tree(reference.start, use_tree_ranges) {
-                    return;
-                }
-                Self::check_qualified_path(reference, module, snapshot, diagnostics, adapter);
-            });
+        for reference in snapshot
+            .facts()
+            .references_for_module(module)
+            .filter(|reference| reference.kind() != ReferenceKind::Use)
+        {
+            let bounds = reference.bounds();
+            if !is_inside_use_tree(bounds.start, use_tree_ranges) {
+                Self::check_qualified_path(reference, module, diagnostics, adapter);
+            }
         }
     }
 
     fn check_qualified_path(
-        reference: &PathReference,
+        reference: &AnalysisReference,
         module: &ModuleNode,
-        snapshot: &AnalysisSnapshot,
         diagnostics: &mut Vec<Diagnostic>,
         adapter: &RuleDiagnosticAdapter<'_>,
     ) {
-        if reference.segments.len() < 2 {
+        let segments = reference.segments();
+        if segments.len() < 2 {
             return;
         }
-        let explicitly_scoped = reference
-            .segments
+        let explicitly_scoped = segments
             .first()
             .is_some_and(|segment| matches!(segment.as_str(), "crate" | "self" | "super"));
         if !explicitly_scoped {
-            let resolution = snapshot.symbols().resolve_path_at(
-                module,
-                &reference.segments,
-                Some(reference.start..reference.end),
-            );
+            let resolution = reference.resolution();
             if resolution.kind() != PathResolutionKind::ExternalCrate
                 || resolution.external_crate().is_none()
                 || !resolution.is_external_crate_qualifier()
@@ -91,27 +92,32 @@ impl ImportRuleSet {
             RuleReport::new(
                 RuleId::NoInlineQualifiedPath,
                 LocalizedMessage::new(NO_INLINE_QUALIFIED_PATH)
-                    .with_text("path", path_label(&reference.segments)),
-                Some(reference.start..reference.end),
+                    .with_text("path", path_label(segments)),
+                Some(reference.bounds()),
             ),
         );
     }
 
     fn imports_at_scope_start(
         module: &ModuleNode,
+        snapshot: &AnalysisSnapshot,
         diagnostics: &mut Vec<Diagnostic>,
         adapter: &RuleDiagnosticAdapter<'_>,
     ) -> Vec<Range<usize>> {
+        let scope = snapshot
+            .facts()
+            .syntax_for_module(module)
+            .and_then(|syntax| syntax.root_scope());
         let mut preceding_non_imports: Vec<Option<String>> = Vec::new();
-        for item in module.item_nodes() {
-            let condition = module
-                .configured_ast()
-                .condition_for_span(item.start(), item.end())
-                .map(str::to_owned);
-            match item.item_syntax().map(|data| data.kind()) {
-                Some(ItemSyntaxKind::ExternCrate { .. }) => {}
-                Some(ItemSyntaxKind::Module { inline: false, .. }) => {}
-                Some(ItemSyntaxKind::Use) => {
+        for item in scope.into_iter().flat_map(|scope| scope.items()) {
+            if !item.is_enabled() {
+                continue;
+            }
+            let condition = item.condition().map(str::to_owned);
+            match item.kind() {
+                ItemKindFact::ExternCrate => {}
+                ItemKindFact::Module { inline: false } => {}
+                ItemKindFact::Use => {
                     if preceding_non_imports.iter().any(|previous| {
                         SyntaxSupport::conditions_may_coexist(
                             condition.as_deref(),
@@ -124,7 +130,7 @@ impl ImportRuleSet {
                             RuleReport::new(
                                 RuleId::ImportsAtScopeStart,
                                 LocalizedMessage::new(USE_AT_SCOPE_START),
-                                Some(item.start()..item.end()),
+                                Some(item.bounds()),
                             ),
                         );
                     }
@@ -132,34 +138,26 @@ impl ImportRuleSet {
                 _ => preceding_non_imports.push(condition),
             }
         }
-        let mut use_tree_ranges = Vec::new();
-        for item in module.item_nodes() {
-            use_tree_ranges.extend(block_imports::BlockImportRuleSet::check_item(
-                item,
-                module,
-                diagnostics,
-                adapter,
-            ));
-        }
-        use_tree_ranges.sort_unstable_by_key(|range| range.start);
-        use_tree_ranges
+        block_imports::BlockImportRuleSet::check_module(snapshot, module, diagnostics, adapter)
     }
 
     fn extern_crate_at_scope_start(
+        snapshot: &AnalysisSnapshot,
         module: &ModuleNode,
         diagnostics: &mut Vec<Diagnostic>,
         adapter: &RuleDiagnosticAdapter<'_>,
     ) {
+        let scope = snapshot
+            .facts()
+            .syntax_for_module(module)
+            .and_then(|syntax| syntax.root_scope());
         let mut preceding_non_extern_crates: Vec<Option<String>> = Vec::new();
-        for item in module.item_nodes() {
-            let condition = module
-                .configured_ast()
-                .condition_for_span(item.start(), item.end())
-                .map(str::to_owned);
-            if item
-                .item_syntax()
-                .is_some_and(|data| matches!(data.kind(), ItemSyntaxKind::ExternCrate { .. }))
-            {
+        for item in scope.into_iter().flat_map(|scope| scope.items()) {
+            if !item.is_enabled() {
+                continue;
+            }
+            let condition = item.condition().map(str::to_owned);
+            if matches!(item.kind(), ItemKindFact::ExternCrate) {
                 if preceding_non_extern_crates.iter().any(|previous| {
                     SyntaxSupport::conditions_may_coexist(condition.as_deref(), previous.as_deref())
                 }) {
@@ -169,7 +167,7 @@ impl ImportRuleSet {
                         RuleReport::new(
                             RuleId::ExternCrateAtScopeStart,
                             LocalizedMessage::new(EXTERN_CRATE_AT_SCOPE_START),
-                            Some(item.start()..item.end()),
+                            Some(item.bounds()),
                         ),
                     );
                 }
@@ -181,27 +179,27 @@ impl ImportRuleSet {
 
     fn common_prefixes(
         module: &ModuleNode,
+        snapshot: &AnalysisSnapshot,
         diagnostics: &mut Vec<Diagnostic>,
         adapter: &RuleDiagnosticAdapter<'_>,
     ) {
         let output = module.parse_output();
-        let items = module.item_nodes();
-        let imports = items
+        let Some(scope) = snapshot
+            .facts()
+            .syntax_for_module(module)
+            .and_then(|syntax| syntax.root_scope())
+        else {
+            return;
+        };
+        let imports = scope
+            .items()
             .iter()
             .filter_map(|item| {
-                if !item
-                    .item_syntax()
-                    .is_some_and(|data| matches!(data.kind(), ItemSyntaxKind::Use))
-                {
+                if !item.is_enabled() || !matches!(item.kind(), ItemKindFact::Use) {
                     return None;
                 }
-                let tree = SyntaxSupport::use_tree_node_for_item(module, item)?;
-                let leaves = SyntaxSupport::use_leaves(module, tree);
-                let condition = module
-                    .configured_ast()
-                    .condition_for_span(item.start(), item.end())
-                    .unwrap_or("all()")
-                    .to_owned();
+                let leaves = SyntaxSupport::use_facts(snapshot.facts(), module, item.bounds());
+                let condition = item.condition().unwrap_or("all()").to_owned();
                 if leaves.is_empty() {
                     return None;
                 }
@@ -220,13 +218,7 @@ impl ImportRuleSet {
         for current_index in 1..imports.len() {
             let current = &imports[current_index];
             for previous in imports[..current_index].iter().rev() {
-                let same_visibility = previous
-                    .item
-                    .item_syntax()
-                    .zip(current.item.item_syntax())
-                    .is_some_and(|(previous, current)| {
-                        previous.visibility().kind() == current.visibility().kind()
-                    });
+                let same_visibility = previous.item.visibility() == current.item.visibility();
                 if previous.condition != current.condition || !same_visibility {
                     continue;
                 }
@@ -241,9 +233,12 @@ impl ImportRuleSet {
                     RuleReport::new(
                         RuleId::MergeCommonPrefixImports,
                         LocalizedMessage::new(MERGE_IMPORT_PREFIX)
-                            .with_number("line", line_of(output, previous.item.start()) as i64)
+                            .with_number(
+                                "line",
+                                line_of(output, previous.item.bounds().start) as i64,
+                            )
                             .with_text("prefix", prefix),
-                        Some(current.item.start()..current.item.end()),
+                        Some(current.item.bounds()),
                     ),
                 );
                 break;
@@ -252,28 +247,29 @@ impl ImportRuleSet {
     }
 
     fn cfg_group_spacing(
+        snapshot: &AnalysisSnapshot,
         module: &ModuleNode,
         diagnostics: &mut Vec<Diagnostic>,
         adapter: &RuleDiagnosticAdapter<'_>,
     ) {
         let output = module.parse_output();
-        let mut previous: Option<(&SyntaxNode, String)> = None;
+        let Some(scope) = snapshot
+            .facts()
+            .syntax_for_module(module)
+            .and_then(|syntax| syntax.root_scope())
+        else {
+            return;
+        };
+        let mut previous: Option<(&ItemFact, String)> = None;
         let mut completed_groups = BTreeSet::new();
-        for item in module.item_nodes() {
-            if !item
-                .item_syntax()
-                .is_some_and(|data| matches!(data.kind(), ItemSyntaxKind::Use))
-            {
+        for item in scope.items().iter().filter(|item| item.is_enabled()) {
+            if !matches!(item.kind(), ItemKindFact::Use) {
                 if let Some((_, previous_condition)) = previous.take() {
                     completed_groups.insert(previous_condition);
                 }
                 continue;
             }
-            let condition = module
-                .configured_ast()
-                .condition_for_span(item.start(), item.end())
-                .unwrap_or("all()")
-                .to_owned();
+            let condition = item.condition().unwrap_or("all()").to_owned();
             if previous.is_none() && completed_groups.contains(&condition) {
                 adapter.push(
                     module,
@@ -282,7 +278,7 @@ impl ImportRuleSet {
                         RuleId::CfgUseGroupSpacing,
                         LocalizedMessage::new(CFG_USE_GROUP_SPLIT)
                             .with_text("condition", &condition),
-                        Some(item.start()..item.end()),
+                        Some(item.bounds()),
                     ),
                 );
             }
@@ -296,15 +292,15 @@ impl ImportRuleSet {
                                 RuleId::CfgUseGroupSpacing,
                                 LocalizedMessage::new(CFG_USE_GROUP_SPLIT)
                                     .with_text("condition", &condition),
-                                Some(item.start()..item.end()),
+                                Some(item.bounds()),
                             ),
                         );
                     }
                     completed_groups.insert(previous_condition);
                     let blank_lines = SyntaxSupport::blank_lines_between(
                         output,
-                        previous_item.end(),
-                        item.start(),
+                        previous_item.bounds().end,
+                        item.bounds().start,
                     );
                     if blank_lines != 1 {
                         adapter.push(
@@ -314,7 +310,7 @@ impl ImportRuleSet {
                                 RuleId::CfgUseGroupSpacing,
                                 LocalizedMessage::new(CFG_USE_GROUP_SPACING)
                                     .with_number("empty_lines", blank_lines as i64),
-                                Some(item.start()..item.end()),
+                                Some(item.bounds()),
                             ),
                         );
                     }
@@ -325,67 +321,35 @@ impl ImportRuleSet {
     }
 
     fn cfg_inside_use_tree(
+        snapshot: &AnalysisSnapshot,
         module: &ModuleNode,
         diagnostics: &mut Vec<Diagnostic>,
         adapter: &RuleDiagnosticAdapter<'_>,
     ) {
-        for item in module.item_nodes() {
-            if !item
-                .item_syntax()
-                .is_some_and(|data| matches!(data.kind(), ItemSyntaxKind::Use))
-            {
+        let Some(scope) = snapshot
+            .facts()
+            .syntax_for_module(module)
+            .and_then(|syntax| syntax.root_scope())
+        else {
+            return;
+        };
+        for item in scope.items().iter().filter(|item| item.is_enabled()) {
+            if !matches!(item.kind(), ItemKindFact::Use) {
                 continue;
             }
-            let Some(tree) = SyntaxSupport::use_tree_node_for_item(module, item) else {
-                continue;
-            };
-            if let Some(bounds) = nested_cfg_in_use_tree(module, tree) {
+            if let Some(bounds) = item.nested_cfg_ranges().first() {
                 adapter.push(
                     module,
                     diagnostics,
                     RuleReport::new(
                         RuleId::CfgInsideUseTree,
                         LocalizedMessage::new(CFG_INSIDE_USE_TREE),
-                        Some(bounds),
+                        Some(bounds.clone()),
                     ),
                 );
             }
         }
     }
-}
-
-fn nested_cfg_in_use_tree(module: &ModuleNode, tree: &SyntaxNode) -> Option<Range<usize>> {
-    for child in tree
-        .children()
-        .iter()
-        .filter_map(|id| module.parse_output().node(*id))
-        .filter(|node| node.kind() == SyntaxNodeKind::UseTree)
-    {
-        if !module
-            .configured_ast()
-            .node(child.id())
-            .is_some_and(|configured| configured.decision() != CfgDecision::False)
-        {
-            continue;
-        }
-        if let Some(attribute) = child
-            .attributes()
-            .iter()
-            .find(|attribute| attribute.path() == ["cfg"])
-        {
-            if module.configured_ast().is_supported_range(
-                module.parse_output(),
-                attribute.start(),
-                attribute.end(),
-            ) {
-                return Some(attribute.start()..attribute.end());
-            }
-        }
-        if let Some(bounds) = nested_cfg_in_use_tree(module, child) {
-            return Some(bounds);
-        }
-    }
-    None
 }
 
 fn is_inside_use_tree(offset: usize, use_tree_ranges: &[Range<usize>]) -> bool {

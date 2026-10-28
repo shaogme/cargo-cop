@@ -1,8 +1,8 @@
-use std::ops::Range;
+use std::{collections::BTreeMap, mem, ops::Range};
 
 use cop_cfg::CfgCondition;
 use cop_syntax::{
-    ExpressionSyntax, ExpressionSyntaxKind, ItemSyntaxKind, PatternSyntax, PatternSyntaxKind,
+    AstNodeId, ExpressionSyntax, ExpressionSyntaxKind, ItemSyntaxKind, PatternSyntaxKind,
     StatementSyntaxKind, SyntaxNode, SyntaxNodeKind,
 };
 
@@ -28,9 +28,15 @@ struct LocalBindingInput<'a> {
     visible_from: usize,
 }
 
-struct PatternBindingScope<'a> {
-    module: &'a ModuleNode,
-    scope: &'a Range<usize>,
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PatternBindingSeed {
+    node_id: AstNodeId,
+    name: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PatternScopeRequest {
+    bounds: Range<usize>,
     visible_from: usize,
 }
 
@@ -42,8 +48,17 @@ pub(super) struct LocalBindingMatch {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub(super) struct LocalBindings {
+pub(crate) struct LocalBindings {
     bindings: Vec<LocalBinding>,
+    use_prefixes: BTreeMap<AstNodeId, Vec<String>>,
+    special_pattern_scopes: BTreeMap<(usize, usize), PatternScopeRequest>,
+    pattern_seeds: Vec<PatternBindingSeed>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PatternBindingRequest {
+    bounds: Range<usize>,
+    visible_from: usize,
 }
 
 impl LocalBindingMatch {
@@ -61,14 +76,95 @@ impl LocalBindingMatch {
 }
 
 impl LocalBindings {
-    pub(super) fn build(modules: &[ModuleNode]) -> Self {
-        let mut bindings = Vec::new();
-        for module in modules {
-            for item in module.item_nodes() {
-                Self::collect_item_node(item, module, &mut bindings);
+    pub(crate) fn begin_module(&mut self) {
+        self.use_prefixes.clear();
+        self.special_pattern_scopes.clear();
+        self.pattern_seeds.clear();
+    }
+
+    pub(crate) fn visit_node(&mut self, module: &ModuleNode, node: &SyntaxNode) {
+        if !belongs_to_module_scope(module, node) || !node_is_potentially_enabled(module, node) {
+            return;
+        }
+        if let Some(expression) = node.expression_syntax() {
+            collect_special_pattern_scopes(expression, &mut self.special_pattern_scopes);
+        }
+        if let Some(pattern) = node.pattern_syntax() {
+            if let PatternSyntaxKind::Binding { name, .. } = pattern.kind() {
+                self.pattern_seeds.push(PatternBindingSeed {
+                    node_id: node.id(),
+                    name: name.clone(),
+                });
             }
         }
-        Self { bindings }
+        if node.kind() == SyntaxNodeKind::LocalItem {
+            if let Some((name, target_path)) = local_item_binding(node) {
+                if let Some(scope) = nearest_lexical_scope(module, node) {
+                    self.push_binding(LocalBindingInput {
+                        module,
+                        node,
+                        name,
+                        target_path,
+                        scope: &scope,
+                        visible_from: scope.start,
+                    });
+                }
+            }
+        }
+        if let Some(tree) = node.use_tree() {
+            let mut path = node
+                .parent()
+                .and_then(|parent| self.use_prefixes.get(&parent).cloned())
+                .unwrap_or_default();
+            path.extend(tree.path().iter().cloned());
+            self.use_prefixes.insert(node.id(), path.clone());
+            if is_use_tree_leaf(module, node) {
+                if let Some(statement) = nearest_use_statement(module, node) {
+                    if let Some(scope) = nearest_lexical_scope(module, statement) {
+                        if !tree.is_glob() && !path.is_empty() {
+                            if path.last().is_some_and(|segment| segment == "self") {
+                                path.pop();
+                            }
+                            if let Some(name) = tree
+                                .alias()
+                                .map(str::to_owned)
+                                .or_else(|| path.last().cloned())
+                            {
+                                self.push_binding(LocalBindingInput {
+                                    module,
+                                    node,
+                                    name,
+                                    target_path: Some(path),
+                                    scope: &scope,
+                                    visible_from: scope.start,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    pub(crate) fn finish_module(&mut self, module: &ModuleNode) {
+        let seeds = mem::take(&mut self.pattern_seeds);
+        for seed in seeds {
+            let Some(node) = module.parse_output().node(seed.node_id) else {
+                continue;
+            };
+            let Some(scope) = pattern_binding_scope(module, node, &self.special_pattern_scopes)
+            else {
+                continue;
+            };
+            self.push_binding(LocalBindingInput {
+                module,
+                node,
+                name: seed.name,
+                target_path: None,
+                scope: &scope.bounds,
+                visible_from: scope.visible_from,
+            });
+        }
     }
 
     pub(super) fn find(
@@ -101,433 +197,7 @@ impl LocalBindings {
             })
     }
 
-    fn collect_item_node(
-        item_node: &SyntaxNode,
-        module: &ModuleNode,
-        bindings: &mut Vec<LocalBinding>,
-    ) {
-        if !node_is_potentially_enabled(module, item_node) {
-            return;
-        }
-        let Some(item_data) = item_node.item_syntax() else {
-            return;
-        };
-        match item_data.kind() {
-            ItemSyntaxKind::Function { .. } => {
-                Self::collect_function_bindings(item_node, module, bindings)
-            }
-            ItemSyntaxKind::Trait(_) | ItemSyntaxKind::Impl => {
-                let output = module.parse_output();
-                let Some(scope) = item_node
-                    .children()
-                    .iter()
-                    .filter_map(|id| output.node(*id))
-                    .find(|node| node.kind() == SyntaxNodeKind::Scope)
-                else {
-                    return;
-                };
-                for child in scope
-                    .children()
-                    .iter()
-                    .filter_map(|id| output.node(*id))
-                    .filter(|node| node.item_syntax().is_some())
-                {
-                    Self::collect_item_node(child, module, bindings);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    fn collect_function_bindings(
-        item_node: &SyntaxNode,
-        module: &ModuleNode,
-        bindings: &mut Vec<LocalBinding>,
-    ) {
-        let output = module.parse_output();
-        let Some(body) = item_node
-            .children()
-            .iter()
-            .filter_map(|id| output.node(*id))
-            .find(|node| node.kind() == SyntaxNodeKind::Block)
-        else {
-            return;
-        };
-        let scope = body.start()..body.end();
-        for parameter in item_node
-            .children()
-            .iter()
-            .filter_map(|id| output.node(*id))
-            .filter(|node| node.kind() == SyntaxNodeKind::Parameter)
-        {
-            if !node_is_potentially_enabled(module, parameter) {
-                continue;
-            }
-            for pattern in parameter
-                .children()
-                .iter()
-                .filter_map(|id| output.node(*id))
-                .filter(|node| node.kind() == SyntaxNodeKind::Pattern)
-            {
-                Self::add_pattern_bindings(module, pattern, &scope, body.start(), bindings);
-            }
-        }
-        Self::collect_scope_node(body, module, &scope, bindings);
-    }
-
-    fn collect_scope_node(
-        node: &SyntaxNode,
-        module: &ModuleNode,
-        scope: &Range<usize>,
-        bindings: &mut Vec<LocalBinding>,
-    ) {
-        if !node_is_potentially_enabled(module, node) {
-            return;
-        }
-        if node.kind() == SyntaxNodeKind::LocalItem {
-            Self::collect_local_item(node, module, scope, bindings);
-            return;
-        }
-        if node.kind() == SyntaxNodeKind::Statement {
-            Self::collect_statement(node, module, scope, bindings);
-        }
-        if node.kind() == SyntaxNodeKind::MatchArm {
-            let arm_scope = node.start()..node.end();
-            for pattern in node
-                .children()
-                .iter()
-                .filter_map(|id| module.parse_output().node(*id))
-                .filter(|child| child.kind() == SyntaxNodeKind::Pattern)
-            {
-                Self::add_pattern_bindings(module, pattern, &arm_scope, arm_scope.start, bindings);
-            }
-        }
-        if let Some(expression) = node.expression_syntax() {
-            Self::collect_expression_bindings(node, expression, module, bindings);
-        }
-        if node.kind() == SyntaxNodeKind::Closure {
-            Self::collect_closure_parameters(node, module, bindings);
-        }
-        let child_scope = if matches!(node.kind(), SyntaxNodeKind::Block | SyntaxNodeKind::Closure)
-        {
-            node.start()..node.end()
-        } else {
-            scope.clone()
-        };
-        for child in node
-            .children()
-            .iter()
-            .filter_map(|id| module.parse_output().node(*id))
-        {
-            if child.kind() == SyntaxNodeKind::Parameter {
-                continue;
-            }
-            Self::collect_scope_node(child, module, &child_scope, bindings);
-        }
-    }
-
-    fn collect_statement(
-        statement: &SyntaxNode,
-        module: &ModuleNode,
-        scope: &Range<usize>,
-        bindings: &mut Vec<LocalBinding>,
-    ) {
-        let output = module.parse_output();
-        let children = statement
-            .children()
-            .iter()
-            .filter_map(|id| output.node(*id))
-            .collect::<Vec<_>>();
-        if statement.statement_kind() == Some(StatementSyntaxKind::Let) {
-            for pattern in children
-                .iter()
-                .copied()
-                .filter(|node| node.kind() == SyntaxNodeKind::Pattern)
-            {
-                Self::add_pattern_bindings(module, pattern, scope, statement.end(), bindings);
-            }
-        }
-        for tree in children
-            .iter()
-            .copied()
-            .filter(|node| node.kind() == SyntaxNodeKind::UseTree)
-        {
-            Self::collect_use_tree(module, tree, &[], scope, bindings);
-        }
-    }
-
-    fn collect_local_item(
-        item: &SyntaxNode,
-        module: &ModuleNode,
-        scope: &Range<usize>,
-        bindings: &mut Vec<LocalBinding>,
-    ) {
-        if let Some((name, target_path)) = local_item_binding(item) {
-            Self::push_binding(
-                LocalBindingInput {
-                    module,
-                    node: item,
-                    name,
-                    target_path,
-                    scope,
-                    visible_from: scope.start,
-                },
-                bindings,
-            );
-        }
-        Self::collect_item_node(item, module, bindings);
-    }
-
-    fn collect_closure_parameters(
-        closure: &SyntaxNode,
-        module: &ModuleNode,
-        bindings: &mut Vec<LocalBinding>,
-    ) {
-        let scope = closure.start()..closure.end();
-        for parameter in closure
-            .children()
-            .iter()
-            .filter_map(|id| module.parse_output().node(*id))
-            .filter(|node| node.kind() == SyntaxNodeKind::Parameter)
-        {
-            if !node_is_potentially_enabled(module, parameter) {
-                continue;
-            }
-            for pattern in parameter
-                .children()
-                .iter()
-                .filter_map(|id| module.parse_output().node(*id))
-                .filter(|node| node.kind() == SyntaxNodeKind::Pattern)
-            {
-                Self::add_pattern_bindings(module, pattern, &scope, closure.start(), bindings);
-            }
-        }
-    }
-
-    fn add_pattern_bindings(
-        module: &ModuleNode,
-        pattern: &SyntaxNode,
-        scope: &Range<usize>,
-        visible_from: usize,
-        bindings: &mut Vec<LocalBinding>,
-    ) {
-        if !node_is_potentially_enabled(module, pattern) {
-            return;
-        }
-        let Some(syntax) = pattern.pattern_syntax() else {
-            return;
-        };
-        Self::collect_pattern_bindings(
-            pattern,
-            syntax,
-            PatternBindingScope {
-                module,
-                scope,
-                visible_from,
-            },
-            bindings,
-        );
-    }
-
-    fn collect_pattern_bindings(
-        node: &SyntaxNode,
-        syntax: &PatternSyntax,
-        binding_scope: PatternBindingScope<'_>,
-        bindings: &mut Vec<LocalBinding>,
-    ) {
-        let PatternBindingScope {
-            module,
-            scope,
-            visible_from,
-        } = binding_scope;
-        if !node_is_potentially_enabled(module, node) {
-            return;
-        }
-        if let PatternSyntaxKind::Binding { name, .. } = syntax.kind() {
-            Self::push_binding(
-                LocalBindingInput {
-                    module,
-                    node,
-                    name: name.clone(),
-                    target_path: None,
-                    scope,
-                    visible_from,
-                },
-                bindings,
-            );
-        }
-        for child in node
-            .children()
-            .iter()
-            .filter_map(|id| module.parse_output().node(*id))
-            .filter(|child| child.kind() == SyntaxNodeKind::Pattern)
-        {
-            if let Some(child_syntax) = child.pattern_syntax() {
-                Self::collect_pattern_bindings(
-                    child,
-                    child_syntax,
-                    PatternBindingScope {
-                        module,
-                        scope,
-                        visible_from,
-                    },
-                    bindings,
-                );
-            }
-        }
-    }
-
-    fn collect_expression_bindings(
-        root: &SyntaxNode,
-        expression: &ExpressionSyntax,
-        module: &ModuleNode,
-        bindings: &mut Vec<LocalBinding>,
-    ) {
-        match expression.kind() {
-            ExpressionSyntaxKind::For { pattern, body, .. } => {
-                Self::add_syntax_pattern_bindings(
-                    root,
-                    pattern,
-                    PatternBindingScope {
-                        module,
-                        scope: body,
-                        visible_from: body.start,
-                    },
-                    bindings,
-                );
-            }
-            ExpressionSyntaxKind::If {
-                condition,
-                then_block,
-                ..
-            } => {
-                Self::collect_condition_bindings(root, condition, then_block, module, bindings);
-            }
-            ExpressionSyntaxKind::While {
-                condition, body, ..
-            } => Self::collect_condition_bindings(root, condition, body, module, bindings),
-            _ => {}
-        }
-    }
-
-    fn collect_condition_bindings(
-        root: &SyntaxNode,
-        expression: &ExpressionSyntax,
-        scope: &Range<usize>,
-        module: &ModuleNode,
-        bindings: &mut Vec<LocalBinding>,
-    ) {
-        if let ExpressionSyntaxKind::Let { pattern, .. } = expression.kind() {
-            Self::add_syntax_pattern_bindings(
-                root,
-                pattern,
-                PatternBindingScope {
-                    module,
-                    scope,
-                    visible_from: scope.start,
-                },
-                bindings,
-            );
-        }
-        match expression.kind() {
-            ExpressionSyntaxKind::Group(inner)
-            | ExpressionSyntaxKind::Unary { operand: inner, .. }
-            | ExpressionSyntaxKind::Await(inner)
-            | ExpressionSyntaxKind::Try(inner) => {
-                Self::collect_condition_bindings(root, inner, scope, module, bindings);
-            }
-            ExpressionSyntaxKind::Binary { left, right, .. }
-            | ExpressionSyntaxKind::Assignment { left, right, .. } => {
-                Self::collect_condition_bindings(root, left, scope, module, bindings);
-                Self::collect_condition_bindings(root, right, scope, module, bindings);
-            }
-            _ => {}
-        }
-    }
-
-    fn add_syntax_pattern_bindings(
-        root: &SyntaxNode,
-        syntax: &PatternSyntax,
-        binding_scope: PatternBindingScope<'_>,
-        bindings: &mut Vec<LocalBinding>,
-    ) {
-        let module = binding_scope.module;
-        let output = module.parse_output();
-        let mut pending = vec![root.id()];
-        while let Some(id) = pending.pop() {
-            let Some(node) = output.node(id) else {
-                continue;
-            };
-            if node.kind() == SyntaxNodeKind::Pattern
-                && node.start() == syntax.bounds().start
-                && node.end() == syntax.bounds().end
-            {
-                Self::add_pattern_bindings(
-                    module,
-                    node,
-                    binding_scope.scope,
-                    binding_scope.visible_from,
-                    bindings,
-                );
-                return;
-            }
-            pending.extend(node.children().iter().rev().copied());
-        }
-    }
-
-    fn collect_use_tree(
-        module: &ModuleNode,
-        tree: &SyntaxNode,
-        prefix: &[String],
-        scope: &Range<usize>,
-        bindings: &mut Vec<LocalBinding>,
-    ) {
-        if !node_is_potentially_enabled(module, tree) {
-            return;
-        }
-        let Some(tree_data) = tree.use_tree() else {
-            return;
-        };
-        let mut path = prefix.to_vec();
-        path.extend(tree_data.path().iter().cloned());
-        let children = tree
-            .children()
-            .iter()
-            .filter_map(|id| module.parse_output().node(*id))
-            .filter(|child| child.kind() == SyntaxNodeKind::UseTree)
-            .collect::<Vec<_>>();
-        if !children.is_empty() {
-            for child in children {
-                Self::collect_use_tree(module, child, &path, scope, bindings);
-            }
-            return;
-        }
-        if tree_data.is_glob() || path.is_empty() {
-            return;
-        }
-        if path.last().is_some_and(|segment| segment == "self") {
-            path.pop();
-        }
-        let name = tree_data
-            .alias()
-            .map(str::to_owned)
-            .or_else(|| path.last().cloned());
-        if let Some(name) = name {
-            Self::push_binding(
-                LocalBindingInput {
-                    module,
-                    node: tree,
-                    name,
-                    target_path: Some(path),
-                    scope,
-                    visible_from: scope.start,
-                },
-                bindings,
-            );
-        }
-    }
-
-    fn push_binding(input: LocalBindingInput<'_>, bindings: &mut Vec<LocalBinding>) {
+    fn push_binding(&mut self, input: LocalBindingInput<'_>) {
         let LocalBindingInput {
             module,
             node,
@@ -542,7 +212,7 @@ impl LocalBindings {
         if configured.decision() == CfgDecision::False {
             return;
         }
-        bindings.push(LocalBinding {
+        self.bindings.push(LocalBinding {
             context_index: module.context_index(),
             namespace: module.namespace().to_vec(),
             name,
@@ -552,6 +222,241 @@ impl LocalBindings {
             condition: configured.effective_condition().map(str::to_owned),
         });
     }
+}
+
+fn belongs_to_module_scope(module: &ModuleNode, node: &SyntaxNode) -> bool {
+    let output = module.parse_output();
+    let mut current = Some(node.id());
+    while let Some(id) = current {
+        if id == module.scope_id() {
+            return true;
+        }
+        let Some(ancestor) = output.node(id) else {
+            return false;
+        };
+        if id != node.id()
+            && ancestor
+                .item_syntax()
+                .is_some_and(|item| matches!(item.kind(), ItemSyntaxKind::Module { .. }))
+        {
+            return false;
+        }
+        current = ancestor.parent();
+    }
+    false
+}
+
+fn collect_special_pattern_scopes(
+    expression: &ExpressionSyntax,
+    scopes: &mut BTreeMap<(usize, usize), PatternScopeRequest>,
+) {
+    match expression.kind() {
+        ExpressionSyntaxKind::For { pattern, body, .. } => {
+            let bounds = pattern.bounds();
+            scopes.insert(
+                (bounds.start, bounds.end),
+                PatternScopeRequest {
+                    bounds: body.clone(),
+                    visible_from: body.start,
+                },
+            );
+        }
+        ExpressionSyntaxKind::If {
+            condition,
+            then_block,
+            ..
+        } => collect_condition_pattern_scopes(condition, then_block, scopes),
+        ExpressionSyntaxKind::While {
+            condition, body, ..
+        } => collect_condition_pattern_scopes(condition, body, scopes),
+        _ => {}
+    }
+}
+
+fn collect_condition_pattern_scopes(
+    expression: &ExpressionSyntax,
+    scope: &Range<usize>,
+    scopes: &mut BTreeMap<(usize, usize), PatternScopeRequest>,
+) {
+    if let ExpressionSyntaxKind::Let { pattern, .. } = expression.kind() {
+        let bounds = pattern.bounds();
+        scopes.insert(
+            (bounds.start, bounds.end),
+            PatternScopeRequest {
+                bounds: scope.clone(),
+                visible_from: scope.start,
+            },
+        );
+    }
+    match expression.kind() {
+        ExpressionSyntaxKind::Group(inner)
+        | ExpressionSyntaxKind::Unary { operand: inner, .. }
+        | ExpressionSyntaxKind::Await(inner)
+        | ExpressionSyntaxKind::Try(inner) => {
+            collect_condition_pattern_scopes(inner, scope, scopes);
+        }
+        ExpressionSyntaxKind::Binary { left, right, .. }
+        | ExpressionSyntaxKind::Assignment { left, right, .. } => {
+            collect_condition_pattern_scopes(left, scope, scopes);
+            collect_condition_pattern_scopes(right, scope, scopes);
+        }
+        _ => {}
+    }
+}
+
+fn pattern_binding_scope(
+    module: &ModuleNode,
+    pattern: &SyntaxNode,
+    special_scopes: &BTreeMap<(usize, usize), PatternScopeRequest>,
+) -> Option<PatternBindingRequest> {
+    if let Some(request) = special_scopes.get(&(pattern.start(), pattern.end())) {
+        return Some(PatternBindingRequest {
+            bounds: request.bounds.clone(),
+            visible_from: request.visible_from,
+        });
+    }
+    let output = module.parse_output();
+    let mut current = pattern.parent();
+    while let Some(id) = current {
+        let ancestor = output.node(id)?;
+        if ancestor.kind() == SyntaxNodeKind::Pattern {
+            if let Some(request) = special_scopes.get(&(ancestor.start(), ancestor.end())) {
+                return Some(PatternBindingRequest {
+                    bounds: request.bounds.clone(),
+                    visible_from: request.visible_from,
+                });
+            }
+        }
+        if ancestor.kind() == SyntaxNodeKind::MatchArm {
+            return Some(PatternBindingRequest {
+                bounds: ancestor.start()..ancestor.end(),
+                visible_from: ancestor.start(),
+            });
+        }
+        if ancestor.kind() == SyntaxNodeKind::Statement
+            && ancestor.statement_kind() == Some(StatementSyntaxKind::Let)
+        {
+            let scope = nearest_lexical_scope(module, ancestor)?;
+            return Some(PatternBindingRequest {
+                bounds: scope,
+                visible_from: ancestor.end(),
+            });
+        }
+        if ancestor.kind() == SyntaxNodeKind::Parameter {
+            if let Some(closure) = enclosing_closure(module, ancestor) {
+                return Some(PatternBindingRequest {
+                    bounds: closure.start()..closure.end(),
+                    visible_from: closure.start(),
+                });
+            }
+            let function = enclosing_function(module, ancestor)?;
+            let body = function
+                .children()
+                .iter()
+                .filter_map(|child| output.node(*child))
+                .find(|child| child.kind() == SyntaxNodeKind::Block)?;
+            return Some(PatternBindingRequest {
+                bounds: body.start()..body.end(),
+                visible_from: body.start(),
+            });
+        }
+        if id != pattern.id()
+            && ancestor
+                .item_syntax()
+                .is_some_and(|item| matches!(item.kind(), ItemSyntaxKind::Module { .. }))
+        {
+            return None;
+        }
+        current = ancestor.parent();
+    }
+    None
+}
+
+fn enclosing_closure<'a>(module: &'a ModuleNode, node: &'a SyntaxNode) -> Option<&'a SyntaxNode> {
+    enclosing_node(module, node, |ancestor| {
+        ancestor.kind() == SyntaxNodeKind::Closure
+    })
+}
+
+fn enclosing_function<'a>(module: &'a ModuleNode, node: &'a SyntaxNode) -> Option<&'a SyntaxNode> {
+    enclosing_node(module, node, |ancestor| {
+        ancestor
+            .item_syntax()
+            .is_some_and(|item| matches!(item.kind(), ItemSyntaxKind::Function { .. }))
+    })
+}
+
+fn enclosing_node<'a>(
+    module: &'a ModuleNode,
+    node: &'a SyntaxNode,
+    predicate: impl Fn(&SyntaxNode) -> bool,
+) -> Option<&'a SyntaxNode> {
+    let output = module.parse_output();
+    let mut current = node.parent();
+    while let Some(id) = current {
+        let ancestor = output.node(id)?;
+        if predicate(ancestor) {
+            return Some(ancestor);
+        }
+        if id != node.id()
+            && ancestor
+                .item_syntax()
+                .is_some_and(|item| matches!(item.kind(), ItemSyntaxKind::Module { .. }))
+        {
+            return None;
+        }
+        current = ancestor.parent();
+    }
+    None
+}
+
+fn nearest_lexical_scope(module: &ModuleNode, node: &SyntaxNode) -> Option<Range<usize>> {
+    let output = module.parse_output();
+    let mut current = Some(node.id());
+    while let Some(id) = current {
+        let ancestor = output.node(id)?;
+        if matches!(
+            ancestor.kind(),
+            SyntaxNodeKind::Block | SyntaxNodeKind::Closure
+        ) {
+            return Some(ancestor.start()..ancestor.end());
+        }
+        if id != node.id()
+            && ancestor
+                .item_syntax()
+                .is_some_and(|item| matches!(item.kind(), ItemSyntaxKind::Module { .. }))
+        {
+            return None;
+        }
+        current = ancestor.parent();
+    }
+    None
+}
+
+fn nearest_use_statement<'a>(
+    module: &'a ModuleNode,
+    node: &'a SyntaxNode,
+) -> Option<&'a SyntaxNode> {
+    let output = module.parse_output();
+    let mut current = node.parent();
+    while let Some(id) = current {
+        let ancestor = output.node(id)?;
+        if ancestor.kind() == SyntaxNodeKind::Statement {
+            return (ancestor.statement_kind() == Some(StatementSyntaxKind::Use))
+                .then_some(ancestor);
+        }
+        current = ancestor.parent();
+    }
+    None
+}
+
+fn is_use_tree_leaf(module: &ModuleNode, node: &SyntaxNode) -> bool {
+    node.children().iter().all(|id| {
+        module
+            .parse_output()
+            .node(*id)
+            .map_or(true, |child| child.kind() != SyntaxNodeKind::UseTree)
+    })
 }
 
 fn node_is_potentially_enabled(module: &ModuleNode, node: &SyntaxNode) -> bool {

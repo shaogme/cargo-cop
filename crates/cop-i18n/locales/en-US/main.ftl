@@ -14,6 +14,7 @@ impl-external-trait-target = The trait impl target root { $root } is not an allo
 impl-inherent-target = An inherent impl target must be a type defined in the current source file
 impl-target-unresolved = Could not resolve the type ownership of impl target { $target }
 private-fields-for-behavior-type = All fields of type { $name } with an impl block must be private
+unnecessary-pub-crate = The crate-visible declaration { $name } can be private
 child-public-free-function = Free functions in child modules must be private
 no-lint-relaxation = Do not relax lint checks with an allow attribute
 function-parameter-limit = This function has { $actual } parameters; the maximum is { $maximum }

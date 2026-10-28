@@ -3618,3 +3618,135 @@ fn resolves_all_features_with_optional_dependency_activation() {
     assert!(all_features.stdout.contains("baseline.rs"));
     assert!(all_features.has_rule("no_inline_qualified_path"));
 }
+
+#[test]
+fn reports_only_unnecessary_pub_crate_declarations() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    let source = "mod outer {\n    pub(crate) fn unused() {}\n    pub(crate) fn used_inside() {}\n    pub(crate) fn used_outside() {}\n    pub(crate) struct ApiType;\n    pub(crate) fn exposed(_: ApiType) {}\n    pub(crate) struct Owner;\n    impl Owner {\n        pub(crate) fn hidden_method() {}\n        pub(crate) fn child_method() {}\n        pub(crate) fn visible_method() {}\n    }\n    mod child { fn internal() { super::used_inside(); super::Owner::child_method(); } }\n}\nmod sibling {\n    fn call() {\n        crate::outer::used_outside();\n        let _ = crate::outer::exposed;\n        crate::outer::Owner::visible_method();\n    }\n}\nmod types { pub struct Public; }\nmod alias_scope { pub(crate) use crate::types::Public as Alias; }\nmod alias_sibling { fn parameter(_: crate::alias_scope::Alias) {} }\nmod local_alias {\n    pub(crate) use crate::types::Public as LocalAlias;\n    fn parameter(_: LocalAlias) {}\n}\n";
+    fixture.write("src/lib.rs", source);
+
+    let output = fixture.run(&["--format", "json"]);
+    let diagnostics = rule_diagnostics(&output, "unnecessary_pub_crate");
+    let names = diagnostics
+        .iter()
+        .map(|diagnostic| {
+            diagnostic["arguments"]["name"]
+                .as_str()
+                .expect("诊断声明名称")
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        names,
+        [
+            "unused",
+            "used_inside",
+            "hidden_method",
+            "child_method",
+            "LocalAlias"
+        ],
+        "{}\n{}",
+        output.stdout,
+        output.stderr
+    );
+    for diagnostic in diagnostics {
+        let line = usize::try_from(diagnostic["start"]["line"].as_u64().expect("诊断起始行"))
+            .expect("诊断起始行范围");
+        let start = usize::try_from(diagnostic["start"]["column"].as_u64().expect("诊断起始列"))
+            .expect("诊断起始列范围");
+        let end = usize::try_from(diagnostic["end"]["column"].as_u64().expect("诊断结束列"))
+            .expect("诊断结束列范围");
+        let source_line = source.lines().nth(line - 1).expect("诊断对应源码行");
+        assert_eq!(&source_line[start - 1..end - 1], "pub(crate)");
+    }
+    assert!(output.stdout.contains("\"status\":\"complete\""));
+}
+
+#[test]
+fn configures_unnecessary_pub_crate_through_config_and_cli() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write("src/lib.rs", "mod inner { pub(crate) fn unused() {} }\n");
+
+    let default = fixture.run(&["--format", "json"]);
+    let warning = fixture.run(&[
+        "--format",
+        "json",
+        "--severity",
+        "unnecessary_pub_crate=warning",
+    ]);
+    let disabled = fixture.run(&[
+        "--format",
+        "json",
+        "--disable-rule",
+        "unnecessary_pub_crate",
+    ]);
+
+    assert_eq!(rule_diagnostics(&default, "unnecessary_pub_crate").len(), 1);
+    assert_eq!(
+        rule_diagnostics(&warning, "unnecessary_pub_crate")[0]["severity"],
+        "warning"
+    );
+    assert!(rule_diagnostics(&disabled, "unnecessary_pub_crate").is_empty());
+}
+
+#[test]
+fn accounts_for_cfg_and_unknown_conditions_when_checking_pub_crate() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "Cargo.toml",
+        "[package]\nname = \"sample\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[features]\nenabled = []\n",
+    );
+    fixture.write(
+        "src/lib.rs",
+        "mod api {\n    #[cfg(feature = \"enabled\")]\n    pub(crate) fn inactive_outside_use() {}\n    #[cfg(mystery_cfg)]\n    pub(crate) fn uncertain() {}\n}\n#[cfg(not(feature = \"enabled\"))]\nmod inactive_user {\n    fn call() { crate::api::inactive_outside_use(); }\n}\n#[cfg(mystery_cfg)]\nmod uncertain_user {\n    fn call() { crate::api::uncertain(); }\n}\n",
+    );
+
+    let output = fixture.run(&["--format", "json", "--features", "enabled"]);
+    let diagnostics = rule_diagnostics(&output, "unnecessary_pub_crate");
+    let names = diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic["arguments"]["name"].as_str().expect("声明名称"))
+        .collect::<Vec<_>>();
+
+    assert_eq!(names, ["inactive_outside_use"], "{}", output.stdout);
+}
+
+#[test]
+fn skips_pub_crate_candidates_when_macro_expansion_is_unavailable() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "src/lib.rs",
+        "mod api { pub(crate) fn used_by_macro() {} }\nmacro_rules! call_api { () => { crate::api::used_by_macro() }; }\nfn invoke() { call_api!(); }\n",
+    );
+
+    let output = fixture.run(&["--format", "json"]);
+
+    assert!(
+        rule_diagnostics(&output, "unnecessary_pub_crate").is_empty(),
+        "{}",
+        output.stdout
+    );
+}
+
+#[test]
+fn isolates_pub_crate_references_between_target_contexts() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "Cargo.toml",
+        "[package]\nname = \"sample\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[[bin]]\nname = \"sample-bin\"\npath = \"src/main.rs\"\n",
+    );
+    fixture.write("src/lib.rs", "mod inner { pub(crate) fn candidate() {} }\n");
+    fixture.write(
+        "src/main.rs",
+        "mod inner { pub(crate) fn candidate() {} }\nmod outside { fn call() { crate::inner::candidate(); } }\nfn main() {}\n",
+    );
+
+    let output = fixture.run(&["--format", "json", "--all-targets"]);
+    let diagnostics = rule_diagnostics(&output, "unnecessary_pub_crate");
+
+    assert_eq!(diagnostics.len(), 1, "{}", output.stdout);
+    assert_eq!(diagnostics[0]["target"], "sample");
+}

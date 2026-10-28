@@ -11,6 +11,7 @@ impl-external-trait-target = trait impl 的目标 { $root } 不属于允许的�
 impl-inherent-target = 固有 impl 的目标必须是在当前源文件定义的类型
 impl-target-unresolved = 无法解析 impl 目标 { $target } 的类型归属
 private-fields-for-behavior-type = 存在 impl 的类型 { $name } 必须将所有字段设为私有
+unnecessary-pub-crate = crate 可见声明 { $name } 可以改为私有
 child-public-free-function = 子模块中的独立函数必须保持私有
 no-lint-relaxation = 禁止通过 allow 属性放宽 lint 检查
 function-parameter-limit = 函数参数数量为 { $actual }，最多允许 { $maximum } 个

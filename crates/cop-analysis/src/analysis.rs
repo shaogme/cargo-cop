@@ -5,6 +5,7 @@ use cop_model::{
 
 use crate::{
     cfg_eval::{CfgDecision, CfgEvaluator},
+    facts::AnalysisFacts,
     module_graph::ModuleGraph,
     ModuleNode, SymbolIndex,
 };
@@ -18,7 +19,7 @@ pub struct ProjectAnalyzer;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AnalysisSnapshot {
     modules: Vec<ModuleNode>,
-    symbols: SymbolIndex,
+    facts: AnalysisFacts,
     diagnostics: Vec<Diagnostic>,
     status: ScanStatus,
 }
@@ -107,11 +108,11 @@ impl ProjectAnalyzer {
                 .then_with(|| format!("{:?}", left.kind()).cmp(&format!("{:?}", right.kind())))
                 .then_with(|| left.message().cmp(right.message()))
         });
-        let symbols = SymbolIndex::build(request.package(), &modules);
+        let facts = AnalysisFacts::build(request.package(), &modules);
         let status = ScanStatus::from_diagnostics(&diagnostics);
         AnalysisSnapshot {
             modules,
-            symbols,
+            facts,
             diagnostics,
             status,
         }
@@ -137,7 +138,11 @@ impl AnalysisSnapshot {
     }
 
     pub fn symbols(&self) -> &SymbolIndex {
-        &self.symbols
+        self.facts.symbols()
+    }
+
+    pub fn facts(&self) -> &AnalysisFacts {
+        &self.facts
     }
 
     pub fn diagnostics(&self) -> &[Diagnostic] {

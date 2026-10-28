@@ -29,6 +29,7 @@ pub enum RuleId {
     OutOfLineModulesAtScopeStart,
     CfgUseGroupSpacing,
     CfgInsideUseTree,
+    UnnecessaryPubCrate,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -85,7 +86,7 @@ pub struct Diagnostic {
 }
 
 impl RuleId {
-    pub const ALL: [Self; 20] = [
+    pub const ALL: [Self; 21] = [
         Self::ModuleFileLayout,
         Self::NoLintRelaxation,
         Self::ItemSpacing,
@@ -106,6 +107,7 @@ impl RuleId {
         Self::OutOfLineModulesAtScopeStart,
         Self::CfgUseGroupSpacing,
         Self::CfgInsideUseTree,
+        Self::UnnecessaryPubCrate,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -130,6 +132,7 @@ impl RuleId {
             Self::OutOfLineModulesAtScopeStart => "out_of_line_modules_at_scope_start",
             Self::CfgUseGroupSpacing => "cfg_use_group_spacing",
             Self::CfgInsideUseTree => "cfg_inside_use_tree",
+            Self::UnnecessaryPubCrate => "unnecessary_pub_crate",
         }
     }
 

@@ -57,7 +57,7 @@ The config file must contain the integer `version = 2`. The top-level fields are
 | `[rules.<ID>].enabled` | boolean | `true` | Whether the named rule runs. CLI `--disable-rule <ID>` can turn it off. |
 | `[rules.<ID>].severity` | `"warning"` or `"error"` | `"error"` | Severity assigned to diagnostics from the named rule. CLI `--severity ID=LEVEL` takes precedence. |
 
-`[rules]` may contain any of the 20 IDs in the rule catalog below. Each rule table accepts only `enabled` and `severity`. A setting for one rule has no effect on other rules.
+`[rules]` may contain any of the 21 IDs in the rule catalog below. Each rule table accepts only `enabled` and `severity`. A setting for one rule has no effect on other rules.
 
 ## Rule IDs
 
@@ -73,7 +73,7 @@ severity = "warning"
 
 Available IDs:
 
-`module_file_layout`, `no_lint_relaxation`, `item_spacing`, `child_module_visibility`, `no_parent_path_attribute`, `no_parent_private_dependency`, `child_module_line_count`, `impl_locality`, `private_fields_for_behavior_types`, `child_public_free_functions`, `declaration_before_use`, `parameter_limit`, `tuple_arity`, `no_inline_qualified_path`, `merge_common_prefix_imports`, `extern_crate_at_scope_start`, `imports_at_scope_start`, `out_of_line_modules_at_scope_start`, `cfg_use_group_spacing`, and `cfg_inside_use_tree`.
+`module_file_layout`, `no_lint_relaxation`, `item_spacing`, `child_module_visibility`, `no_parent_path_attribute`, `no_parent_private_dependency`, `child_module_line_count`, `impl_locality`, `private_fields_for_behavior_types`, `unnecessary_pub_crate`, `child_public_free_functions`, `declaration_before_use`, `parameter_limit`, `tuple_arity`, `no_inline_qualified_path`, `merge_common_prefix_imports`, `extern_crate_at_scope_start`, `imports_at_scope_start`, `out_of_line_modules_at_scope_start`, `cfg_use_group_spacing`, and `cfg_inside_use_tree`.
 
 The former `private_child_modules` ID was replaced by `child_module_visibility`. Update `[rules.private_child_modules]`, `--disable-rule private_child_modules`, and `--severity private_child_modules=...` to use the new ID. The schema version remains `2`.
 

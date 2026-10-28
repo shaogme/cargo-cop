@@ -101,7 +101,7 @@ struct GraphBuilder<'a> {
 }
 
 impl ModuleNode {
-    pub(crate) fn context_index(&self) -> usize {
+    pub fn context_index(&self) -> usize {
         self.context_index
     }
 
@@ -191,6 +191,10 @@ impl ModuleNode {
             .node(self.scope_id)
             .map(|node| node.start()..node.end())
             .unwrap_or(0..0)
+    }
+
+    pub(crate) fn scope_id(&self) -> AstNodeId {
+        self.scope_id
     }
 
     pub fn lint_relaxations(&self) -> &[ConfiguredAttribute] {

@@ -1,14 +1,13 @@
-use cop_analysis::{AnalysisSnapshot, CfgCondition, ModuleNode, SymbolKind};
+use crate::support::{RuleDiagnosticAdapter, RuleReport, SyntaxSupport};
+use cop_analysis::{
+    AnalysisReference, AnalysisSnapshot, CfgCondition, ModuleNode, ReferenceKind,
+    ShapeParameterFact, SymbolKind, SyntaxShapeKind,
+};
 use cop_config::ResolvedConfig;
 use cop_model::{
     Diagnostic, LocalizedMessage, RuleId, CLOSURE_PARAMETER_LIMIT, DECLARATION_BEFORE_USE,
     FUNCTION_PARAMETER_LIMIT, NO_LINT_RELAXATION, TUPLE_ARITY,
 };
-use cop_syntax::{
-    ClosureParameterSyntax, ExpressionSyntaxKind, ItemSyntaxKind, SyntaxNode, SyntaxNodeKind,
-};
-
-use crate::support::{PathReference, RuleDiagnosticAdapter, RuleReport, SyntaxSupport};
 
 pub(super) struct SyntaxRuleSet;
 
@@ -24,7 +23,7 @@ impl SyntaxRuleSet {
                 continue;
             }
             Self::lint_relaxation(module, diagnostics, &adapter);
-            Self::syntax_shapes(module, diagnostics, &adapter);
+            Self::syntax_shapes(module, snapshot, diagnostics, &adapter);
             Self::declaration_order(module, snapshot, diagnostics, &adapter);
         }
     }
@@ -50,123 +49,67 @@ impl SyntaxRuleSet {
 
     fn syntax_shapes(
         module: &ModuleNode,
+        snapshot: &AnalysisSnapshot,
         diagnostics: &mut Vec<Diagnostic>,
         adapter: &RuleDiagnosticAdapter<'_>,
     ) {
-        for item in module.item_nodes() {
-            Self::check_shapes(item, module, diagnostics, adapter);
-        }
-    }
-
-    fn check_shapes(
-        root: &SyntaxNode,
-        module: &ModuleNode,
-        diagnostics: &mut Vec<Diagnostic>,
-        adapter: &RuleDiagnosticAdapter<'_>,
-    ) {
-        if root
-            .item_syntax()
-            .is_some_and(|data| matches!(data.kind(), ItemSyntaxKind::Module { .. }))
-        {
+        let Some(syntax) = snapshot.facts().syntax_for_module(module) else {
             return;
-        }
-        SyntaxSupport::for_each_expression_syntax(module, root, &mut |expression| match expression
-            .kind()
-        {
-            ExpressionSyntaxKind::Closure { parameters, .. } => {
-                let parameter_count = parameters
-                    .iter()
-                    .filter(|parameter| {
-                        let bounds = parameter.bounds();
-                        module
-                            .configured_ast()
-                            .is_enabled_range(bounds.start, bounds.end)
-                    })
-                    .count();
-                if parameter_count > 5 {
-                    adapter.push(
-                        module,
-                        diagnostics,
-                        RuleReport::new(
-                            RuleId::ParameterLimit,
-                            LocalizedMessage::new(CLOSURE_PARAMETER_LIMIT)
-                                .with_number("actual", parameter_count as i64)
-                                .with_number("maximum", 5),
-                            Some(expression.bounds()),
-                        )
-                        .with_cfg_condition(closure_parameter_condition(module, parameters)),
-                    );
+        };
+        for shape in syntax.shapes() {
+            let bounds = shape.bounds();
+            match shape.kind() {
+                SyntaxShapeKind::ClosureParameters(parameters) => {
+                    let parameter_count = parameters
+                        .iter()
+                        .filter(|parameter| parameter.is_enabled())
+                        .count();
+                    if parameter_count > 5 {
+                        adapter.push(
+                            module,
+                            diagnostics,
+                            RuleReport::new(
+                                RuleId::ParameterLimit,
+                                LocalizedMessage::new(CLOSURE_PARAMETER_LIMIT)
+                                    .with_number("actual", parameter_count as i64)
+                                    .with_number("maximum", 5),
+                                Some(bounds),
+                            )
+                            .with_cfg_condition(closure_parameter_condition(parameters)),
+                        );
+                    }
+                }
+                SyntaxShapeKind::TupleArity(arity) => {
+                    if *arity > 2 {
+                        adapter.push(
+                            module,
+                            diagnostics,
+                            RuleReport::new(
+                                RuleId::TupleArity,
+                                LocalizedMessage::new(TUPLE_ARITY)
+                                    .with_number("actual", *arity as i64)
+                                    .with_number("maximum", 2),
+                                Some(bounds),
+                            ),
+                        );
+                    }
+                }
+                SyntaxShapeKind::FunctionParameters(parameter_count) => {
+                    if *parameter_count > 5 {
+                        adapter.push(
+                            module,
+                            diagnostics,
+                            RuleReport::new(
+                                RuleId::ParameterLimit,
+                                LocalizedMessage::new(FUNCTION_PARAMETER_LIMIT)
+                                    .with_number("actual", *parameter_count as i64)
+                                    .with_number("maximum", 5),
+                                Some(bounds),
+                            ),
+                        );
+                    }
                 }
             }
-            ExpressionSyntaxKind::Tuple(members) => {
-                let arity = members
-                    .iter()
-                    .filter(|member| {
-                        let bounds = member.bounds();
-                        module
-                            .configured_ast()
-                            .is_enabled_range(bounds.start, bounds.end)
-                    })
-                    .count();
-                if arity > 2 {
-                    let bounds = expression.bounds();
-                    adapter.push(
-                        module,
-                        diagnostics,
-                        RuleReport::new(
-                            RuleId::TupleArity,
-                            LocalizedMessage::new(TUPLE_ARITY)
-                                .with_number("actual", arity as i64)
-                                .with_number("maximum", 2),
-                            Some(bounds),
-                        ),
-                    );
-                }
-            }
-            _ => {}
-        });
-        let output = module.parse_output();
-        let mut pending = vec![root.id()];
-        while let Some(id) = pending.pop() {
-            let Some(node) = output.node(id) else {
-                continue;
-            };
-            if node.id() != root.id()
-                && node.item_syntax().is_some_and(|item_data| {
-                    matches!(item_data.kind(), ItemSyntaxKind::Module { .. })
-                })
-            {
-                continue;
-            }
-            if node.item_syntax().is_some_and(|item_data| {
-                matches!(item_data.kind(), ItemSyntaxKind::Function { .. })
-            }) {
-                let parameter_count = node
-                    .children()
-                    .iter()
-                    .filter_map(|id| output.node(*id))
-                    .filter(|parameter| {
-                        parameter.kind() == SyntaxNodeKind::Parameter
-                            && module
-                                .configured_ast()
-                                .is_enabled_range(parameter.start(), parameter.end())
-                    })
-                    .count();
-                if parameter_count > 5 {
-                    adapter.push(
-                        module,
-                        diagnostics,
-                        RuleReport::new(
-                            RuleId::ParameterLimit,
-                            LocalizedMessage::new(FUNCTION_PARAMETER_LIMIT)
-                                .with_number("actual", parameter_count as i64)
-                                .with_number("maximum", 5),
-                            Some(node.start()..node.end()),
-                        ),
-                    );
-                }
-            }
-            pending.extend(node.children().iter().rev().copied());
         }
     }
 
@@ -176,56 +119,24 @@ impl SyntaxRuleSet {
         diagnostics: &mut Vec<Diagnostic>,
         adapter: &RuleDiagnosticAdapter<'_>,
     ) {
-        for item in module.item_nodes() {
-            SyntaxSupport::for_each_path_reference(module, item, false, &mut |reference| {
-                check_ordered_path(reference, module, snapshot, diagnostics, adapter);
-            });
-            if item
-                .item_syntax()
-                .is_some_and(|data| matches!(data.kind(), ItemSyntaxKind::Use))
+        for reference in snapshot.facts().references_for_module(module) {
+            if matches!(reference.kind(), ReferenceKind::Path | ReferenceKind::Call)
+                || (reference.kind() == ReferenceKind::Use && !reference.is_glob())
             {
-                let Some(tree) = SyntaxSupport::use_tree_node_for_item(module, item) else {
-                    continue;
-                };
-                for leaf in SyntaxSupport::use_leaves(module, tree) {
-                    if !leaf.glob {
-                        check_ordered_path(
-                            &PathReference {
-                                segments: leaf.path,
-                                start: leaf.start,
-                                end: leaf.end,
-                                is_macro: false,
-                            },
-                            module,
-                            snapshot,
-                            diagnostics,
-                            adapter,
-                        );
-                    }
-                }
+                check_ordered_path(reference, module, diagnostics, adapter);
             }
         }
     }
 }
 
-fn closure_parameter_condition(
-    module: &ModuleNode,
-    parameters: &[ClosureParameterSyntax],
-) -> Option<String> {
+fn closure_parameter_condition(parameters: &[ShapeParameterFact]) -> Option<String> {
     let mut unconditional = 0usize;
     let mut conditions = Vec::new();
     for parameter in parameters {
-        let bounds = parameter.bounds();
-        if !module
-            .configured_ast()
-            .is_enabled_range(bounds.start, bounds.end)
-        {
+        if !parameter.is_enabled() {
             continue;
         }
-        match module
-            .configured_ast()
-            .condition_for_span(bounds.start, bounds.end)
-        {
+        match parameter.condition() {
             Some(condition) => conditions.push(CfgCondition::parse(condition).ok()?),
             None => unconditional += 1,
         }
@@ -251,31 +162,25 @@ fn closure_parameter_condition(
 }
 
 fn check_ordered_path(
-    reference: &PathReference,
+    reference: &AnalysisReference,
     module: &ModuleNode,
-    snapshot: &AnalysisSnapshot,
     diagnostics: &mut Vec<Diagnostic>,
     adapter: &RuleDiagnosticAdapter<'_>,
 ) {
+    let bounds = reference.bounds();
     if !module
         .configured_ast()
-        .is_enabled_range(reference.start, reference.end)
+        .is_enabled_range(bounds.start, bounds.end)
         || !module.configured_ast().is_supported_range(
             module.parse_output(),
-            reference.start,
-            reference.end,
+            bounds.start,
+            bounds.end,
         )
     {
         return;
     }
-    let reference_condition = module
-        .configured_ast()
-        .condition_for_span(reference.start, reference.end);
-    let resolution = snapshot.symbols().resolve_path_at(
-        module,
-        &reference.segments,
-        Some(reference.start..reference.end),
-    );
+    let reference_condition = reference.condition();
+    let resolution = reference.resolution();
     let Some(symbol) = resolution.symbol().filter(|symbol| {
         symbol.namespace() == module.namespace()
             && symbol.file_path() == module.file_path()
@@ -287,7 +192,7 @@ fn check_ordered_path(
     let Some(declaration_span) = symbol.span() else {
         return;
     };
-    if reference.start >= declaration_span.byte_range().start {
+    if bounds.start >= declaration_span.byte_range().start {
         return;
     }
     adapter.push(
@@ -296,7 +201,7 @@ fn check_ordered_path(
         RuleReport::new(
             RuleId::DeclarationBeforeUse,
             LocalizedMessage::new(DECLARATION_BEFORE_USE).with_text("name", symbol.name()),
-            Some(reference.start..reference.end),
+            Some(bounds),
         ),
     );
 }
