@@ -3115,6 +3115,67 @@ fn requires_one_line_between_different_and_regular_definition_kinds() {
 }
 
 #[test]
+fn ignores_item_spacing_pairs_separated_by_cfg_disabled_items() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    let source = include_str!("fixtures/cfg_filtered_item_spacing.rs").replace(
+        "#[cfg(all(not(test), target_arch = \"aarch64\"))]",
+        "#[cfg(any())]",
+    );
+    let source =
+        format!("{source}\n#[cfg(not(test))]\nfn inspect_raw(raw: u8) {{ consume(&raw); }}\n");
+    fixture.write("src/main.rs", &source);
+    fixture.write("src/app.rs", "fn placeholder() {}\n");
+    fixture.write("src/memory_helpers.rs", "fn placeholder() {}\n");
+
+    let output = fixture.run(&[
+        "--format",
+        "json",
+        "--all-targets",
+        "--all-features",
+        "--workspace",
+        "--disable-rule",
+        "child_module_line_count",
+    ]);
+    let diagnostics = item_spacing_diagnostics(&output);
+    let diagnostic = diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic["start"]["line"] == 151);
+    assert!(diagnostic.is_none(), "{}", output.stdout);
+    assert!(
+        !output
+            .stdout
+            .contains("\"message_id\":\"syntax-parse-error-unexpected-eof\""),
+        "{}",
+        output.stdout
+    );
+}
+
+#[test]
+fn treats_cfg_disabled_items_as_spacing_boundaries_in_all_scopes() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "src/lib.rs",
+        "struct RootBefore;\n#[cfg(any())]\nstruct RootDisabled;\n\n\nstruct RootAfter;\n\ntrait Contract {\n    fn before();\n    #[cfg(any())]\n    const DISABLED: u8 = 0;\n\n\n    fn after();\n}\n\nstruct Service;\n\nimpl Service {\n    fn before(&self) {}\n    #[cfg(any())]\n    const DISABLED: u8 = 0;\n\n\n    fn after(&self) {}\n}\n\n#[cfg(test)]\nmod tests {\n    struct Before;\n    #[cfg(any())]\n    struct Disabled;\n\n\n    struct After;\n}\n",
+    );
+
+    let regular_targets = fixture.run(&["--format", "json"]);
+    let all_targets = fixture.run(&["--format", "json", "--all-targets"]);
+
+    assert!(
+        item_spacing_diagnostics(&regular_targets).is_empty(),
+        "{}",
+        regular_targets.stdout
+    );
+    assert!(
+        item_spacing_diagnostics(&all_targets).is_empty(),
+        "{}",
+        all_targets.stdout
+    );
+}
+
+#[test]
 fn requires_one_line_between_impl_blocks_and_every_checked_definition_kind() {
     let fixture = Fixture::new();
     fixture.write("Cargo.toml", &package_manifest("sample"));

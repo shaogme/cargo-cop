@@ -157,7 +157,7 @@ impl ModuleNode {
         self.order_only
     }
 
-    pub fn item_nodes(&self) -> Vec<&SyntaxNode> {
+    pub fn source_item_nodes(&self) -> Vec<&SyntaxNode> {
         let Some(scope) = self.source.node(self.scope_id) else {
             return Vec::new();
         };
@@ -165,12 +165,17 @@ impl ModuleNode {
             .children()
             .iter()
             .filter_map(|id| self.source.node(*id))
+            .filter(|node| node.item_syntax().is_some())
+            .collect()
+    }
+
+    pub fn item_nodes(&self) -> Vec<&SyntaxNode> {
+        self.source_item_nodes()
+            .into_iter()
             .filter(|node| {
-                node.item_syntax().is_some()
-                    && self
-                        .configured_ast
-                        .node(node.id())
-                        .is_some_and(|configured| configured.decision() != CfgDecision::False)
+                self.configured_ast
+                    .node(node.id())
+                    .is_some_and(|configured| configured.decision() != CfgDecision::False)
             })
             .collect()
     }

@@ -30,6 +30,14 @@ fn check_item_spacing_nodes(
     for pair in nodes.windows(2) {
         let previous = pair[0];
         let current = pair[1];
+        if [previous, current].iter().any(|item| {
+            module
+                .configured_ast()
+                .node(item.id())
+                .is_some_and(|configured| configured.decision() == CfgDecision::False)
+        }) {
+            continue;
+        }
         if !SyntaxSupport::conditions_may_coexist(
             module
                 .configured_ast()
@@ -64,6 +72,13 @@ fn check_item_spacing_nodes(
         }
     }
     for node in nodes {
+        if module
+            .configured_ast()
+            .node(node.id())
+            .is_some_and(|configured| configured.decision() == CfgDecision::False)
+        {
+            continue;
+        }
         if node.item_syntax().is_some_and(|item_data| {
             matches!(
                 item_data.kind(),
@@ -367,7 +382,7 @@ impl ModuleRuleSet {
         diagnostics: &mut Vec<Diagnostic>,
         adapter: &RuleDiagnosticAdapter<'_>,
     ) {
-        let items = module.item_nodes();
+        let items = module.source_item_nodes();
         check_item_spacing(&items, module, diagnostics, adapter);
     }
 

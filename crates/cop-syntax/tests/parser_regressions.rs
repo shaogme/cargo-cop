@@ -1,9 +1,15 @@
 use cop_syntax::{
-    AttributeMetaArgument, AttributeMetaValueKind, CoverageStatus, ExpressionSyntaxKind,
-    ForeignItemSyntaxKind, ItemSyntaxKind, LiteralKind, ParseIssueCode, ParseIssueKind,
-    ParseOptions, PatternSyntaxKind, RustParser, SourceFile, SyntaxNodeKind, TypeSyntaxKind,
-    UnaryOperator,
+    AttributeMetaArgument, AttributeMetaValueKind, CoverageStatus, ExpressionSyntax,
+    ExpressionSyntaxKind, ForeignItemSyntaxKind, ItemSyntaxKind, LiteralKind, ParseIssueCode,
+    ParseIssueKind, ParseOptions, PatternSyntaxKind, RustParser, SourceFile, SyntaxNodeKind,
+    TypeSyntaxKind, UnaryOperator,
 };
+
+struct UnaryExpressionInfo<'a> {
+    text: &'a str,
+    operator: &'a UnaryOperator,
+    operand: &'a ExpressionSyntax,
+}
 
 fn parse(source: &str, edition: &str) -> cop_syntax::ParseOutput {
     RustParser::parse(
@@ -85,33 +91,37 @@ fn distinguishes_raw_borrows_from_mutable_borrows_and_field_borrows() {
             };
             source
                 .get(expression.bounds())
-                .map(|text| (text, operator, operand.as_ref()))
+                .map(|text| UnaryExpressionInfo {
+                    text,
+                    operator,
+                    operand: operand.as_ref(),
+                })
         })
         .collect::<Vec<_>>();
 
     assert!(parsed.issues().is_empty(), "{:?}", parsed.issues());
-    assert!(unary_expressions.iter().any(|(text, operator, operand)| {
-        *text == "&raw const ptr"
-            && **operator == UnaryOperator::RawConstBorrow
-            && matches!(operand.kind(), ExpressionSyntaxKind::Path(path)
+    assert!(unary_expressions.iter().any(|unary| {
+        unary.text == "&raw const ptr"
+            && *unary.operator == UnaryOperator::RawConstBorrow
+            && matches!(unary.operand.kind(), ExpressionSyntaxKind::Path(path)
                 if path.segments().first().is_some_and(|segment| segment.name() == "ptr"))
     }));
-    assert!(unary_expressions.iter().any(|(text, operator, operand)| {
-        *text == "&raw mut ptr"
-            && **operator == UnaryOperator::RawMutableBorrow
-            && matches!(operand.kind(), ExpressionSyntaxKind::Path(path)
+    assert!(unary_expressions.iter().any(|unary| {
+        unary.text == "&raw mut ptr"
+            && *unary.operator == UnaryOperator::RawMutableBorrow
+            && matches!(unary.operand.kind(), ExpressionSyntaxKind::Path(path)
                 if path.segments().first().is_some_and(|segment| segment.name() == "ptr"))
     }));
-    assert!(unary_expressions.iter().any(|(text, operator, operand)| {
-        *text == "&mut raw"
-            && **operator == UnaryOperator::MutableBorrow
-            && matches!(operand.kind(), ExpressionSyntaxKind::Path(path)
+    assert!(unary_expressions.iter().any(|unary| {
+        unary.text == "&mut raw"
+            && *unary.operator == UnaryOperator::MutableBorrow
+            && matches!(unary.operand.kind(), ExpressionSyntaxKind::Path(path)
                 if path.segments().first().is_some_and(|segment| segment.name() == "raw"))
     }));
-    assert!(unary_expressions.iter().any(|(text, operator, operand)| {
-        *text == "&raw.field"
-            && **operator == UnaryOperator::SharedBorrow
-            && matches!(operand.kind(), ExpressionSyntaxKind::Field { field, .. } if field == "field")
+    assert!(unary_expressions.iter().any(|unary| {
+        unary.text == "&raw.field"
+            && *unary.operator == UnaryOperator::SharedBorrow
+            && matches!(unary.operand.kind(), ExpressionSyntaxKind::Field { field, .. } if field == "field")
     }));
 }
 
