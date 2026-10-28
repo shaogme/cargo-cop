@@ -1,5 +1,6 @@
 use std::ops::Range;
 
+use cop_cfg::CfgCondition;
 use cop_model::{LocalizedMessage, SYNTAX_MACRO_OPAQUE};
 
 use crate::{
@@ -9,7 +10,7 @@ use crate::{
     },
     parser::{patterns::PatternParser, types::TypeParser},
     recovery::Recovery,
-    Delimiter, LiteralKind, Token, TokenKind,
+    Delimiter, LiteralKind, SourceFile, Token, TokenKind,
 };
 
 use super::{
@@ -49,6 +50,7 @@ impl MacroInputSupport {
             invocation.path(),
             &invocation.input().bounds(),
             context.tokens,
+            context.source,
         )
         .filter(|fragments| Self::validate_fragments(fragments, &context));
         let Some(fragments) = profile else {
@@ -79,7 +81,7 @@ impl MacroInputSupport {
         parent: AstNodeId,
         context: &mut EmitContext<'_>,
     ) {
-        let profile = Self::profile(path, input, context.tokens)
+        let profile = Self::profile(path, input, context.tokens, context.source)
             .filter(|fragments| Self::validate_fragments(fragments, context));
         let Some(fragments) = profile else {
             Self::emit_opaque(path, bounds, input, parent, context);
@@ -170,10 +172,12 @@ impl MacroInputSupport {
         path: &PathSyntax,
         input: &Range<usize>,
         tokens: &[Token],
+        source: &SourceFile,
     ) -> Option<Vec<MacroFragment>> {
         let name = path.segments().last()?.name();
         let range = Self::input_token_range(tokens, input)?;
         match name {
+            "cfg" => Self::cfg_profile(tokens, range, source),
             "assert" => Self::assert_profile(tokens, range, 1),
             "assert_eq" | "assert_ne" => Self::assert_profile(tokens, range, 2),
             "matches" => Self::matches_profile(tokens, range),
@@ -188,6 +192,29 @@ impl MacroInputSupport {
             "static_loader" => Self::static_loader_profile(tokens, range),
             _ => None,
         }
+    }
+
+    fn cfg_profile(
+        tokens: &[Token],
+        range: Range<usize>,
+        source: &SourceFile,
+    ) -> Option<Vec<MacroFragment>> {
+        let expression = Self::cfg_expression_text(tokens, range, source)?;
+        CfgCondition::parse(expression).ok()?;
+        Some(Vec::new())
+    }
+
+    fn cfg_expression_text<'a>(
+        tokens: &[Token],
+        range: Range<usize>,
+        source: &'a SourceFile,
+    ) -> Option<&'a str> {
+        if range.is_empty() {
+            return None;
+        }
+        let start = tokens.get(range.start)?.start();
+        let end = tokens.get(range.end.checked_sub(1)?)?.end();
+        source.slice(start, end)
     }
 
     fn static_loader_profile(tokens: &[Token], range: Range<usize>) -> Option<Vec<MacroFragment>> {

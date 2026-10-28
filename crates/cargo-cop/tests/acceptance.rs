@@ -3664,6 +3664,37 @@ fn reports_only_unnecessary_pub_crate_declarations() {
 }
 
 #[test]
+fn reports_pub_crate_constant_despite_cfg_test_macro_coverage() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "Cargo.toml",
+        &format!(
+            "{}\n[[test]]\nname = \"process_regression\"\npath = \"tests/fixture_root.rs\"\n",
+            package_manifest("sample")
+        ),
+    );
+    fixture.write(
+        "tests/fixture_root.rs",
+        "#[path = \"fixtures/process_pub_crate_regression.rs\"]\nmod process;\npub struct LinuxSyscalls;\n",
+    );
+    fixture.write(
+        "tests/fixtures/process_pub_crate_regression.rs",
+        include_str!("fixtures/process_pub_crate_regression.rs"),
+    );
+
+    let output = fixture.run(&["--format", "json", "--all-targets"]);
+    let diagnostics = rule_diagnostics(&output, "unnecessary_pub_crate");
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| { diagnostic["arguments"]["name"] == "MAX_PROCESS_POINTERS" }),
+        "{}\n{}",
+        output.stdout,
+        output.stderr
+    );
+}
+
+#[test]
 fn configures_unnecessary_pub_crate_through_config_and_cli() {
     let fixture = Fixture::new();
     fixture.write("Cargo.toml", &package_manifest("sample"));

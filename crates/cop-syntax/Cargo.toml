@@ -13,4 +13,5 @@ keywords = ["parser", "rust", "syntax"]
 categories.workspace = true
 
 [dependencies]
+cop-cfg.workspace = true
 cop-model.workspace = true

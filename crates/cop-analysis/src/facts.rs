@@ -4,7 +4,7 @@ mod collector;
 use std::{collections::BTreeMap, mem, ops::Range, path::PathBuf};
 
 use cop_cargo::SelectedPackage;
-use cop_syntax::{AstNodeId, SyntaxNode, SyntaxNodeKind};
+use cop_syntax::{AstNodeId, CoverageStatus, SyntaxNode, SyntaxNodeKind};
 
 pub use collector::ReferenceKind;
 
@@ -486,6 +486,7 @@ impl AnalysisFacts {
         node: &SyntaxNode,
     ) {
         if matches!(node.kind(), SyntaxNodeKind::Opaque | SyntaxNodeKind::Macro)
+            && node.coverage() != CoverageStatus::Complete
             && !SyntaxFactCollector::is_disabled(module, node.start(), node.end())
             && SyntaxFactCollector::is_in_module_scope(module, node)
         {
