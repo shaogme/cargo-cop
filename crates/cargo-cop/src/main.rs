@@ -1,4 +1,5 @@
 mod application;
+mod rule_catalog;
 
 use std::{
     io::{self, Write},

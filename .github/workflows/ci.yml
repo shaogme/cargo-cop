@@ -30,5 +30,8 @@ jobs:
       - name: Clippy 检查
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
+      - name: Rust 仓库规范检查
+        run: cargo run -p cargo-cop -- --all-targets --all-features --workspace
+
       - name: 运行 workspace 测试
         run: cargo test --workspace --locked

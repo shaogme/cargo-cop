@@ -146,6 +146,8 @@ Options:
   --config <PATH>           Configuration file path
   --locale <TAG>            Output locale (zh-CN, en-US)
   --format <FORMAT>         Output format: human or json
+  --list-rules              List the rule catalog without scanning a project
+  --explain-rule <ID>       Explain one rule without scanning a project
   --disable-rule <ID>       Disable a rule; may be repeated
   --severity <ID=LEVEL>     Set rule severity; may be repeated
   -h, --help                Print help
@@ -157,3 +159,54 @@ message report.summary = "cargo-cop: status {status, select, complete {complete}
 message report.detail_reference = "see the detail field";
 message report.namespace_label = "namespace";
 message report.cfg_label = "cfg";
+message rule_catalog.list_title = "Rule catalog ({count} rules):";
+message rule_catalog.summary_label = "Summary";
+message rule_catalog.description_label = "Description";
+message rule_catalog.default_enabled_label = "Default enabled";
+message rule_catalog.default_severity_label = "Default severity";
+message rule_catalog.configuration_label = "Configuration";
+message rule_catalog.overrides_label = "CLI overrides";
+message rule_catalog.enabled = "enabled";
+message rule_catalog.disabled = "disabled";
+message rule_catalog.module_file_layout.summary = "Out-of-line child modules must use the Rust 2018 file layout.";
+message rule_catalog.module_file_layout.description = "An out-of-line child module must be stored in a file named after the module, such as child.rs, with nested modules in a matching child/ directory. Do not use the legacy child/mod.rs layout. The crate root file is exempt.";
+message rule_catalog.no_lint_relaxation.summary = "Reject lint allow attributes, including those injected by cfg_attr.";
+message rule_catalog.no_lint_relaxation.description = "The rule reports allow lint attributes that can suppress compiler or Clippy diagnostics. It also recognizes allow attributes nested inside cfg_attr, so conditional compilation cannot be used to hide the relaxation.";
+message rule_catalog.item_spacing.summary = "Require the specified blank-line spacing between adjacent item definitions.";
+message rule_catalog.item_spacing.description = "Within one immediate item scope, adjacent structs, enums, unions, type aliases, traits, constants, statics, functions, and impl blocks require exactly one blank line. Two consecutive constants, statics, or type aliases of the same kind require no blank line. Other item kinds form boundaries, and pairs with provably mutually exclusive cfg conditions are not compared.";
+message rule_catalog.child_module_visibility.summary = "Keep child modules private unless their contents are declarative only.";
+message rule_catalog.child_module_visibility.description = "A registered child module should use private visibility. pub or pub(crate) is allowed only when every item is a module declaration, a use import with private, pub, or pub(crate) visibility, a macro_rules definition, a type alias, a struct, enum, trait, union, constant, or static. Functions, impl blocks, extern crate declarations, scoped imports such as pub(super), and macro invocations make the module ineligible for that exception.";
+message rule_catalog.no_parent_path_attribute.summary = "Do not use parent-directory components in external module paths.";
+message rule_catalog.no_parent_path_attribute.description = "A path string on an external mod declaration must not contain a .. component, using either slash style as a separator. This also applies to path attributes nested inside cfg_attr and is checked even when that configuration is inactive. Names such as foo..rs are not parent-directory components.";
+message rule_catalog.no_parent_private_dependency.summary = "Child modules must not reach backward into private ancestor details.";
+message rule_catalog.no_parent_private_dependency.description = "A submodule must not use super::* or resolve a super:: or crate:: path to a private item in an ancestor module. Pass required state and context down through arguments; sibling modules may depend on one another, and accessible public abstractions remain usable.";
+message rule_catalog.child_module_line_count.summary = "Keep each out-of-line child-module file between 70 and 800 effective lines.";
+message rule_catalog.child_module_line_count.description = "After cargo fmt, each individual out-of-line submodule source file must contain at least 70 and at most 800 effective lines of code. Blank lines, comments, and code inside #[cfg(test)] scopes do not count. The module entry file remains separate from its child files.";
+message rule_catalog.impl_locality.summary = "Keep inherent impl blocks in the file that defines their type.";
+message rule_catalog.impl_locality.description = "An inherent impl may target only a struct or enum defined in the same source file. Do not add inherent impls for parent-module, sibling-module, project-external, or external-crate types elsewhere. Trait impls for primitive and standard-library types are exempt from the local-definition requirement only when Rust orphan rules permit them.";
+message rule_catalog.private_fields_for_behavior_types.summary = "Keep fields private on types that have an impl block.";
+message rule_catalog.private_fields_for_behavior_types.description = "If a struct, enum, or union has any inherent or trait impl block, all of its fields must have private visibility. Expose domain state through methods. Public or crate-visible fields are reserved for pure data-transfer structs with no impl blocks.";
+message rule_catalog.child_public_free_functions.summary = "Keep independent functions in submodules private.";
+message rule_catalog.child_public_free_functions.description = "A standalone function declared in a submodule must not be pub or pub(crate). Expose reusable behavior through an associated function or method on a type instead; functions in the parent module are outside this rule's submodule scope.";
+message rule_catalog.declaration_before_use.summary = "Place named declarations before the code that consumes them.";
+message rule_catalog.declaration_before_use.description = "Within the applicable source scope, declarations such as structs, enums, aliases, traits, constants, and statics must appear before references, calls, or constructions that consume them. The check follows the parsed source scope and its supported reference forms.";
+message rule_catalog.parameter_limit.summary = "Limit functions, methods, and closures to five parameters.";
+message rule_catalog.parameter_limit.description = "A free function or associated method may have at most five parameters, and a closure may have at most five parameters. Group larger sets of related inputs in a named parameter or options struct.";
+message rule_catalog.tuple_arity.summary = "Limit tuple types and tuple expressions to two elements.";
+message rule_catalog.tuple_arity.description = "Tuple types and tuple expressions may contain at most two elements. Represent data with three or more named components using a struct with semantic field names.";
+message rule_catalog.no_inline_qualified_path.summary = "Import names before using fully qualified paths in code.";
+message rule_catalog.no_inline_qualified_path.description = "The rule reports code paths rooted at an external crate name, including a dependency alias, or explicitly rooted at crate::, self::, or super::. Import the required symbol with a use declaration before using it in business logic.";
+message rule_catalog.merge_common_prefix_imports.summary = "Group imports that share a path prefix and compatible attributes.";
+message rule_catalog.merge_common_prefix_imports.description = "Combine imports into a braced use tree when they share a path prefix and have the same visibility and effective cfg conditions. Module-scope imports do not need to be adjacent to qualify; block imports follow the same prefix and compatibility checks within their block.";
+message rule_catalog.extern_crate_at_scope_start.summary = "Place extern crate declarations at the beginning of each module scope.";
+message rule_catalog.extern_crate_at_scope_start.description = "In each module scope, extern crate declarations must precede out-of-line module declarations, use imports, and other items. The ordering is checked independently for each module, including nested modules.";
+message rule_catalog.imports_at_scope_start.summary = "Place use imports before other items in their scope.";
+message rule_catalog.imports_at_scope_start.description = "At module scope, use declarations belong after out-of-line module declarations and before other items. Inside a block, use declarations belong before other statements. The check applies to each scope independently.";
+message rule_catalog.out_of_line_modules_at_scope_start.summary = "Group external module declarations before imports and other items.";
+message rule_catalog.out_of_line_modules_at_scope_start.description = "Out-of-line mod declarations must form a consecutive group after extern crate declarations and before use imports or other items in each module scope. Inline modules are ordinary items and are not part of this group.";
+message rule_catalog.cfg_use_group_spacing.summary = "Separate adjacent use groups with different cfg conditions by one blank line.";
+message rule_catalog.cfg_use_group_spacing.description = "Imports with the same effective cfg condition belong in one group. Consecutive groups with different conditions must be separated by exactly one empty line, including the boundary between conditional and unconditional import groups.";
+message rule_catalog.cfg_inside_use_tree.summary = "Attach cfg attributes to the complete use item, not inside its braced tree.";
+message rule_catalog.cfg_inside_use_tree.description = "A cfg attribute must decorate a complete use declaration. Do not place cfg inside a braced use tree between imported names; split the declarations and put the attribute on the corresponding use item.";
+message rule_catalog.unnecessary_pub_crate.summary = "Use private visibility when pub(crate) has no outside consumer.";
+message rule_catalog.unnecessary_pub_crate.description = "A pub(crate) declaration or associated item is unnecessary when all references stay within its declaring module and descendants. Keep it crate-visible when a sibling or other outside module uses it, or when a retained crate-visible API signature needs the type. The rule follows supported interface dependencies but not function bodies or private fields, and remains conservative around unresolved syntax and macros.";

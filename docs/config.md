@@ -49,6 +49,8 @@ An omitted `[rules.<ID>]` entry keeps that rule enabled at `error` severity. Wit
 
 The config file must contain the integer `version = 3`. The top-level fields are `version`, `allow_warnings`, `i18n`, `scan`, `rules`, and `cfg` only. Tables and fields not documented here are rejected. Version 2 files must update the version number to 3; existing fields keep their meaning.
 
+Use [`cargo cop --list-rules`](../README.md#command-line-options) or `cargo cop --explain-rule <ID>` to inspect the built-in rule catalog. These static queries do not read this configuration file or other project configuration; `--locale` or the environment selects their language, and the reported defaults are the built-in defaults.
+
 ## Top-level fields
 
 | Field | Type | Default | Meaning |

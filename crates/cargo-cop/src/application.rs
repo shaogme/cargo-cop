@@ -9,6 +9,7 @@ use std::{
     process::ExitCode,
 };
 
+use crate::rule_catalog::{RuleQuery, RuleQueryError};
 use clap::{error::ErrorKind as ClapErrorKind, ArgAction, Parser, ValueEnum};
 use cop_analysis::{AnalysisRequest, ProjectAnalyzer};
 use cop_cargo::{
@@ -61,6 +62,45 @@ struct CliOptions {
     locale: Option<String>,
     #[arg(long, value_enum, default_value = "human")]
     format: OutputFormat,
+    #[arg(
+        long,
+        conflicts_with = "explain_rule",
+        conflicts_with_all = [
+            "manifest_path",
+            "workspace",
+            "packages",
+            "target",
+            "features",
+            "cfg_values",
+            "all_features",
+            "no_default_features",
+            "all_targets",
+            "config",
+            "disabled_rules",
+            "severities"
+        ]
+    )]
+    list_rules: bool,
+    #[arg(
+        long,
+        value_name = "ID",
+        conflicts_with = "list_rules",
+        conflicts_with_all = [
+            "manifest_path",
+            "workspace",
+            "packages",
+            "target",
+            "features",
+            "cfg_values",
+            "all_features",
+            "no_default_features",
+            "all_targets",
+            "config",
+            "disabled_rules",
+            "severities"
+        ]
+    )]
+    explain_rule: Option<String>,
     #[arg(long = "disable-rule", action = ArgAction::Append, value_name = "ID")]
     disabled_rules: Vec<String>,
     #[arg(long = "severity", action = ArgAction::Append, value_name = "ID=warning|error")]
@@ -251,7 +291,8 @@ impl Application {
         )
         .unwrap_or(Locale::EN_US);
         set_current_locale(environment_locale.as_tag());
-        let startup = match Self::startup_locale(&arguments, environment_locale) {
+        let query_requested = rule_query_requested(&arguments);
+        let startup = match Self::startup_locale(&arguments, environment_locale, !query_requested) {
             Ok(startup) => startup,
             Err(ApplicationFailure::Domain(error)) => {
                 return Self::write_error_report(error, format, &fallback_root, environment_locale);
@@ -282,6 +323,9 @@ impl Application {
             }
         };
         let format = options.format.report_format();
+        if options.list_rules || options.explain_rule.is_some() {
+            return Self::query_rules(options, locale, &fallback_root);
+        }
         match Self::scan(options, locale, startup.discovery) {
             Ok(output) => {
                 match Self::write_report(
@@ -308,6 +352,7 @@ impl Application {
     fn startup_locale(
         arguments: &[OsString],
         environment_locale: Locale,
+        read_project_config: bool,
     ) -> Result<StartupContext, ApplicationFailure> {
         if let Some(value) = option_value(arguments, "--locale") {
             let locale = Locale::parse_explicit(&value).map_err(|_| {
@@ -320,6 +365,13 @@ impl Application {
             set_current_locale(locale.as_tag());
             return Ok(StartupContext {
                 locale,
+                discovery: None,
+            });
+        }
+
+        if !read_project_config {
+            return Ok(StartupContext {
+                locale: environment_locale,
                 discovery: None,
             });
         }
@@ -371,6 +423,40 @@ impl Application {
         )?;
         writeln!(io::stderr().lock(), "{message}: {error}")?;
         Ok(())
+    }
+
+    fn query_rules(
+        options: CliOptions,
+        locale: Locale,
+        fallback_root: &Path,
+    ) -> Result<ExitCode, ApplicationFailure> {
+        let report_format = options.format.report_format();
+        let output = match RuleQuery::render(
+            options.list_rules,
+            options.explain_rule.as_deref(),
+            report_format,
+            locale,
+        ) {
+            Ok(output) => output,
+            Err(RuleQueryError::UnknownRule(error)) => {
+                let message = t!("cli.argument_unknown_rule", { rule: error.value() })?;
+                let report_error = ApplicationError::new(ToolErrorKind::Arguments, message);
+                return Self::write_error_report(
+                    report_error,
+                    report_format,
+                    fallback_root,
+                    locale,
+                );
+            }
+            Err(RuleQueryError::Render(error)) => return Err(ApplicationFailure::Render(error)),
+        };
+        match writeln!(io::stdout().lock(), "{output}") {
+            Ok(()) => Ok(ExitCode::SUCCESS),
+            Err(error) => {
+                Self::write_output_error(locale, error)?;
+                Ok(ExitCode::from(2))
+            }
+        }
     }
 
     fn scan(
@@ -625,6 +711,20 @@ fn option_value(arguments: &[OsString], option: &str) -> Option<String> {
     None
 }
 
+fn rule_query_requested(arguments: &[OsString]) -> bool {
+    ["--list-rules", "--explain-rule"].iter().any(|option| {
+        arguments
+            .iter()
+            .skip(1)
+            .take_while(|argument| argument.as_os_str() != OsStr::new("--"))
+            .any(|argument| {
+                argument.to_str().is_some_and(|value| {
+                    value == *option || value.starts_with(&format!("{option}="))
+                })
+            })
+    })
+}
+
 fn report_format_hint(arguments: &[OsString]) -> ReportFormat {
     match option_value(arguments, "--format").as_deref() {
         Some("json") => ReportFormat::Json,
@@ -662,6 +762,7 @@ fn value_option(argument: &OsStr) -> bool {
             | "--config"
             | "--locale"
             | "--format"
+            | "--explain-rule"
             | "--disable-rule"
             | "--severity"
     )
