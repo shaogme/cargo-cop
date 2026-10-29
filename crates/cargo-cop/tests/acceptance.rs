@@ -688,6 +688,176 @@ fn uses_one_resolved_locale_for_help_and_json_messages() {
 }
 
 #[test]
+fn queries_the_localized_rule_catalog_without_project_discovery() {
+    let fixture = Fixture::new();
+    fixture.write("cargo-cop.toml", "not a valid configuration file");
+
+    let listed = fixture.run(&["--list-rules", "--format", "json", "--locale", "en-US"]);
+    let listed_report = from_str::<Value>(&listed.stdout).expect("规则目录 JSON");
+    let listed_rules = listed_report["rules"].as_array().expect("规则数组");
+    let rule_ids = listed_rules
+        .iter()
+        .map(|rule| rule["rule_id"].as_str().expect("规则 ID"))
+        .collect::<Vec<_>>();
+
+    assert_eq!(listed.status, 0, "{}", listed.stderr);
+    assert_eq!(listed_report["schema_version"], 1);
+    assert_eq!(listed_report["kind"], "rule_catalog");
+    assert_eq!(
+        rule_ids,
+        [
+            "module_file_layout",
+            "no_lint_relaxation",
+            "item_spacing",
+            "child_module_visibility",
+            "no_parent_path_attribute",
+            "no_parent_private_dependency",
+            "child_module_line_count",
+            "impl_locality",
+            "private_fields_for_behavior_types",
+            "child_public_free_functions",
+            "declaration_before_use",
+            "parameter_limit",
+            "tuple_arity",
+            "no_inline_qualified_path",
+            "merge_common_prefix_imports",
+            "extern_crate_at_scope_start",
+            "imports_at_scope_start",
+            "out_of_line_modules_at_scope_start",
+            "cfg_use_group_spacing",
+            "cfg_inside_use_tree",
+            "unnecessary_pub_crate",
+        ]
+    );
+    for rule in listed_rules {
+        assert!(!rule["summary"].as_str().expect("规则简述").is_empty());
+        assert!(!rule["description"]
+            .as_str()
+            .expect("规则完整说明")
+            .is_empty());
+        assert_eq!(rule["default_enabled"], true);
+        assert_eq!(rule["default_severity"], "error");
+    }
+
+    let cargo_list =
+        fixture.run_cargo_subcommand(&["--list-rules", "--format", "json", "--locale", "en-US"]);
+    assert_eq!(cargo_list.status, 0, "{}", cargo_list.stderr);
+    assert_eq!(cargo_list.stdout, listed.stdout);
+
+    let chinese_list = fixture.run(&["--list-rules", "--format", "json", "--locale", "zh-CN"]);
+    let chinese_report = from_str::<Value>(&chinese_list.stdout).expect("中文规则目录 JSON");
+    let chinese_rules = chinese_report["rules"].as_array().expect("中文规则数组");
+    assert_eq!(chinese_list.status, 0, "{}", chinese_list.stderr);
+    assert_eq!(chinese_rules.len(), listed_rules.len());
+    for (english, chinese) in listed_rules.iter().zip(chinese_rules) {
+        assert_eq!(english["rule_id"], chinese["rule_id"]);
+        assert_ne!(english["summary"], chinese["summary"]);
+        assert_ne!(english["description"], chinese["description"]);
+    }
+
+    let cargo_subcommand = fixture.run_cargo_subcommand(&[
+        "--explain-rule",
+        "parameter_limit",
+        "--format",
+        "json",
+        "--locale",
+        "zh-CN",
+    ]);
+    let explained_report = from_str::<Value>(&cargo_subcommand.stdout).expect("中文规则说明 JSON");
+    let explained_rule = &explained_report["rule"];
+    assert_eq!(cargo_subcommand.status, 0, "{}", cargo_subcommand.stderr);
+    assert_eq!(explained_report["schema_version"], 1);
+    assert_eq!(explained_report["kind"], "rule_catalog");
+    assert_eq!(explained_rule["rule_id"], "parameter_limit");
+    assert_eq!(explained_rule["default_enabled"], true);
+    assert_eq!(explained_rule["default_severity"], "error");
+    assert!(explained_rule["summary"]
+        .as_str()
+        .expect("规则简述")
+        .contains('参'));
+    assert!(!explained_rule["description"]
+        .as_str()
+        .expect("规则完整说明")
+        .is_empty());
+
+    let direct_explanation = fixture.run(&[
+        "--explain-rule",
+        "parameter_limit",
+        "--format",
+        "json",
+        "--locale",
+        "zh-CN",
+    ]);
+    assert_eq!(
+        direct_explanation.status, 0,
+        "{}",
+        direct_explanation.stderr
+    );
+    assert_eq!(direct_explanation.stdout, cargo_subcommand.stdout);
+
+    let human = fixture.run(&["--explain-rule", "parameter_limit"]);
+    assert_eq!(human.status, 0, "{}", human.stderr);
+    assert!(human.stdout.contains("[rules.parameter_limit]"));
+    assert!(human.stdout.contains("--disable-rule parameter_limit"));
+    assert!(human
+        .stdout
+        .contains("--severity parameter_limit=warning|error"));
+
+    let human_list = fixture.run(&["--list-rules"]);
+    assert_eq!(human_list.status, 0, "{}", human_list.stderr);
+    assert!(human_list.stdout.contains("Rule catalog (21 rules):"));
+    assert!(human_list
+        .stdout
+        .contains("parameter_limit [enabled, error]"));
+}
+
+#[test]
+fn rejects_invalid_rule_queries_and_query_option_conflicts() {
+    let fixture = Fixture::new();
+    let unknown = fixture.run(&[
+        "--explain-rule",
+        "not_a_rule",
+        "--format",
+        "json",
+        "--locale",
+        "zh-CN",
+    ]);
+    let unknown_report = from_str::<Value>(&unknown.stdout).expect("未知规则错误 JSON");
+    assert_eq!(unknown.status, 2);
+    assert_eq!(unknown_report["schema_version"], 4);
+    assert_eq!(unknown_report["diagnostics"][0]["tool_error"], "arguments");
+    assert!(unknown_report["diagnostics"][0]["message"]
+        .as_str()
+        .expect("本地化错误消息")
+        .contains("未知规则"));
+
+    for arguments in [
+        vec![
+            "--list-rules",
+            "--explain-rule",
+            "parameter_limit",
+            "--format",
+            "json",
+        ],
+        vec!["--list-rules", "--workspace", "--format", "json"],
+        vec![
+            "--explain-rule",
+            "parameter_limit",
+            "--config",
+            "missing.toml",
+            "--format",
+            "json",
+        ],
+    ] {
+        let conflict = fixture.run(&arguments);
+        let report = from_str::<Value>(&conflict.stdout).expect("参数冲突 JSON");
+        assert_eq!(conflict.status, 2, "{}", conflict.stdout);
+        assert_eq!(report["schema_version"], 4);
+        assert_eq!(report["diagnostics"][0]["tool_error"], "arguments");
+    }
+}
+
+#[test]
 fn resolves_relative_explicit_config_without_merging_discovered_config() {
     let fixture = Fixture::new();
     fixture.write("Cargo.toml", &package_manifest("sample"));

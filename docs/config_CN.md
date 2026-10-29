@@ -49,6 +49,8 @@ severity = "error"
 
 配置文件必须包含整数 `version = 3`。顶层只允许 `version`、`allow_warnings`、`i18n`、`scan`、`rules` 和 `cfg`。本文未列出的字段或表都会被拒绝。版本 2 配置须将版本号更新为 3；原有字段语义不变。
 
+可用 [`cargo cop --list-rules`](../README_CN.md#命令行选项) 或 `cargo cop --explain-rule <ID>` 查看内置规则目录。这些静态查询不会读取本文配置文件或其他项目配置；语言由 `--locale` 或环境变量选择，显示的默认值是工具内置默认值。
+
 ## 顶层字段
 
 | 字段 | 类型 | 默认值 | 说明 |

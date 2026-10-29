@@ -146,6 +146,8 @@ message cli.help = "用法：cargo-cop [选项]
   --config <PATH>           指定配置文件
   --locale <TAG>            选择输出语言（zh-CN、en-US）
   --format <FORMAT>         输出格式：human 或 json
+  --list-rules              列出规则目录，不扫描项目
+  --explain-rule <ID>       查看单条规则说明，不扫描项目
   --disable-rule <ID>       禁用规则（可重复指定）
   --severity <ID=LEVEL>     设置规则级别（可重复指定）
   -h, --help                显示帮助
@@ -157,3 +159,54 @@ message report.summary = "cargo-cop：状态 {status, select, complete {已完�
 message report.detail_reference = "详见 detail 字段";
 message report.namespace_label = "命名空间";
 message report.cfg_label = "配置条件";
+message rule_catalog.list_title = "规则目录（{count} 条）：";
+message rule_catalog.summary_label = "简述";
+message rule_catalog.description_label = "完整说明";
+message rule_catalog.default_enabled_label = "默认启用";
+message rule_catalog.default_severity_label = "默认级别";
+message rule_catalog.configuration_label = "配置项";
+message rule_catalog.overrides_label = "命令行覆盖";
+message rule_catalog.enabled = "启用";
+message rule_catalog.disabled = "禁用";
+message rule_catalog.module_file_layout.summary = "外部子模块须使用 Rust 2018 文件布局。";
+message rule_catalog.module_file_layout.description = "外部子模块应放在以模块名命名的文件中，例如 child.rs；其嵌套模块放在对应的 child/ 目录中。不能使用旧式的 child/mod.rs 布局。crate 根文件不受此规则限制。";
+message rule_catalog.no_lint_relaxation.summary = "禁止 allow lint 属性，包括由 cfg_attr 注入的属性。";
+message rule_catalog.no_lint_relaxation.description = "此规则报告会抑制 rustc 或 Clippy 诊断的 allow lint 属性，也会识别嵌套在 cfg_attr 中的 allow 属性，因此不能通过条件编译隐藏这类放宽。";
+message rule_catalog.item_spacing.summary = "检查相邻具名 item 定义之间的空行数量。";
+message rule_catalog.item_spacing.description = "在同一直接 item 作用域内，相邻的 struct、enum、union、类型别名、trait、const、static、函数和 impl 块之间必须恰好留一个空行。同种的连续 const、static 或类型别名之间不留空行。其他 item 类型会形成边界；有效 cfg 条件可证明互斥的 item 对不会比较。";
+message rule_catalog.child_module_visibility.summary = "子模块默认保持私有，只有纯声明内容才可公开。";
+message rule_catalog.child_module_visibility.description = "已注册的子模块应使用私有可见性。只有当模块中的每个 item 都是模块声明、可见性为私有、pub 或 pub(crate) 的 use 导入、macro_rules 定义、类型别名、struct、enum、trait、union、常量或静态变量时，才允许 pub 或 pub(crate)。函数、impl 块、extern crate 声明、pub(super) 等受限作用域导入以及宏调用都会使模块不符合例外条件。";
+message rule_catalog.no_parent_path_attribute.summary = "外部模块路径中不能包含上级目录分量。";
+message rule_catalog.no_parent_path_attribute.description = "外部 mod 声明上的路径字符串不能包含 .. 分量，斜杠和反斜杠都视作分隔符。此规则也检查嵌套在 cfg_attr 中的 path 属性，即使相应配置当前未启用也会检查。foo..rs 这样的文件名不属于上级目录分量。";
+message rule_catalog.no_parent_private_dependency.summary = "子模块不能反向访问祖先模块的私有实现细节。";
+message rule_catalog.no_parent_private_dependency.description = "子模块不能使用 super::*，也不能通过 super:: 或 crate:: 路径解析到祖先模块中的私有 item。所需状态和上下文应通过参数向下传递；兄弟模块可以相互依赖，且仍可使用可访问的公共抽象。";
+message rule_catalog.child_module_line_count.summary = "每个外部子模块文件须有 70–800 行有效代码。";
+message rule_catalog.child_module_line_count.description = "运行 cargo fmt 后，每个独立的外部子模块源文件至少包含 70 行、至多包含 800 行有效代码。空行、注释和 #[cfg(test)] 作用域中的代码不计入。模块入口文件与其子模块文件分别计算。";
+message rule_catalog.impl_locality.summary = "固有 impl 块应与其类型定义位于同一文件。";
+message rule_catalog.impl_locality.description = "固有 impl 只能实现同一源文件中定义的 struct 或 enum。不能在其他文件中为父模块、兄弟模块、项目其他位置或外部 crate 的类型添加固有 impl。对基本类型和标准库类型实现 trait 时，只有在符合 Rust 孤儿规则的前提下，才免于同文件定义要求。";
+message rule_catalog.private_fields_for_behavior_types.summary = "带 impl 块的类型应将字段保持为私有。";
+message rule_catalog.private_fields_for_behavior_types.description = "struct、enum 或 union 只要带有任何固有 impl 或 trait impl 块，其所有字段都必须是私有可见性。领域状态应通过方法公开。只有没有任何 impl 块的纯数据传输 struct 才可以使用 pub 或 pub(crate) 字段。";
+message rule_catalog.child_public_free_functions.summary = "子模块中的独立函数应保持私有。";
+message rule_catalog.child_public_free_functions.description = "子模块中声明的独立函数不能标记为 pub 或 pub(crate)。应通过类型上的关联函数或方法公开可复用行为；父模块中的函数不属于此子模块规则的检查范围。";
+message rule_catalog.declaration_before_use.summary = "具名声明应先于使用它的代码出现。";
+message rule_catalog.declaration_before_use.description = "在适用的源码作用域中，struct、enum、类型别名、trait、const 和 static 等声明必须先于引用、调用或构造它们的代码。检查遵循解析出的源码作用域及当前支持的引用形式。";
+message rule_catalog.parameter_limit.summary = "函数、方法和闭包的参数最多为五个。";
+message rule_catalog.parameter_limit.description = "自由函数或关联方法最多有五个参数，闭包也最多有五个参数。较大的相关输入集合应合并到具名参数结构体或选项结构体中。";
+message rule_catalog.tuple_arity.summary = "tuple 类型和表达式最多包含两个元素。";
+message rule_catalog.tuple_arity.description = "tuple 类型和 tuple 表达式最多包含两个元素。三个或更多具名组成部分应改用字段名具有明确语义的 struct 表示。";
+message rule_catalog.no_inline_qualified_path.summary = "使用完整限定路径前应先导入名称。";
+message rule_catalog.no_inline_qualified_path.description = "此规则报告以外部 crate 名（包括依赖别名）或 crate::、self::、super:: 为显式根的代码路径。应先通过 use 声明导入所需符号，再在业务代码中使用。";
+message rule_catalog.merge_common_prefix_imports.summary = "合并路径前缀相同且属性兼容的导入。";
+message rule_catalog.merge_common_prefix_imports.description = "当导入具有相同路径前缀、可见性和有效 cfg 条件时，应合并到花括号 use tree 中。模块作用域中的导入不要求相邻；block 作用域中的导入也按相同的前缀和兼容条件检查。";
+message rule_catalog.extern_crate_at_scope_start.summary = "每个模块作用域开头应放置 extern crate 声明。";
+message rule_catalog.extern_crate_at_scope_start.description = "每个模块作用域中的 extern crate 声明必须位于外部模块声明、use 导入和其他 item 之前。每个模块（包括嵌套模块）都会单独检查。";
+message rule_catalog.imports_at_scope_start.summary = "每个作用域中的 use 导入应位于其他 item 之前。";
+message rule_catalog.imports_at_scope_start.description = "模块作用域中的 use 声明应位于外部模块声明之后、其他 item 之前。block 中的 use 声明应位于其他语句之前。每个作用域独立检查。";
+message rule_catalog.out_of_line_modules_at_scope_start.summary = "外部模块声明应集中放在导入和其他 item 之前。";
+message rule_catalog.out_of_line_modules_at_scope_start.description = "每个模块作用域中的外部 mod 声明必须在 extern crate 声明之后连续排列，并位于 use 导入和其他 item 之前。inline module 属于普通 item，不属于此连续分组。";
+message rule_catalog.cfg_use_group_spacing.summary = "有效 cfg 条件不同的相邻 use 分组之间留一个空行。";
+message rule_catalog.cfg_use_group_spacing.description = "具有相同有效 cfg 条件的导入应归为一组。有效条件不同的连续分组之间必须恰好留一个空行，也包括条件导入组与无条件导入组之间的边界。";
+message rule_catalog.cfg_inside_use_tree.summary = "cfg 属性应附加到完整 use item，而不是嵌入花括号树中。";
+message rule_catalog.cfg_inside_use_tree.description = "cfg 属性必须修饰完整的 use 声明。不要把 cfg 放在花括号 use tree 内部的导入名称之间；应拆分声明，并将属性放到对应的 use item 上。";
+message rule_catalog.unnecessary_pub_crate.summary = "没有模块树外部使用者时应将 pub(crate) 改为私有。";
+message rule_catalog.unnecessary_pub_crate.description = "如果 pub(crate) 声明或关联 item 的所有引用都位于其声明模块及后代模块中，则该可见性没有必要。若兄弟模块或其他外部模块使用它，或保留的 crate 可见 API 签名依赖该类型，则应保留 crate 可见性。规则会沿受支持的接口依赖传播，但不检查函数体或私有字段；遇到无法解析的语法和宏时会保守处理。";

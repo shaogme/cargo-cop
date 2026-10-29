@@ -6,7 +6,7 @@
 
 `cargo-cop` 是一个 Rust 源码静态检查工具。它会按照仓库规范检查选定的 Cargo package 和 target，覆盖模块布局、可见性、声明顺序、导入组织及源码结构等方面。
 
-项目提供 20 条可配置规则、人类可读和 JSON 报告，以及英文和简体中文诊断信息。既可以直接运行 `cargo-cop`，也可以使用 Cargo 子命令 `cargo cop`。
+项目提供 21 条可配置规则、人类可读和 JSON 报告，以及英文和简体中文规则说明与诊断信息。既可以直接运行 `cargo-cop`，也可以使用 Cargo 子命令 `cargo cop`。
 
 ## 检查内容
 
@@ -56,7 +56,7 @@ steps:
   - uses: actions/checkout@main
   - uses: shaogme/cargo-cop@main
     with:
-      version: 0.2.3
+      version: 0.2.4
   - run: cargo cop --workspace
 ```
 
@@ -67,7 +67,7 @@ steps:
   - uses: actions/checkout@main
   - uses: shaogme/cargo-cop@main
     with:
-      version: 0.2.3
+      version: 0.2.4
       from-source: true
   - run: cargo cop --workspace
 ```
@@ -107,6 +107,14 @@ cargo cop --features serde,logging --no-default-features
 cargo cop --format json > cargo-cop-report.json
 ```
 
+无需选择或扫描 Cargo package，即可查询规则目录：
+
+```sh
+cargo cop --list-rules
+cargo cop --explain-rule parameter_limit
+cargo cop --list-rules --locale zh-CN --format json
+```
+
 当指定的 manifest 是 workspace 根 manifest 时，默认选择 workspace 中的全部成员 package。指定 package manifest 时，默认只选择该 package。使用 `--workspace` 可从 package manifest 扫描整个 workspace；也可以重复使用 `--package` 选择特定 package。`--workspace` 和 `--package` 不能同时使用。
 
 默认扫描 `lib`、`bin` 和 `proc-macro` targets。`--all-targets` 会纳入所选 package 声明的所有 targets，例如 examples、tests、benches 和 build scripts。未启用其 `required-features` 的 target 会被跳过。
@@ -127,10 +135,14 @@ cargo cop --format json > cargo-cop-report.json
 | `--config <PATH>` | 读取指定 TOML 配置文件，替代自动发现的配置。相对路径以当前目录为基准。 |
 | `--locale <TAG>` | 选择诊断语言，常用值为 `zh-CN` 或 `en-US`。 |
 | `--format human\|json` | 选择人类可读或 JSON 输出，默认 `human`。 |
+| `--list-rules` | 列出全部规则 ID、简述和内置默认值，不扫描项目。 |
+| `--explain-rule <ID>` | 查看单条规则的完整说明和配置方式，不扫描项目。 |
 | `--disable-rule <ID>` | 关闭一条规则；可重复指定。 |
 | `--severity <ID=warning\|error>` | 覆盖规则级别；可重复指定。 |
 | `-h, --help` | 显示命令帮助。 |
 | `-V, --version` | 显示工具版本。 |
+
+`--list-rules` 和 `--explain-rule` 互斥，且不能与扫描范围或配置覆盖选项组合；可以与 `--format` 和 `--locale` 组合。规则查询使用命令行或环境 locale，不读取项目配置、不发现 workspace，也不查询 Cargo metadata。显示的默认值是工具内置默认值。规则目录 JSON 使用独立的 schema 版本 `1`，扫描诊断 JSON 仍使用 schema 版本 `4`。
 
 Target 选择优先级依次为：`--target`、配置中的 `scan.target`、`CARGO_BUILD_TARGET`、Cargo 的 `build.target` 设置、Rust host triple。proc-macro 和 build-script targets 使用 host target。
 
@@ -138,7 +150,7 @@ Feature 选择根据所选 package 的 Cargo feature 定义计算，处理 defau
 
 ## 规则
 
-默认启用全部规则，级别默认为 `error`。规则配置和覆盖方式见[配置说明](docs/config_CN.md)。
+默认启用全部规则，级别默认为 `error`。使用 [`--list-rules`](#命令行选项) 和 [`--explain-rule <ID>`](#命令行选项) 浏览规则说明。规则配置和覆盖方式见[配置说明](docs/config_CN.md)。
 
 | 规则 ID | 检查内容 |
 | --- | --- |
@@ -211,7 +223,7 @@ Workspace 将命令行应用与分析流程分层：
 | `cop-cfg` | 共享 `cfg` 表达式解析、规范化和三态求值。 |
 | `cop-syntax` | 自有 Rust 词法分析器、语法树、解析器和解析覆盖状态。 |
 | `cop-analysis` | `cfg` 求值、模块图发现、不可变定义/引用事实、路径解析、API 依赖和 impl 所有者索引、分析状态。 |
-| `cop-rules` | 20 条源码规范检查规则。 |
+| `cop-rules` | 21 条源码规范检查规则。 |
 | `cop-model` | 共享规则 ID、诊断、源码位置和扫描状态类型。 |
 | `cop-report` | 诊断稳定排序、人类可读和 JSON 渲染。 |
 | `cop-i18n` | 英文和简体中文消息。 |

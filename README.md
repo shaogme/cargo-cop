@@ -6,7 +6,7 @@
 
 `cargo-cop` is a static checker for Rust source code. It checks selected Cargo packages and targets against repository conventions, including module layout, visibility, declaration order, imports, and source structure.
 
-The project provides 20 configurable rules, human-readable and JSON reports, and English and Simplified Chinese diagnostic messages. It can run as the `cargo-cop` executable or as the `cargo cop` Cargo subcommand.
+The project provides 21 configurable rules, human-readable and JSON reports, and English and Simplified Chinese rule descriptions and diagnostic messages. It can run as the `cargo-cop` executable or as the `cargo cop` Cargo subcommand.
 
 ## What it checks
 
@@ -56,7 +56,7 @@ steps:
   - uses: actions/checkout@main
   - uses: shaogme/cargo-cop@main
     with:
-      version: 0.2.3
+      version: 0.2.4
   - run: cargo cop --workspace
 ```
 
@@ -67,7 +67,7 @@ steps:
   - uses: actions/checkout@main
   - uses: shaogme/cargo-cop@main
     with:
-      version: 0.2.3
+      version: 0.2.4
       from-source: true
   - run: cargo cop --workspace
 ```
@@ -107,6 +107,14 @@ cargo cop --features serde,logging --no-default-features
 cargo cop --format json > cargo-cop-report.json
 ```
 
+Browse the rule catalog without selecting or scanning a Cargo package:
+
+```sh
+cargo cop --list-rules
+cargo cop --explain-rule parameter_limit
+cargo cop --list-rules --locale zh-CN --format json
+```
+
 When the selected manifest is the workspace root, all workspace member packages are selected by default. A package manifest selects that package by default. Use `--workspace` to scan all workspace members from a package manifest, or repeat `--package` to select specific packages. `--workspace` and `--package` cannot be used together.
 
 By default the tool scans `lib`, `bin`, and `proc-macro` targets. `--all-targets` includes all targets declared in the selected packages, such as examples, tests, benches, and build scripts. Targets with unsatisfied `required-features` are skipped.
@@ -127,10 +135,14 @@ By default the tool scans `lib`, `bin`, and `proc-macro` targets. `--all-targets
 | `--config <PATH>` | Read this TOML configuration instead of automatically discovered configuration. Relative paths are based on the current directory. |
 | `--locale <TAG>` | Select diagnostic language, usually `en-US` or `zh-CN`. |
 | `--format human\|json` | Choose human-readable or JSON output. Defaults to `human`. |
+| `--list-rules` | List all rule IDs, summaries, and built-in defaults without scanning a project. |
+| `--explain-rule <ID>` | Show the full description and configuration options for one rule without scanning a project. |
 | `--disable-rule <ID>` | Disable a rule; may be repeated. |
 | `--severity <ID=warning\|error>` | Override a rule's severity; may be repeated. |
 | `-h, --help` | Print command help. |
 | `-V, --version` | Print the tool version. |
+
+`--list-rules` and `--explain-rule` are mutually exclusive and cannot be combined with scan-selection or configuration-override options. They can be combined with `--format` and `--locale`. Rule queries use the CLI or environment locale and do not read project configuration, discover a workspace, or query Cargo metadata. Their default values describe the built-in defaults. Rule-catalog JSON uses schema version `1`, separate from diagnostic JSON schema version `4`.
 
 Target selection precedence is `--target`, `scan.target` in the config, `CARGO_BUILD_TARGET`, Cargo's `build.target` setting, then the Rust host triple. For proc-macro and build-script targets, the host target is used.
 
@@ -138,7 +150,7 @@ Feature selection follows Cargo feature definitions for selected packages, inclu
 
 ## Rules
 
-All rules are enabled by default and use `error` severity unless configured otherwise. See [Configuration](docs/config.md) for settings and overrides.
+All rules are enabled by default and use `error` severity unless configured otherwise. Use [`--list-rules`](#command-line-options) and [`--explain-rule <ID>`](#command-line-options) to browse rule descriptions. See [Configuration](docs/config.md) for settings and overrides.
 
 | Rule ID | Check |
 | --- | --- |
@@ -211,7 +223,7 @@ The workspace separates the command-line application from the analysis pipeline:
 | `cop-cfg` | Shared `cfg` expression parsing, normalization, and three-valued evaluation. |
 | `cop-syntax` | Project-owned Rust lexer, syntax tree, parser, and parser coverage status. |
 | `cop-analysis` | `cfg` evaluation, module graph discovery, immutable definition/reference facts, path resolution, API dependency and impl-owner indexes, analysis status. |
-| `cop-rules` | The 20 source convention rules. |
+| `cop-rules` | The 21 source convention rules. |
 | `cop-model` | Shared rule IDs, diagnostics, source locations, and scan-status types. |
 | `cop-report` | Stable diagnostic ordering and human/JSON rendering. |
 | `cop-i18n` | English and Simplified Chinese messages. |
