@@ -1,6 +1,7 @@
 locale zh-CN;
 
 message rule.item_spacing = "相邻定义之间应有 {expected} 个空行，当前有 {actual} 个";
+message rule.item_spacing_maximum = "相邻同类定义之间最多允许 {maximum} 个空行，当前有 {actual} 个";
 message rule.module_file_layout = "子模块入口文件不能使用 mod.rs 布局";
 message rule.out_of_line_modules_at_scope_start = "外部模块声明必须位于 extern crate 声明之后、use 声明和其他 item 之前，并连续排列";
 message rule.child_module_visibility = "非私有子模块 {module} 只能包含声明项，以及私有、公开或 pub(crate) 可见性的 use 导入";
@@ -173,7 +174,7 @@ message rule_catalog.module_file_layout.description = "外部子模块应放在�
 message rule_catalog.no_lint_relaxation.summary = "禁止 allow lint 属性，包括由 cfg_attr 注入的属性。";
 message rule_catalog.no_lint_relaxation.description = "此规则报告会抑制 rustc 或 Clippy 诊断的 allow lint 属性，也会识别嵌套在 cfg_attr 中的 allow 属性，因此不能通过条件编译隐藏这类放宽。";
 message rule_catalog.item_spacing.summary = "检查相邻具名 item 定义之间的空行数量。";
-message rule_catalog.item_spacing.description = "在同一直接 item 作用域内，相邻的 struct、enum、union、类型别名、trait、const、static、函数和 impl 块之间必须恰好留一个空行。同种的连续 const、static 或类型别名之间不留空行。其他 item 类型会形成边界；有效 cfg 条件可证明互斥的 item 对不会比较。";
+message rule_catalog.item_spacing.description = "在同一直接 item 作用域内，相邻的 struct、enum、union、类型别名、trait、const、static、函数和 impl 块之间必须恰好留一个空行；同种的连续 const、static 或类型别名之间允许留 0 或 1 个空行。const fn 按函数处理，适用恰好一个空行的规则。其他 item 类型会形成边界；有效 cfg 条件可证明互斥的 item 对不会比较。";
 message rule_catalog.child_module_visibility.summary = "子模块默认保持私有，只有纯声明内容才可公开。";
 message rule_catalog.child_module_visibility.description = "已注册的子模块应使用私有可见性。只有当模块中的每个 item 都是模块声明、可见性为私有、pub 或 pub(crate) 的 use 导入、macro_rules 定义、类型别名、struct、enum、trait、union、常量或静态变量时，才允许 pub 或 pub(crate)。函数、impl 块、extern crate 声明、pub(super) 等受限作用域导入以及宏调用都会使模块不符合例外条件。";
 message rule_catalog.no_parent_path_attribute.summary = "外部模块路径中不能包含上级目录分量。";

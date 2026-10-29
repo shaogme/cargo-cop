@@ -1,4 +1,4 @@
-use std::ops::Range;
+use std::ops::{Range, RangeInclusive};
 
 use cop_analysis::{AnalysisFacts, CfgCondition, CfgDecision, ItemFact, ItemKindFact, ModuleNode};
 use cop_config::ResolvedConfig;
@@ -192,14 +192,14 @@ impl SyntaxSupport {
     pub(super) fn expected_spacing_blank_lines(
         previous: &ItemFact,
         current: &ItemFact,
-    ) -> Option<usize> {
+    ) -> Option<RangeInclusive<usize>> {
         let previous_kind = Self::spacing_definition_kind(previous.kind())?;
         let current_kind = Self::spacing_definition_kind(current.kind())?;
         Some(match (previous_kind, current_kind) {
             (SpacingDefinitionKind::Constant, SpacingDefinitionKind::Constant)
             | (SpacingDefinitionKind::Static, SpacingDefinitionKind::Static)
-            | (SpacingDefinitionKind::TypeAlias, SpacingDefinitionKind::TypeAlias) => 0,
-            _ => 1,
+            | (SpacingDefinitionKind::TypeAlias, SpacingDefinitionKind::TypeAlias) => 0..=1,
+            _ => 1..=1,
         })
     }
 

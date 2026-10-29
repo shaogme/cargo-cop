@@ -133,33 +133,55 @@ fn diagnostic_message(diagnostic: &Value) -> &str {
     diagnostic["message"].as_str().expect("已渲染诊断消息")
 }
 
-fn spacing_values(diagnostic: &Value) -> (i64, i64) {
+#[derive(Debug, Eq, PartialEq)]
+enum SpacingExpectation {
+    Exact(i64),
+    AtMost(i64),
+}
+
+fn spacing_values(diagnostic: &Value) -> (SpacingExpectation, i64) {
     let message = diagnostic_message(diagnostic);
-    if let Some((_, values)) = message.split_once("require ") {
+    let (expectation, values) = if let Some((_, values)) = message.split_once("require ") {
         let (expected, actual) = values
             .split_once(" blank lines; found ")
-            .expect("英文间距消息");
-        return (
-            expected.parse().expect("预期空行数"),
-            actual
-                .split_whitespace()
-                .next()
-                .expect("实际空行数")
-                .parse()
-                .expect("实际空行数"),
-        );
-    }
-    let (_, values) = message.split_once("应有 ").expect("中文间距消息");
-    let (expected, actual) = values.split_once(" 个空行，当前有 ").expect("中文间距参数");
-    (
-        expected.parse().expect("预期空行数"),
-        actual
-            .split_whitespace()
-            .next()
-            .expect("实际空行数")
-            .parse()
-            .expect("实际空行数"),
-    )
+            .expect("英文精确间距消息");
+        (
+            SpacingExpectation::Exact(expected.parse().expect("预期空行数")),
+            actual,
+        )
+    } else if let Some((_, values)) = message.split_once("at most ") {
+        let (maximum, actual) = values
+            .split_once(" blank lines; found ")
+            .expect("英文间距上限消息");
+        (
+            SpacingExpectation::AtMost(maximum.parse().expect("最多空行数")),
+            actual,
+        )
+    } else if let Some((_, values)) = message.split_once("应有 ") {
+        let (expected, actual) = values
+            .split_once(" 个空行，当前有 ")
+            .expect("中文精确间距参数");
+        (
+            SpacingExpectation::Exact(expected.parse().expect("预期空行数")),
+            actual,
+        )
+    } else {
+        let (_, values) = message.split_once("最多允许 ").expect("中文间距上限消息");
+        let (maximum, actual) = values
+            .split_once(" 个空行，当前有 ")
+            .expect("中文间距上限参数");
+        (
+            SpacingExpectation::AtMost(maximum.parse().expect("最多空行数")),
+            actual,
+        )
+    };
+    let actual = values
+        .split_whitespace()
+        .next()
+        .expect("实际空行数")
+        .parse()
+        .expect("实际空行数");
+    (expectation, actual)
 }
 
 fn reported_import_line(diagnostic: &Value) -> usize {
@@ -3566,7 +3588,7 @@ fn accepts_adjacent_same_kind_const_static_and_type_definitions() {
     fixture.write("Cargo.toml", &package_manifest("sample"));
     fixture.write(
         "src/lib.rs",
-        "const FIRST: u8 = 1;\nconst SECOND: u8 = 2;\n\nstatic FIRST_STATIC: u8 = 1;\nstatic SECOND_STATIC: u8 = 2;\n\ntype FirstAlias = u8;\ntype SecondAlias = u8;\n",
+        "const FIRST: u8 = 1;\nconst SECOND: u8 = 2;\n\nconst THIRD: u8 = 3;\n\nstatic FIRST_STATIC: u8 = 1;\nstatic SECOND_STATIC: u8 = 2;\n\nstatic THIRD_STATIC: u8 = 3;\n\ntype FirstAlias = u8;\ntype SecondAlias = u8;\n\ntype ThirdAlias = u8;\n",
     );
 
     let output = fixture.run(&["--format", "json"]);
@@ -3580,30 +3602,38 @@ fn accepts_adjacent_same_kind_const_static_and_type_definitions() {
 }
 
 #[test]
-fn reports_expected_and_actual_spacing_for_repeated_special_definitions() {
+fn reports_maximum_spacing_for_repeated_special_definitions() {
     let fixture = Fixture::new();
     fixture.write("Cargo.toml", &package_manifest("sample"));
     fixture.write(
         "src/lib.rs",
-        "const FIRST: u8 = 1;\n\nconst SECOND: u8 = 2;\n\n\nconst THIRD: u8 = 3;\n\nstatic FIRST_STATIC: u8 = 1;\n\nstatic SECOND_STATIC: u8 = 2;\n\n\nstatic THIRD_STATIC: u8 = 3;\n\ntype FirstAlias = u8;\n\ntype SecondAlias = u8;\n\n\ntype ThirdAlias = u8;\n",
+        "const FIRST: u8 = 1;\n\n\nconst SECOND: u8 = 2;\n\n\n\nconst THIRD: u8 = 3;\n\nstatic FIRST_STATIC: u8 = 1;\n\n\nstatic SECOND_STATIC: u8 = 2;\n\n\n\nstatic THIRD_STATIC: u8 = 3;\n\ntype FirstAlias = u8;\n\n\ntype SecondAlias = u8;\n\n\n\ntype ThirdAlias = u8;\n",
     );
 
     let output = fixture.run(&["--format", "json"]);
     let diagnostics = item_spacing_diagnostics(&output);
+    let chinese = fixture.run(&["--format", "json", "--locale", "zh-CN"]);
+    let chinese_diagnostics = item_spacing_diagnostics(&chinese);
 
     assert_eq!(output.status, 1, "{}", output.stdout);
+    assert_eq!(chinese.status, 1, "{}", chinese.stdout);
     assert_eq!(diagnostics.len(), 6, "{}", output.stdout);
     assert!(diagnostics
         .iter()
-        .all(|diagnostic| spacing_values(diagnostic).0 == 0));
+        .all(|diagnostic| spacing_values(diagnostic).0 == SpacingExpectation::AtMost(1)));
     let actual_lines = diagnostics
         .iter()
         .map(|diagnostic| Some(spacing_values(diagnostic).1))
         .collect::<Vec<_>>();
     assert_eq!(
         actual_lines,
-        [Some(1), Some(2), Some(1), Some(2), Some(1), Some(2)]
+        [Some(2), Some(3), Some(2), Some(3), Some(2), Some(3)]
     );
+    assert_eq!(chinese_diagnostics.len(), 6, "{}", chinese.stdout);
+    assert!(chinese_diagnostics.iter().all(|diagnostic| {
+        diagnostic_message(diagnostic).contains("最多允许 1 个空行")
+            && spacing_values(diagnostic).0 == SpacingExpectation::AtMost(1)
+    }));
 }
 
 #[test]
@@ -3622,7 +3652,7 @@ fn requires_one_line_between_different_and_regular_definition_kinds() {
     assert_eq!(diagnostics.len(), 5, "{}", output.stdout);
     assert!(diagnostics
         .iter()
-        .all(|diagnostic| spacing_values(diagnostic).0 == 1));
+        .all(|diagnostic| spacing_values(diagnostic).0 == SpacingExpectation::Exact(1)));
     let actual_lines = diagnostics
         .iter()
         .map(|diagnostic| Some(spacing_values(diagnostic).1))
@@ -3707,7 +3737,8 @@ fn requires_one_line_between_impl_blocks_and_every_checked_definition_kind() {
     assert_eq!(output.status, 1, "{}", output.stdout);
     assert_eq!(diagnostics.len(), 18, "{}", output.stdout);
     assert!(diagnostics.iter().all(|diagnostic| {
-        spacing_values(diagnostic).0 == 1 && Some(spacing_values(diagnostic).1) == Some(0)
+        spacing_values(diagnostic).0 == SpacingExpectation::Exact(1)
+            && Some(spacing_values(diagnostic).1) == Some(0)
     }));
 }
 
@@ -3724,19 +3755,17 @@ fn checks_item_spacing_independently_in_modules_traits_and_impls() {
     let diagnostics = item_spacing_diagnostics(&output);
 
     assert_eq!(output.status, 1, "{}", output.stdout);
-    assert_eq!(diagnostics.len(), 3, "{}", output.stdout);
+    assert_eq!(diagnostics.len(), 2, "{}", output.stdout);
     let expected_actual = diagnostics
         .iter()
-        .map(|diagnostic| {
-            (
-                Some(spacing_values(diagnostic).0),
-                Some(spacing_values(diagnostic).1),
-            )
-        })
+        .map(|diagnostic| (spacing_values(diagnostic).0, spacing_values(diagnostic).1))
         .collect::<Vec<_>>();
     assert_eq!(
         expected_actual,
-        [(Some(0), Some(1)), (Some(1), Some(0)), (Some(1), Some(0))]
+        [
+            (SpacingExpectation::Exact(1), 0),
+            (SpacingExpectation::Exact(1), 0)
+        ]
     );
 }
 
@@ -3753,17 +3782,12 @@ fn counts_comment_lines_and_keeps_attributes_with_their_definitions() {
     let diagnostics = item_spacing_diagnostics(&output);
 
     assert_eq!(output.status, 1, "{}", output.stdout);
-    assert_eq!(diagnostics.len(), 2, "{}", output.stdout);
+    assert_eq!(diagnostics.len(), 1, "{}", output.stdout);
     let expected_actual = diagnostics
         .iter()
-        .map(|diagnostic| {
-            (
-                Some(spacing_values(diagnostic).0),
-                Some(spacing_values(diagnostic).1),
-            )
-        })
+        .map(|diagnostic| (spacing_values(diagnostic).0, spacing_values(diagnostic).1))
         .collect::<Vec<_>>();
-    assert_eq!(expected_actual, [(Some(0), Some(1)), (Some(1), Some(0))]);
+    assert_eq!(expected_actual, [(SpacingExpectation::Exact(1), 0)]);
 }
 
 #[test]

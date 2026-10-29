@@ -87,9 +87,9 @@ fn process_order(params: OrderParams) {}
 
 ### 2.3 Blank Line Isolation for Top-Level and Sibling Definitions
 
-Within the same immediate scope, `item_spacing` compares adjacent definitions of these kinds: `struct`, `enum`, `union`, type alias, trait, constant, `static`, function, and `impl` block. Every checked pair must have exactly one blank line, including an `impl` block next to any other checked kind and two adjacent `impl` blocks.
+Within the same immediate scope, `item_spacing` compares adjacent definitions of these kinds: `struct`, `enum`, `union`, type alias, trait, constant, `static`, function, and `impl` block. Every checked pair must have exactly one blank line, including an `impl` block next to any other checked kind and two adjacent `impl` blocks, except for the repeated same-kind definitions described below.
 
-**Exceptions:** Two consecutive constants, two consecutive `static` items, or two consecutive type aliases of the same AST kind must have no blank line between them. `const fn` declarations are functions, not constants, so they require one blank line next to every checked kind, including another function. These rules apply in both directions; for example, both `struct` followed by `impl` and `impl` followed by `struct` require one blank line. Items outside the listed kinds remain structural boundaries: comparisons do not skip over them to reach a later checked item. Pairs whose `cfg` conditions are provably mutually exclusive are not compared.
+**Exceptions:** Two consecutive constants, two consecutive `static` items, or two consecutive type aliases of the same AST kind may have zero or one blank line between them. `const fn` declarations are functions, not constants, so they require exactly one blank line next to every checked kind, including another function. All other checked pairs require exactly one blank line. These rules apply in both directions; for example, both `struct` followed by `impl` and `impl` followed by `struct` require one blank line. Items outside the listed kinds remain structural boundaries: comparisons do not skip over them to reach a later checked item. Pairs whose `cfg` conditions are provably mutually exclusive are not compared.
 
 ```rust
 const FIRST: u8 = 1;

@@ -56,7 +56,7 @@ steps:
   - uses: actions/checkout@main
   - uses: shaogme/cargo-cop@main
     with:
-      version: 0.2.4
+      version: 0.2.5
   - run: cargo cop --workspace
 ```
 
@@ -67,7 +67,7 @@ steps:
   - uses: actions/checkout@main
   - uses: shaogme/cargo-cop@main
     with:
-      version: 0.2.4
+      version: 0.2.5
       from-source: true
   - run: cargo cop --workspace
 ```
@@ -156,7 +156,7 @@ All rules are enabled by default and use `error` severity unless configured othe
 | --- | --- |
 | `module_file_layout` | An out-of-line child module file must not use the `mod.rs` layout. Crate roots are exempt. |
 | `no_lint_relaxation` | Reject `allow` lint attributes, including `cfg_attr` attributes that inject `allow`. |
-| `item_spacing` | Enforce blank-line spacing between adjacent structs, enums, unions, type aliases, traits, constants, statics, functions, and impl blocks in an item scope. Every checked pair requires one blank line, including impl blocks next to any listed kind; consecutive constants, statics, or type aliases of the same kind require none. |
+| `item_spacing` | Enforce blank-line spacing between adjacent structs, enums, unions, type aliases, traits, constants, statics, functions, and impl blocks in an item scope. All other checked pairs require one blank line, including impl blocks next to any listed kind; consecutive constants, statics, or type aliases of the same kind allow zero or one blank line. `const fn` items follow the function rule. |
 | `child_module_visibility` | Child modules are private by default. `pub` and `pub(crate)` are allowed only for modules containing nested modules, `use` items with private, `pub`, or `pub(crate)` visibility, `macro_rules!` definitions, type aliases, structs, enums, traits, unions, constants, or statics. |
 | `no_parent_path_attribute` | An external module's `#[path]` attribute must not contain a `..` path component, including paths nested in `cfg_attr`. |
 | `no_parent_private_dependency` | A child module must not import `super::*` or resolve a `super::`/`crate::` path to a private ancestor item. |

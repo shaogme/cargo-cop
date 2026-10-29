@@ -36,15 +36,17 @@ fn check_item_spacing_items(
             previous_bounds.end,
             current_bounds.start,
         );
-        if actual_lines != expected_lines {
+        if !expected_lines.contains(&actual_lines) {
+            let actual = PluralCount::new((actual_lines as i64) as u64);
+            let message = if expected_lines.start() == expected_lines.end() {
+                t!("rule.item_spacing", { expected: *expected_lines.start() as i64, actual })?
+            } else {
+                t!("rule.item_spacing_maximum", { maximum: *expected_lines.end() as i64, actual })?
+            };
             adapter.push(
                 module,
                 diagnostics,
-                RuleReport::new(
-                    RuleId::ItemSpacing,
-                    t!("rule.item_spacing", { expected: expected_lines as i64, actual: PluralCount::new((actual_lines as i64) as u64) })?,
-                    Some(current_bounds),
-                ),
+                RuleReport::new(RuleId::ItemSpacing, message, Some(current_bounds)),
             );
         }
     }

@@ -56,7 +56,7 @@ steps:
   - uses: actions/checkout@main
   - uses: shaogme/cargo-cop@main
     with:
-      version: 0.2.4
+      version: 0.2.5
   - run: cargo cop --workspace
 ```
 
@@ -67,7 +67,7 @@ steps:
   - uses: actions/checkout@main
   - uses: shaogme/cargo-cop@main
     with:
-      version: 0.2.4
+      version: 0.2.5
       from-source: true
   - run: cargo cop --workspace
 ```
@@ -156,7 +156,7 @@ Feature 选择根据所选 package 的 Cargo feature 定义计算，处理 defau
 | --- | --- |
 | `module_file_layout` | 外部子模块文件不能使用 `mod.rs` 布局；crate 根文件不受此项限制。 |
 | `no_lint_relaxation` | 禁止 `allow` lint 属性，包括通过 `cfg_attr` 注入的 `allow`。 |
-| `item_spacing` | 检查同一 item 作用域内相邻的结构体、枚举、union、类型别名、trait、常量、静态变量、函数和 impl 块之间的空行。所有受检组合之间留一行，包括 impl 块与其他列出类型的组合；同种的连续常量、静态变量或类型别名之间不留空行。 |
+| `item_spacing` | 检查同一 item 作用域内相邻的结构体、枚举、union、类型别名、trait、常量、静态变量、函数和 impl 块之间的空行。除连续同类常量、静态变量或类型别名外，其他受检组合之间留一行，包括 impl 块与其他列出类型的组合；同类常量、静态变量或类型别名之间允许留 0 或 1 个空行。`const fn` 按函数处理。 |
 | `child_module_visibility` | 子模块默认私有；仅含嵌套模块、私有、`pub` 或 `pub(crate)` `use` 导入、`macro_rules!` 定义、类型别名、结构体、枚举、trait、union、常量或静态变量时，才可使用 `pub` 或 `pub(crate)`。 |
 | `no_parent_path_attribute` | 外部模块的 `#[path]` 属性不能包含 `..` 路径分量，包括嵌套在 `cfg_attr` 中的路径属性。 |
 | `no_parent_private_dependency` | 子模块不能使用 `super::*`，也不能通过 `super::` 或 `crate::` 路径访问祖先模块的私有 item。 |

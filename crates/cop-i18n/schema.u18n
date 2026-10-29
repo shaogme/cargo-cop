@@ -1,6 +1,7 @@
 schema 1;
 
 message rule.item_spacing(expected: number, actual: plural_count);
+message rule.item_spacing_maximum(maximum: number, actual: plural_count);
 message rule.module_file_layout();
 message rule.out_of_line_modules_at_scope_start();
 message rule.child_module_visibility(module: string);

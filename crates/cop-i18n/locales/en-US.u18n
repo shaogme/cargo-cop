@@ -1,6 +1,7 @@
 locale en-US;
 
 message rule.item_spacing = "Adjacent definitions require {expected} blank lines; found {actual, plural, one {# blank line} other {# blank lines}}";
+message rule.item_spacing_maximum = "Adjacent same-kind definitions allow at most {maximum} blank lines; found {actual, plural, one {# blank line} other {# blank lines}}";
 message rule.module_file_layout = "Submodule entry files must not use the mod.rs layout";
 message rule.out_of_line_modules_at_scope_start = "Out-of-line module declarations must follow extern crate declarations and stay before use declarations and other items";
 message rule.child_module_visibility = "Non-private submodule {module} may contain only declarations and use items with private, public, or pub(crate) visibility";
@@ -173,7 +174,7 @@ message rule_catalog.module_file_layout.description = "An out-of-line child modu
 message rule_catalog.no_lint_relaxation.summary = "Reject lint allow attributes, including those injected by cfg_attr.";
 message rule_catalog.no_lint_relaxation.description = "The rule reports allow lint attributes that can suppress compiler or Clippy diagnostics. It also recognizes allow attributes nested inside cfg_attr, so conditional compilation cannot be used to hide the relaxation.";
 message rule_catalog.item_spacing.summary = "Require the specified blank-line spacing between adjacent item definitions.";
-message rule_catalog.item_spacing.description = "Within one immediate item scope, adjacent structs, enums, unions, type aliases, traits, constants, statics, functions, and impl blocks require exactly one blank line. Two consecutive constants, statics, or type aliases of the same kind require no blank line. Other item kinds form boundaries, and pairs with provably mutually exclusive cfg conditions are not compared.";
+message rule_catalog.item_spacing.description = "Within one immediate item scope, adjacent structs, enums, unions, type aliases, traits, constants, statics, functions, and impl blocks require exactly one blank line, except that consecutive constants, statics, or type aliases of the same kind allow zero or one blank line. Const fn items are functions and follow the one-blank-line rule. Other item kinds form boundaries, and pairs with provably mutually exclusive cfg conditions are not compared.";
 message rule_catalog.child_module_visibility.summary = "Keep child modules private unless their contents are declarative only.";
 message rule_catalog.child_module_visibility.description = "A registered child module should use private visibility. pub or pub(crate) is allowed only when every item is a module declaration, a use import with private, pub, or pub(crate) visibility, a macro_rules definition, a type alias, a struct, enum, trait, union, constant, or static. Functions, impl blocks, extern crate declarations, scoped imports such as pub(super), and macro invocations make the module ineligible for that exception.";
 message rule_catalog.no_parent_path_attribute.summary = "Do not use parent-directory components in external module paths.";
