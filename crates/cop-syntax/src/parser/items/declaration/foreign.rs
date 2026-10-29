@@ -1,7 +1,4 @@
-use cop_model::{
-    LocalizedMessage, MessageId, SYNTAX_MACRO_OPAQUE, SYNTAX_PARSE_ERROR_UNCLOSED_DELIMITER,
-    SYNTAX_PARSE_ERROR_UNEXPECTED_TOKEN, SYNTAX_UNSUPPORTED_ASSOCIATED_ITEM,
-};
+use cop_i18n::{t, RenderError};
 
 use crate::{
     ast::{
@@ -72,7 +69,7 @@ impl ForeignItemParser {
             context.issues.push(AstFactory::parse_issue(
                 ParseIssueKind::UnexpectedToken,
                 token.start()..token.end(),
-                LocalizedMessage::new(SYNTAX_PARSE_ERROR_UNEXPECTED_TOKEN),
+                t!("syntax.parse_error_unexpected_token"),
             ));
         }
         let abi = header.abi.as_ref().and_then(|bounds| {
@@ -106,7 +103,7 @@ impl ForeignItemParser {
             context.issues.push(AstFactory::parse_issue(
                 ParseIssueKind::UnclosedDelimiter,
                 context.tokens[header.open_index].start()..context.source.len(),
-                LocalizedMessage::new(SYNTAX_PARSE_ERROR_UNCLOSED_DELIMITER),
+                t!("syntax.parse_error_unclosed_delimiter"),
             ));
             *context.cursor = context.tokens.len();
         }
@@ -136,7 +133,7 @@ impl ForeignItemParser {
                         context.issues.push(AstFactory::parse_issue(
                             ParseIssueKind::UnexpectedToken,
                             attribute.start()..attribute.end(),
-                            LocalizedMessage::new(SYNTAX_PARSE_ERROR_UNEXPECTED_TOKEN),
+                            t!("syntax.parse_error_unexpected_token"),
                         ));
                     }
                     inner_attributes.push(attribute);
@@ -239,10 +236,9 @@ impl ForeignItemParser {
             opaque.clone(),
             Vec::new(),
         );
-        context.issues.push(AstFactory::parse_issue(
-            ParseIssueKind::UnsupportedSyntax,
+        context.issues.push(AstFactory::opaque_macro_issue(
             opaque,
-            LocalizedMessage::new(SYNTAX_MACRO_OPAQUE),
+            t!("syntax.macro_opaque"),
         ));
         true
     }
@@ -276,7 +272,7 @@ impl ForeignItemParser {
             context.issues.push(AstFactory::parse_issue(
                 ParseIssueKind::UnexpectedToken,
                 start..end,
-                LocalizedMessage::new(SYNTAX_PARSE_ERROR_UNEXPECTED_TOKEN),
+                t!("syntax.parse_error_unexpected_token"),
             ));
         }
         if safety != ForeignFunctionSafety::ImplicitUnsafe
@@ -289,7 +285,7 @@ impl ForeignItemParser {
             context.issues.push(AstFactory::parse_issue(
                 ParseIssueKind::UnexpectedToken,
                 token.start()..token.end(),
-                LocalizedMessage::new(SYNTAX_PARSE_ERROR_UNEXPECTED_TOKEN),
+                t!("syntax.parse_error_unexpected_token"),
             ));
         }
         match Self::current_identifier(&context) {
@@ -354,7 +350,7 @@ impl ForeignItemParser {
             .and_then(|close| Recovery::body_open(context.tokens, close + 1))
             .filter(|open| *open < close_index);
         if semicolon.is_none()
-            || body_open.is_some_and(|open| semicolon.map_or(true, |end| open < end))
+            || body_open.is_some_and(|open| semicolon.is_none_or(|end| open < end))
         {
             let issue_start = body_open
                 .and_then(|open| context.tokens.get(open))
@@ -365,7 +361,7 @@ impl ForeignItemParser {
             context.issues.push(AstFactory::parse_issue(
                 ParseIssueKind::UnexpectedToken,
                 issue_start..issue_end,
-                LocalizedMessage::new(SYNTAX_PARSE_ERROR_UNEXPECTED_TOKEN),
+                t!("syntax.parse_error_unexpected_token"),
             ));
             Self::recover_foreign_item(&mut context, close_index);
             let end = context
@@ -453,7 +449,7 @@ impl ForeignItemParser {
                 context.issues.push(AstFactory::parse_issue(
                     ParseIssueKind::UnexpectedToken,
                     token.start()..token.end(),
-                    LocalizedMessage::new(SYNTAX_PARSE_ERROR_UNEXPECTED_TOKEN),
+                    t!("syntax.parse_error_unexpected_token"),
                 ));
             }
             *context.cursor = semicolon + 1;
@@ -461,7 +457,7 @@ impl ForeignItemParser {
             Self::push_current_issue(
                 &mut context,
                 ParseIssueKind::UnexpectedToken,
-                SYNTAX_PARSE_ERROR_UNEXPECTED_TOKEN,
+                t!("syntax.parse_error_unexpected_token"),
             );
             Self::recover_foreign_item(&mut context, close_index);
         }
@@ -502,7 +498,7 @@ impl ForeignItemParser {
         context.issues.push(AstFactory::unsupported_issue(
             UnsupportedConstructKind::AssociatedItem,
             start..end,
-            LocalizedMessage::new(SYNTAX_UNSUPPORTED_ASSOCIATED_ITEM),
+            t!("syntax.unsupported_associated_item"),
         ));
         AstFactory::update_ast_node(
             context.ast_nodes,
@@ -613,13 +609,11 @@ impl ForeignItemParser {
     fn push_current_issue(
         context: &mut ParserContext<'_, '_>,
         kind: ParseIssueKind,
-        message: MessageId,
+        message: Result<String, RenderError>,
     ) {
         let bounds = Self::current_start(context)..Self::current_end(context);
-        context.issues.push(AstFactory::parse_issue(
-            kind,
-            bounds,
-            LocalizedMessage::new(message),
-        ));
+        context
+            .issues
+            .push(AstFactory::parse_issue(kind, bounds, message));
     }
 }

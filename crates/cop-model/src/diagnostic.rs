@@ -5,7 +5,7 @@ use std::{
     str::FromStr,
 };
 
-use crate::{location::SourceSpan, LocalizedMessage};
+use crate::location::SourceSpan;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum RuleId {
@@ -80,7 +80,8 @@ pub struct Diagnostic {
     target: Option<String>,
     target_kind: Vec<String>,
     span: Option<SourceSpan>,
-    message: LocalizedMessage,
+    message: String,
+    detail: Option<String>,
     namespace: Option<String>,
     cfg_condition: Option<String>,
 }
@@ -234,19 +235,15 @@ impl DiagnosticKind {
 }
 
 impl Diagnostic {
-    pub fn rule(rule_id: RuleId, severity: Severity, message: LocalizedMessage) -> Self {
+    pub fn rule(rule_id: RuleId, severity: Severity, message: String) -> Self {
         Self::new(DiagnosticKind::Rule(rule_id), severity, message)
     }
 
-    pub fn tool(error_kind: ToolErrorKind, message: LocalizedMessage) -> Self {
+    pub fn tool(error_kind: ToolErrorKind, message: String) -> Self {
         Self::new(DiagnosticKind::Tool(error_kind), Severity::Error, message)
     }
 
-    pub fn analysis(
-        issue_kind: AnalysisIssueKind,
-        severity: Severity,
-        message: LocalizedMessage,
-    ) -> Self {
+    pub fn analysis(issue_kind: AnalysisIssueKind, severity: Severity, message: String) -> Self {
         Self::new(DiagnosticKind::Analysis(issue_kind), severity, message)
     }
 
@@ -287,6 +284,11 @@ impl Diagnostic {
         self
     }
 
+    pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
+        self.detail = Some(detail.into());
+        self
+    }
+
     pub fn kind(&self) -> DiagnosticKind {
         self.kind
     }
@@ -315,8 +317,12 @@ impl Diagnostic {
         self.span.as_ref()
     }
 
-    pub fn message(&self) -> &LocalizedMessage {
+    pub fn message(&self) -> &str {
         &self.message
+    }
+
+    pub fn detail(&self) -> Option<&str> {
+        self.detail.as_deref()
     }
 
     pub fn namespace(&self) -> Option<&str> {
@@ -327,7 +333,7 @@ impl Diagnostic {
         self.cfg_condition.as_deref()
     }
 
-    fn new(kind: DiagnosticKind, severity: Severity, message: LocalizedMessage) -> Self {
+    fn new(kind: DiagnosticKind, severity: Severity, message: String) -> Self {
         Self {
             kind,
             severity,
@@ -337,6 +343,7 @@ impl Diagnostic {
             target_kind: Vec::new(),
             span: None,
             message,
+            detail: None,
             namespace: None,
             cfg_condition: None,
         }

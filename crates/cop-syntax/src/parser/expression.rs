@@ -7,15 +7,14 @@ mod macro_support;
 mod pratt;
 mod tree;
 
+use cop_i18n::t;
 use std::ops::Range;
-
-use cop_model::{LocalizedMessage, SYNTAX_MACRO_OPAQUE};
 
 use crate::{
     ast::{
         AstFactory, AstNodeId, ExpressionSyntax, ExpressionSyntaxKind, ImplSyntaxData,
-        MacroDefinition, MacroInputStatus, MacroInvocation, Parameter, ParseIssue, ParseIssueKind,
-        SyntaxNode, SyntaxNodeData, SyntaxNodeKind,
+        MacroDefinition, MacroInputStatus, MacroInvocation, Parameter, ParseIssue, SyntaxNode,
+        SyntaxNodeData, SyntaxNodeKind,
     },
     recovery::Recovery,
     RustEdition, SourceFile, Token, TokenKind,
@@ -316,10 +315,9 @@ impl SyntaxCollector {
                             opaque.clone(),
                             Vec::new(),
                         );
-                        issues.push(AstFactory::parse_issue(
-                            ParseIssueKind::UnsupportedSyntax,
+                        issues.push(AstFactory::opaque_macro_issue(
                             opaque,
-                            LocalizedMessage::new(SYNTAX_MACRO_OPAQUE),
+                            t!("syntax.macro_opaque"),
                         ));
                         index = group_end + 1;
                         continue;

@@ -104,10 +104,11 @@ impl ScopedCfgValue {
     pub fn applies_to(&self, package: &str, target_name: &str, target_triple: &str) -> bool {
         self.package
             .as_deref()
-            .map_or(true, |configured| configured == package)
-            && self.target.as_deref().map_or(true, |configured| {
-                configured == target_name || configured == target_triple
-            })
+            .is_none_or(|configured| configured == package)
+            && self
+                .target
+                .as_deref()
+                .is_none_or(|configured| configured == target_name || configured == target_triple)
     }
 }
 

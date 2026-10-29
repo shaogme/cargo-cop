@@ -1,6 +1,5 @@
+use cop_i18n::t;
 use std::ops::Range;
-
-use cop_model::{LocalizedMessage, SYNTAX_USE_TREE_INVALID};
 
 use crate::{
     ast::{
@@ -370,7 +369,7 @@ impl UseTreeParser {
         context.issues.push(AstFactory::parse_issue(
             ParseIssueKind::UnexpectedToken,
             bounds,
-            LocalizedMessage::new(SYNTAX_USE_TREE_INVALID),
+            t!("syntax.use_tree_invalid"),
         ));
     }
 

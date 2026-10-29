@@ -2,12 +2,12 @@ use std::ops::Range;
 
 use cop_analysis::{AnalysisFacts, CfgCondition, CfgDecision, ItemFact, ItemKindFact, ModuleNode};
 use cop_config::ResolvedConfig;
-use cop_model::{Diagnostic, LocalizedMessage, RuleId, SourceSpan};
+use cop_model::{Diagnostic, RuleId, SourceSpan};
 use cop_syntax::{ParseOutput, TriviaKind};
 
 pub(super) struct RuleReport {
     rule_id: RuleId,
-    message: LocalizedMessage,
+    message: String,
     bounds: Option<Range<usize>>,
     span: Option<SourceSpan>,
     cfg_condition: Option<String>,
@@ -86,11 +86,7 @@ impl SyntaxSupport {
 }
 
 impl RuleReport {
-    pub(super) fn new(
-        rule_id: RuleId,
-        message: LocalizedMessage,
-        bounds: Option<Range<usize>>,
-    ) -> Self {
+    pub(super) fn new(rule_id: RuleId, message: String, bounds: Option<Range<usize>>) -> Self {
         Self {
             rule_id,
             message,
@@ -100,7 +96,7 @@ impl RuleReport {
         }
     }
 
-    pub(super) fn at_span(rule_id: RuleId, message: LocalizedMessage, span: SourceSpan) -> Self {
+    pub(super) fn at_span(rule_id: RuleId, message: String, span: SourceSpan) -> Self {
         Self {
             rule_id,
             message,

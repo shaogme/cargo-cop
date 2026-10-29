@@ -19,7 +19,7 @@ The project provides 20 configurable rules, human-readable and JSON reports, and
 
 ## Requirements
 
-- Rust and Cargo 1.75 or later (the workspace MSRV is Rust 1.75).
+- Rust and Cargo 1.85 or later (the workspace MSRV is Rust 1.85).
 - `cargo` and `rustc` available on `PATH`.
 
 At runtime the tool queries Cargo metadata and Rust target `cfg` information. It does not build the inspected package or its dependencies.
@@ -56,7 +56,7 @@ steps:
   - uses: actions/checkout@main
   - uses: shaogme/cargo-cop@main
     with:
-      version: 0.2.2
+      version: 0.2.3
   - run: cargo cop --workspace
 ```
 
@@ -67,7 +67,7 @@ steps:
   - uses: actions/checkout@main
   - uses: shaogme/cargo-cop@main
     with:
-      version: 0.2.2
+      version: 0.2.3
       from-source: true
   - run: cargo cop --workspace
 ```
@@ -181,7 +181,7 @@ fn run() {}
 
 ## Reports and exit codes
 
-Human output contains one diagnostic per line followed by a summary. JSON output has schema version `3` and includes the locale, scan status, summary counts, and diagnostics. Each diagnostic includes its kind, severity, rule or issue code, package and target where available, source path and span where available, localized message, and optional namespace or `cfg` condition.
+Human output contains one diagnostic per line followed by a summary. JSON output has schema version `4` and includes the locale, scan status, summary counts, and diagnostics. Each diagnostic includes its kind, severity, rule or issue code, package and target where available, source path and span where available, a pre-rendered localized message, optional detail, and optional namespace or `cfg` condition.
 
 | Exit code | Meaning |
 | --- | --- |
@@ -212,7 +212,7 @@ The workspace separates the command-line application from the analysis pipeline:
 | `cop-syntax` | Project-owned Rust lexer, syntax tree, parser, and parser coverage status. |
 | `cop-analysis` | `cfg` evaluation, module graph discovery, immutable definition/reference facts, path resolution, API dependency and impl-owner indexes, analysis status. |
 | `cop-rules` | The 20 source convention rules. |
-| `cop-model` | Shared rule IDs, diagnostic, location, message, and scan-status types. |
+| `cop-model` | Shared rule IDs, diagnostics, source locations, and scan-status types. |
 | `cop-report` | Stable diagnostic ordering and human/JSON rendering. |
 | `cop-i18n` | English and Simplified Chinese messages. |
 
@@ -226,4 +226,4 @@ cargo clippy -- -D warnings
 cargo test
 ```
 
-The workspace uses Rust 2021 edition and has an MSRV of 1.75. See [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE) for license terms.
+The cargo-cop workspace uses Rust 2021 edition and has an MSRV of 1.85. Diagnostic messages are compiled from English and Simplified Chinese catalogs with u18n. See [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE) for license terms.

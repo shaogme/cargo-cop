@@ -4,7 +4,7 @@ use std::{
     sync::Arc,
 };
 
-use cop_model::{AnalysisIssueKind, LocalizedMessage, Severity, SourceSpan};
+use cop_model::{AnalysisIssueKind, Severity, SourceSpan};
 use cop_syntax::{AstNodeId, ItemSyntaxKind, ParseOutput, SyntaxNode, SyntaxNodeKind};
 
 use super::lint_attributes::ConfiguredAttribute;
@@ -45,7 +45,7 @@ pub(super) struct ModulePathRequest<'a> {
 pub(super) struct IssueRequest {
     pub(super) kind: AnalysisIssueKind,
     pub(super) severity: Severity,
-    pub(super) message: LocalizedMessage,
+    pub(super) message: String,
     pub(super) span: Option<SourceSpan>,
     pub(super) namespace: Option<String>,
     pub(super) cfg_condition: Option<String>,

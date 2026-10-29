@@ -1,6 +1,5 @@
+use cop_i18n::t;
 use std::ops::Range;
-
-use cop_model::{LocalizedMessage, SYNTAX_DELIMITER_UNCLOSED, SYNTAX_UNMATCHED_CLOSE_DELIMITER};
 
 use crate::{
     ast::{AstFactory, CoverageStatus, ParseIssue, ParseIssueKind},
@@ -125,7 +124,7 @@ impl Recovery {
                             issues.push(AstFactory::parse_issue_with_boundary(
                                 ParseIssueKind::UnclosedDelimiter,
                                 *start..token.start(),
-                                LocalizedMessage::new(SYNTAX_DELIMITER_UNCLOSED),
+                                t!("syntax.delimiter_unclosed"),
                                 false,
                             ));
                         }
@@ -134,7 +133,7 @@ impl Recovery {
                         issues.push(AstFactory::parse_issue(
                             ParseIssueKind::UnexpectedToken,
                             token.start()..token.end(),
-                            LocalizedMessage::new(SYNTAX_UNMATCHED_CLOSE_DELIMITER),
+                            t!("syntax.unmatched_close_delimiter"),
                         ));
                     }
                 }
@@ -146,7 +145,7 @@ impl Recovery {
             AstFactory::parse_issue_with_boundary(
                 ParseIssueKind::UnclosedDelimiter,
                 start..source_end,
-                LocalizedMessage::new(SYNTAX_DELIMITER_UNCLOSED),
+                t!("syntax.delimiter_unclosed"),
                 true,
             )
         }));

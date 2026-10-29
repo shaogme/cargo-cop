@@ -1,5 +1,6 @@
 mod target_config;
 
+use cop_i18n::t;
 use std::{
     collections::{BTreeMap, BTreeSet},
     env,
@@ -7,16 +8,11 @@ use std::{
 };
 
 use cop_cfg::{CfgValue, ScopedCfgValue};
-use cop_model::{
-    LocalizedMessage, ToolErrorKind, CARGO_FEATURE_CONTEXT_MISSING, CARGO_FEATURE_NOT_DECLARED,
-    CARGO_FEATURE_NOT_FOUND, CARGO_FEATURE_PACKAGE_NOT_SELECTED, CARGO_NO_SCAN_PACKAGES,
-    CARGO_PACKAGE_AMBIGUOUS, CARGO_PACKAGE_DUPLICATE, CARGO_PACKAGE_NOT_FOUND,
-    CARGO_TARGET_CFG_MISSING, CARGO_WORKSPACE_CONFLICT, IO_ERROR,
-};
+use cop_model::ToolErrorKind;
 
 use crate::{
-    feature_resolver::FeatureResolver, CargoDiscovery, CargoError, CargoPackage, CargoTarget,
-    DependencyIndex, DependencyKind, FeatureSelection, ResolvedFeatures,
+    feature_resolver::FeatureResolver, CargoDiscovery, CargoError, CargoFailure, CargoPackage,
+    CargoTarget, DependencyIndex, DependencyKind, FeatureSelection, ResolvedFeatures,
 };
 
 use target_config::TargetConfiguration;
@@ -221,11 +217,11 @@ impl TargetSelector {
     pub fn select(
         discovery: CargoDiscovery,
         selection: CargoSelection,
-    ) -> Result<CargoProject, CargoError> {
+    ) -> Result<CargoProject, CargoFailure> {
         if selection.workspace && !selection.packages.is_empty() {
-            return Err(CargoError::new(
+            return Err(CargoError::from_localized(
                 ToolErrorKind::Arguments,
-                LocalizedMessage::new(CARGO_WORKSPACE_CONFLICT),
+                t!("cargo.workspace_conflict")?,
             ));
         }
         validate_unique_packages(&selection.packages)?;
@@ -236,12 +232,8 @@ impl TargetSelector {
         validate_feature_requests(&selected_packages, &feature_selection)?;
         let current_directory = match selection.current_directory {
             Some(directory) => directory,
-            None => env::current_dir().map_err(|error| {
-                CargoError::new(
-                    ToolErrorKind::Io,
-                    LocalizedMessage::new(IO_ERROR).with_opaque("detail", error.to_string()),
-                )
-            })?,
+            None => env::current_dir()
+                .map_err(|_| CargoFailure::from_message(ToolErrorKind::Io, t!("cli.io_error")))?,
         };
         let target_triple =
             TargetConfiguration::resolve_target(selection.target.as_deref(), &current_directory)?;
@@ -294,10 +286,9 @@ impl TargetSelector {
         let mut feature_contexts = BTreeMap::new();
         for (key, roots) in context_roots {
             let cfg_values = cfg_by_target.get(&key.target_triple).ok_or_else(|| {
-                CargoError::new(
+                CargoFailure::from_message(
                     ToolErrorKind::CargoMetadata,
-                    LocalizedMessage::new(CARGO_TARGET_CFG_MISSING)
-                        .with_text("target", &key.target_triple),
+                    t!("cargo.target_cfg_missing", { target: &key.target_triple }),
                 )
             })?;
             let context = FeatureContext {
@@ -328,10 +319,9 @@ impl TargetSelector {
                 };
                 let build_script = target.kind().iter().any(|kind| kind == "custom-build");
                 let cfg_values = cfg_by_target.get(effective_triple).ok_or_else(|| {
-                    CargoError::new(
+                    CargoFailure::from_message(
                         ToolErrorKind::CargoMetadata,
-                        LocalizedMessage::new(CARGO_TARGET_CFG_MISSING)
-                            .with_text("target", effective_triple),
+                        t!("cargo.target_cfg_missing", { target: effective_triple }),
                     )
                 })?;
                 for cfg_test in target_test_modes(target, selection.all_targets) {
@@ -344,10 +334,9 @@ impl TargetSelector {
                         .get(&key)
                         .and_then(|features| features.get(package_index))
                         .ok_or_else(|| {
-                            CargoError::new(
+                            CargoFailure::from_message(
                                 ToolErrorKind::CargoMetadata,
-                                LocalizedMessage::new(CARGO_FEATURE_CONTEXT_MISSING)
-                                    .with_text("package", package.name()),
+                                t!("cargo.feature_context_missing", { package: package.name() }),
                             )
                         })?;
                     if target_required_features_are_enabled(target, features) {
@@ -374,7 +363,7 @@ impl TargetSelector {
     fn select_packages(
         discovery: &CargoDiscovery,
         selection: &CargoSelection,
-    ) -> Result<Vec<CargoPackage>, CargoError> {
+    ) -> Result<Vec<CargoPackage>, CargoFailure> {
         let members = discovery
             .workspace_members()
             .iter()
@@ -396,9 +385,9 @@ impl TargetSelector {
                 .collect()
         };
         if selected.is_empty() {
-            return Err(CargoError::new(
+            return Err(CargoError::from_localized(
                 ToolErrorKind::Arguments,
-                LocalizedMessage::new(CARGO_NO_SCAN_PACKAGES),
+                t!("cargo.no_scan_packages")?,
             ));
         }
         Ok(selected.into_iter().cloned().collect())
@@ -409,7 +398,7 @@ fn resolve_workspace_features(
     packages: &[CargoPackage],
     selection: &FeatureSelection,
     context: FeatureContext<'_>,
-) -> Result<Vec<ResolvedFeatures>, CargoError> {
+) -> Result<Vec<ResolvedFeatures>, CargoFailure> {
     let mut states = packages
         .iter()
         .enumerate()
@@ -558,7 +547,7 @@ impl SelectedPackage {
 fn select_named_packages<'a>(
     candidates: &[&'a CargoPackage],
     names: &[String],
-) -> Result<Vec<&'a CargoPackage>, CargoError> {
+) -> Result<Vec<&'a CargoPackage>, CargoFailure> {
     let mut selected = Vec::new();
     for name in names {
         let matches = candidates
@@ -569,15 +558,15 @@ fn select_named_packages<'a>(
         match matches.as_slice() {
             [package] => selected.push(*package),
             [] => {
-                return Err(CargoError::new(
+                return Err(CargoError::from_localized(
                     ToolErrorKind::Arguments,
-                    LocalizedMessage::new(CARGO_PACKAGE_NOT_FOUND).with_text("name", name),
+                    t!("cargo.package_not_found", { name: name })?,
                 ));
             }
             _ => {
-                return Err(CargoError::new(
+                return Err(CargoError::from_localized(
                     ToolErrorKind::Arguments,
-                    LocalizedMessage::new(CARGO_PACKAGE_AMBIGUOUS).with_text("name", name),
+                    t!("cargo.package_ambiguous", { name: name })?,
                 ));
             }
         }
@@ -590,15 +579,15 @@ fn select_named_packages<'a>(
     Ok(selected)
 }
 
-fn validate_unique_packages(packages: &[String]) -> Result<(), CargoError> {
+fn validate_unique_packages(packages: &[String]) -> Result<(), CargoFailure> {
     let mut seen = BTreeSet::new();
     if let Some(duplicate) = packages
         .iter()
         .find(|package| !seen.insert(package.as_str()))
     {
-        return Err(CargoError::new(
+        return Err(CargoError::from_localized(
             ToolErrorKind::Arguments,
-            LocalizedMessage::new(CARGO_PACKAGE_DUPLICATE).with_text("name", duplicate),
+            t!("cargo.package_duplicate", { name: duplicate })?,
         ));
     }
     Ok(())
@@ -607,34 +596,31 @@ fn validate_unique_packages(packages: &[String]) -> Result<(), CargoError> {
 fn validate_feature_requests(
     packages: &[CargoPackage],
     selection: &FeatureSelection,
-) -> Result<(), CargoError> {
+) -> Result<(), CargoFailure> {
     for requested in selection.requested() {
         if let Some((package_name, feature)) = requested.split_once('/') {
             let package = packages
                 .iter()
                 .find(|package| package.name() == package_name)
                 .ok_or_else(|| {
-                    CargoError::new(
+                    CargoFailure::from_message(
                         ToolErrorKind::Arguments,
-                        LocalizedMessage::new(CARGO_FEATURE_PACKAGE_NOT_SELECTED)
-                            .with_text("package", package_name),
+                        t!("cargo.feature_package_not_selected", { package: package_name }),
                     )
                 })?;
             if !package.features().contains_key(feature) {
-                return Err(CargoError::new(
+                return Err(CargoError::from_localized(
                     ToolErrorKind::Arguments,
-                    LocalizedMessage::new(CARGO_FEATURE_NOT_FOUND)
-                        .with_text("package", package_name)
-                        .with_text("feature", feature),
+                    t!("cargo.feature_not_found", { package: package_name, feature: feature })?,
                 ));
             }
         } else if !packages
             .iter()
             .any(|package| package.features().contains_key(requested))
         {
-            return Err(CargoError::new(
+            return Err(CargoError::from_localized(
                 ToolErrorKind::Arguments,
-                LocalizedMessage::new(CARGO_FEATURE_NOT_DECLARED).with_text("feature", requested),
+                t!("cargo.feature_not_declared", { feature: requested })?,
             ));
         }
     }

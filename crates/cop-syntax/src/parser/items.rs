@@ -1,13 +1,7 @@
 mod declaration;
 
+use cop_i18n::{t, RenderError};
 use std::{mem, ops::Range};
-
-use cop_model::{
-    LocalizedMessage, MessageId, SYNTAX_EXPECT_MODULE_BODY, SYNTAX_EXPECT_MODULE_NAME,
-    SYNTAX_IMPL_BOUNDARY_UNKNOWN, SYNTAX_IMPL_EXPECT_TARGET, SYNTAX_INLINE_MODULE_UNCLOSED,
-    SYNTAX_INNER_ATTRIBUTE_POSITION, SYNTAX_MACRO_OPAQUE, SYNTAX_TRAIT_EXPECT_BODY,
-    SYNTAX_TRAIT_EXPECT_NAME, SYNTAX_UNMATCHED_CLOSE_DELIMITER,
-};
 
 use self::declaration::{ItemSyntaxParser, ParserContext};
 use super::{
@@ -95,7 +89,7 @@ impl<'a> Parser<'a> {
                         self.push_issue(
                             ParseIssueKind::UnexpectedToken,
                             attribute.start()..attribute.end(),
-                            SYNTAX_INNER_ATTRIBUTE_POSITION,
+                            t!("syntax.inner_attribute_position"),
                         );
                     }
                     inner_attributes.push(attribute);
@@ -120,7 +114,7 @@ impl<'a> Parser<'a> {
                 self.push_issue(
                     ParseIssueKind::UnexpectedToken,
                     start..self.current_end(),
-                    SYNTAX_UNMATCHED_CLOSE_DELIMITER,
+                    t!("syntax.unmatched_close_delimiter"),
                 );
                 self.cursor += 1;
                 continue;
@@ -340,11 +334,10 @@ impl<'a> Parser<'a> {
                     input.clone(),
                     Vec::new(),
                 );
-                self.push_issue(
-                    ParseIssueKind::UnsupportedSyntax,
+                self.issues.push(AstFactory::opaque_macro_issue(
                     input,
-                    SYNTAX_MACRO_OPAQUE,
-                );
+                    t!("syntax.macro_opaque"),
+                ));
             }
         } else if let ItemKind::MacroDefinition(definition) = item.kind() {
             AstFactory::push_ast_node(
@@ -369,7 +362,10 @@ impl<'a> Parser<'a> {
     fn parse_module(&mut self, parent: AstNodeId) -> Option<ModuleItem> {
         self.cursor += 1;
         let Some(name) = self.take_identifier() else {
-            self.push_current_issue(ParseIssueKind::UnexpectedToken, SYNTAX_EXPECT_MODULE_NAME);
+            self.push_current_issue(
+                ParseIssueKind::UnexpectedToken,
+                t!("syntax.expect_module_name"),
+            );
             self.recover_item();
             return None;
         };
@@ -389,7 +385,10 @@ impl<'a> Parser<'a> {
             self.current_kind(),
             Some(TokenKind::OpenDelimiter(Delimiter::Brace))
         ) {
-            self.push_current_issue(ParseIssueKind::UnexpectedToken, SYNTAX_EXPECT_MODULE_BODY);
+            self.push_current_issue(
+                ParseIssueKind::UnexpectedToken,
+                t!("syntax.expect_module_body"),
+            );
             return Some(AstFactory::module(name, false));
         }
         let open_index = self.cursor;
@@ -407,7 +406,7 @@ impl<'a> Parser<'a> {
             self.push_issue(
                 ParseIssueKind::UnclosedDelimiter,
                 self.current_start()..self.current_end(),
-                SYNTAX_INLINE_MODULE_UNCLOSED,
+                t!("syntax.inline_module_unclosed"),
             );
         }
         let scope_end = close_index.map_or(self.current_end(), |index| self.tokens[index].end());
@@ -437,7 +436,10 @@ impl<'a> Parser<'a> {
         self.cursor = Recovery::trait_keyword(self.tokens, self.cursor)? + 1;
         let name = self.take_identifier();
         if name.is_none() {
-            self.push_current_issue(ParseIssueKind::UnexpectedToken, SYNTAX_TRAIT_EXPECT_NAME);
+            self.push_current_issue(
+                ParseIssueKind::UnexpectedToken,
+                t!("syntax.trait_expect_name"),
+            );
         }
         let Some(open_index) = Recovery::body_open(self.tokens, self.cursor) else {
             let start = self.tokens[self.cursor.saturating_sub(1)].start();
@@ -445,7 +447,7 @@ impl<'a> Parser<'a> {
             self.push_issue(
                 ParseIssueKind::UnexpectedToken,
                 start..self.current_end(),
-                SYNTAX_TRAIT_EXPECT_BODY,
+                t!("syntax.trait_expect_body"),
             );
             return Some(AstFactory::trait_item(name));
         };
@@ -502,7 +504,7 @@ impl<'a> Parser<'a> {
             self.push_issue(
                 ParseIssueKind::UnexpectedToken,
                 header_start..self.current_end(),
-                SYNTAX_IMPL_BOUNDARY_UNKNOWN,
+                t!("syntax.impl_boundary_unknown"),
             );
             return Some(AstFactory::impl_item());
         };
@@ -520,7 +522,7 @@ impl<'a> Parser<'a> {
             self.push_issue(
                 ParseIssueKind::UnexpectedToken,
                 header_start..self.tokens[open_index].start(),
-                SYNTAX_IMPL_EXPECT_TARGET,
+                t!("syntax.impl_expect_target"),
             );
         }
         WhereClauseParser::collect(WhereClauseInput {
@@ -631,16 +633,18 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn push_current_issue(&mut self, kind: ParseIssueKind, message: MessageId) {
+    fn push_current_issue(&mut self, kind: ParseIssueKind, message: Result<String, RenderError>) {
         self.push_issue(kind, self.current_start()..self.current_end(), message);
     }
 
-    fn push_issue(&mut self, kind: ParseIssueKind, bounds: Range<usize>, message: MessageId) {
-        self.issues.push(AstFactory::parse_issue(
-            kind,
-            bounds,
-            LocalizedMessage::new(message),
-        ));
+    fn push_issue(
+        &mut self,
+        kind: ParseIssueKind,
+        bounds: Range<usize>,
+        message: Result<String, RenderError>,
+    ) {
+        self.issues
+            .push(AstFactory::parse_issue(kind, bounds, message));
     }
 
     fn consume_close(&mut self, delimiter: Delimiter) -> Option<usize> {

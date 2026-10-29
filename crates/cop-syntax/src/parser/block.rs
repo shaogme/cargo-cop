@@ -1,12 +1,8 @@
 mod patterns;
 mod statement;
 
+use cop_i18n::t;
 use std::ops::Range;
-
-use cop_model::{
-    LocalizedMessage, SYNTAX_INNER_ATTRIBUTE_POSITION, SYNTAX_ORPHANED_OUTER_ATTRIBUTE,
-    SYNTAX_UNEXPECTED_TOKEN,
-};
 
 use crate::{
     ast::{
@@ -147,7 +143,7 @@ impl BlockParser {
                 context.issues.push(AstFactory::parse_issue(
                     ParseIssueKind::UnexpectedToken,
                     token.start()..token.end(),
-                    LocalizedMessage::new(SYNTAX_UNEXPECTED_TOKEN),
+                    t!("syntax.unexpected_token"),
                 ));
                 cursor += 1;
                 continue;
@@ -174,14 +170,14 @@ impl BlockParser {
                             vec![attribute.clone()],
                         );
                         let message = if attribute.is_inner() {
-                            SYNTAX_INNER_ATTRIBUTE_POSITION
+                            t!("syntax.inner_attribute_position")
                         } else {
-                            SYNTAX_ORPHANED_OUTER_ATTRIBUTE
+                            t!("syntax.orphaned_outer_attribute")
                         };
                         context.issues.push(AstFactory::parse_issue(
                             ParseIssueKind::UnexpectedToken,
                             attribute_bounds,
-                            LocalizedMessage::new(message),
+                            message,
                         ));
                     }
                 }
@@ -227,7 +223,7 @@ impl BlockParser {
                     context.issues.push(AstFactory::parse_issue_with_boundary(
                         issue_kind,
                         error.bounds(),
-                        LocalizedMessage::new(SYNTAX_UNEXPECTED_TOKEN),
+                        t!("syntax.unexpected_token"),
                         error.kind() == SyntaxErrorKind::UnclosedDelimiter,
                     ));
                     cursor = Self::recover_statement(context.tokens, start_index, bounds.end);
@@ -269,7 +265,7 @@ impl BlockParser {
                     ParseIssueKind::UnexpectedToken,
                     ParseIssueCode::UnexpectedToken,
                     issue_offset..issue_offset,
-                    LocalizedMessage::new(SYNTAX_UNEXPECTED_TOKEN),
+                    t!("syntax.unexpected_token"),
                     false,
                 ));
             }
@@ -282,7 +278,7 @@ impl BlockParser {
                     ParseIssueKind::UnexpectedToken,
                     ParseIssueCode::UnexpectedToken,
                     end..end,
-                    LocalizedMessage::new(SYNTAX_UNEXPECTED_TOKEN),
+                    t!("syntax.unexpected_token"),
                     false,
                 ));
             }

@@ -4,7 +4,7 @@ use cop_syntax::{
 };
 
 fn parse(source: SourceFile) -> ParseOutput {
-    RustParser::parse(source, ParseOptions::default())
+    RustParser::parse(source, ParseOptions::default()).expect("catalog messages render")
 }
 
 #[test]

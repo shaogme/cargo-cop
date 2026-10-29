@@ -1,5 +1,6 @@
 mod block_imports;
 
+use cop_i18n::{t, PluralCount, RenderError};
 use std::{collections::BTreeSet, ops::Range};
 
 use cop_analysis::{
@@ -7,11 +8,7 @@ use cop_analysis::{
     ReferenceKind,
 };
 use cop_config::ResolvedConfig;
-use cop_model::{
-    Diagnostic, LocalizedMessage, RuleId, CFG_INSIDE_USE_TREE, CFG_USE_GROUP_SPACING,
-    CFG_USE_GROUP_SPLIT, EXTERN_CRATE_AT_SCOPE_START, MERGE_IMPORT_PREFIX,
-    NO_INLINE_QUALIFIED_PATH, USE_AT_SCOPE_START,
-};
+use cop_model::{Diagnostic, RuleId};
 use cop_syntax::ParseOutput;
 
 use crate::support::{RuleDiagnosticAdapter, RuleReport, SyntaxSupport, UseLeaf};
@@ -29,20 +26,27 @@ impl ImportRuleSet {
         snapshot: &AnalysisSnapshot,
         configuration: &ResolvedConfig,
         diagnostics: &mut Vec<Diagnostic>,
-    ) {
+    ) -> Result<(), RenderError> {
         let adapter = RuleDiagnosticAdapter::new(configuration);
         for module in snapshot.modules() {
             if module.is_order_only() {
                 continue;
             }
-            Self::extern_crate_at_scope_start(snapshot, module, diagnostics, &adapter);
+            Self::extern_crate_at_scope_start(snapshot, module, diagnostics, &adapter)?;
             let use_tree_ranges =
-                Self::imports_at_scope_start(module, snapshot, diagnostics, &adapter);
-            Self::inline_qualified_paths(module, snapshot, &use_tree_ranges, diagnostics, &adapter);
-            Self::common_prefixes(module, snapshot, diagnostics, &adapter);
-            Self::cfg_group_spacing(snapshot, module, diagnostics, &adapter);
-            Self::cfg_inside_use_tree(snapshot, module, diagnostics, &adapter);
+                Self::imports_at_scope_start(module, snapshot, diagnostics, &adapter)?;
+            Self::inline_qualified_paths(
+                module,
+                snapshot,
+                &use_tree_ranges,
+                diagnostics,
+                &adapter,
+            )?;
+            Self::common_prefixes(module, snapshot, diagnostics, &adapter)?;
+            Self::cfg_group_spacing(snapshot, module, diagnostics, &adapter)?;
+            Self::cfg_inside_use_tree(snapshot, module, diagnostics, &adapter)?;
         }
+        Ok(())
     }
 
     fn inline_qualified_paths(
@@ -51,7 +55,7 @@ impl ImportRuleSet {
         use_tree_ranges: &[Range<usize>],
         diagnostics: &mut Vec<Diagnostic>,
         adapter: &RuleDiagnosticAdapter<'_>,
-    ) {
+    ) -> Result<(), RenderError> {
         for reference in snapshot
             .facts()
             .references_for_module(module)
@@ -59,9 +63,10 @@ impl ImportRuleSet {
         {
             let bounds = reference.bounds();
             if !is_inside_use_tree(bounds.start, use_tree_ranges) {
-                Self::check_qualified_path(reference, module, diagnostics, adapter);
+                Self::check_qualified_path(reference, module, diagnostics, adapter)?;
             }
         }
+        Ok(())
     }
 
     fn check_qualified_path(
@@ -69,10 +74,10 @@ impl ImportRuleSet {
         module: &ModuleNode,
         diagnostics: &mut Vec<Diagnostic>,
         adapter: &RuleDiagnosticAdapter<'_>,
-    ) {
+    ) -> Result<(), RenderError> {
         let segments = reference.segments();
         if segments.len() < 2 {
-            return;
+            return Ok(());
         }
         let explicitly_scoped = segments
             .first()
@@ -83,19 +88,20 @@ impl ImportRuleSet {
                 || resolution.external_crate().is_none()
                 || !resolution.is_external_crate_qualifier()
             {
-                return;
+                return Ok(());
             }
         }
+        let path = path_label(segments);
         adapter.push(
             module,
             diagnostics,
             RuleReport::new(
                 RuleId::NoInlineQualifiedPath,
-                LocalizedMessage::new(NO_INLINE_QUALIFIED_PATH)
-                    .with_text("path", path_label(segments)),
+                t!("rule.no_inline_qualified_path", { path: path.as_str() })?,
                 Some(reference.bounds()),
             ),
         );
+        Ok(())
     }
 
     fn imports_at_scope_start(
@@ -103,7 +109,7 @@ impl ImportRuleSet {
         snapshot: &AnalysisSnapshot,
         diagnostics: &mut Vec<Diagnostic>,
         adapter: &RuleDiagnosticAdapter<'_>,
-    ) -> Vec<Range<usize>> {
+    ) -> Result<Vec<Range<usize>>, RenderError> {
         let scope = snapshot
             .facts()
             .syntax_for_module(module)
@@ -129,7 +135,7 @@ impl ImportRuleSet {
                             diagnostics,
                             RuleReport::new(
                                 RuleId::ImportsAtScopeStart,
-                                LocalizedMessage::new(USE_AT_SCOPE_START),
+                                t!("rule.use_at_scope_start")?,
                                 Some(item.bounds()),
                             ),
                         );
@@ -146,7 +152,7 @@ impl ImportRuleSet {
         module: &ModuleNode,
         diagnostics: &mut Vec<Diagnostic>,
         adapter: &RuleDiagnosticAdapter<'_>,
-    ) {
+    ) -> Result<(), RenderError> {
         let scope = snapshot
             .facts()
             .syntax_for_module(module)
@@ -166,7 +172,7 @@ impl ImportRuleSet {
                         diagnostics,
                         RuleReport::new(
                             RuleId::ExternCrateAtScopeStart,
-                            LocalizedMessage::new(EXTERN_CRATE_AT_SCOPE_START),
+                            t!("rule.extern_crate_at_scope_start")?,
                             Some(item.bounds()),
                         ),
                     );
@@ -175,6 +181,7 @@ impl ImportRuleSet {
                 preceding_non_extern_crates.push(condition);
             }
         }
+        Ok(())
     }
 
     fn common_prefixes(
@@ -182,14 +189,14 @@ impl ImportRuleSet {
         snapshot: &AnalysisSnapshot,
         diagnostics: &mut Vec<Diagnostic>,
         adapter: &RuleDiagnosticAdapter<'_>,
-    ) {
+    ) -> Result<(), RenderError> {
         let output = module.parse_output();
         let Some(scope) = snapshot
             .facts()
             .syntax_for_module(module)
             .and_then(|syntax| syntax.root_scope())
         else {
-            return;
+            return Ok(());
         };
         let imports = scope
             .items()
@@ -232,18 +239,14 @@ impl ImportRuleSet {
                     diagnostics,
                     RuleReport::new(
                         RuleId::MergeCommonPrefixImports,
-                        LocalizedMessage::new(MERGE_IMPORT_PREFIX)
-                            .with_number(
-                                "line",
-                                line_of(output, previous.item.bounds().start) as i64,
-                            )
-                            .with_text("prefix", prefix),
+                        t!("rule.merge_import_prefix", { line: line_of(output, previous.item.bounds().start) as i64, prefix: prefix.as_str() })?,
                         Some(current.item.bounds()),
                     ),
                 );
                 break;
             }
         }
+        Ok(())
     }
 
     fn cfg_group_spacing(
@@ -251,14 +254,14 @@ impl ImportRuleSet {
         module: &ModuleNode,
         diagnostics: &mut Vec<Diagnostic>,
         adapter: &RuleDiagnosticAdapter<'_>,
-    ) {
+    ) -> Result<(), RenderError> {
         let output = module.parse_output();
         let Some(scope) = snapshot
             .facts()
             .syntax_for_module(module)
             .and_then(|syntax| syntax.root_scope())
         else {
-            return;
+            return Ok(());
         };
         let mut previous: Option<(&ItemFact, String)> = None;
         let mut completed_groups = BTreeSet::new();
@@ -276,8 +279,7 @@ impl ImportRuleSet {
                     diagnostics,
                     RuleReport::new(
                         RuleId::CfgUseGroupSpacing,
-                        LocalizedMessage::new(CFG_USE_GROUP_SPLIT)
-                            .with_text("condition", &condition),
+                        t!("rule.cfg_use_group_split", { condition: &condition })?,
                         Some(item.bounds()),
                     ),
                 );
@@ -290,8 +292,7 @@ impl ImportRuleSet {
                             diagnostics,
                             RuleReport::new(
                                 RuleId::CfgUseGroupSpacing,
-                                LocalizedMessage::new(CFG_USE_GROUP_SPLIT)
-                                    .with_text("condition", &condition),
+                                t!("rule.cfg_use_group_split", { condition: &condition })?,
                                 Some(item.bounds()),
                             ),
                         );
@@ -308,8 +309,7 @@ impl ImportRuleSet {
                             diagnostics,
                             RuleReport::new(
                                 RuleId::CfgUseGroupSpacing,
-                                LocalizedMessage::new(CFG_USE_GROUP_SPACING)
-                                    .with_number("empty_lines", blank_lines as i64),
+                                t!("rule.cfg_use_group_spacing", { empty_lines: PluralCount::new((blank_lines as i64) as u64) })?,
                                 Some(item.bounds()),
                             ),
                         );
@@ -318,6 +318,7 @@ impl ImportRuleSet {
             }
             previous = Some((item, condition));
         }
+        Ok(())
     }
 
     fn cfg_inside_use_tree(
@@ -325,13 +326,13 @@ impl ImportRuleSet {
         module: &ModuleNode,
         diagnostics: &mut Vec<Diagnostic>,
         adapter: &RuleDiagnosticAdapter<'_>,
-    ) {
+    ) -> Result<(), RenderError> {
         let Some(scope) = snapshot
             .facts()
             .syntax_for_module(module)
             .and_then(|syntax| syntax.root_scope())
         else {
-            return;
+            return Ok(());
         };
         for item in scope.items().iter().filter(|item| item.is_enabled()) {
             if !matches!(item.kind(), ItemKindFact::Use) {
@@ -343,12 +344,13 @@ impl ImportRuleSet {
                     diagnostics,
                     RuleReport::new(
                         RuleId::CfgInsideUseTree,
-                        LocalizedMessage::new(CFG_INSIDE_USE_TREE),
+                        t!("rule.cfg_inside_use_tree")?,
                         Some(bounds.clone()),
                     ),
                 );
             }
         }
+        Ok(())
     }
 }
 

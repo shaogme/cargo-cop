@@ -1,0 +1,159 @@
+locale zh-CN;
+
+message rule.item_spacing = "相邻定义之间应有 {expected} 个空行，当前有 {actual} 个";
+message rule.module_file_layout = "子模块入口文件不能使用 mod.rs 布局";
+message rule.out_of_line_modules_at_scope_start = "外部模块声明必须位于 extern crate 声明之后、use 声明和其他 item 之前，并连续排列";
+message rule.child_module_visibility = "非私有子模块 {module} 只能包含声明项，以及私有、公开或 pub(crate) 可见性的 use 导入";
+message rule.child_module_line_count = "子模块文件 {file} 的有效代码行数为 {actual}，要求在 {minimum} 到 {maximum} 行之间";
+message rule.no_parent_path_attribute = "`#[path]` 路径不能使用 `..` 访问父目录";
+message rule.no_parent_glob_import = "子模块不得使用 super::* 导入父模块实现";
+message rule.no_parent_private_path = "子模块路径依赖了祖先模块 {ancestor} 的私有项 {item}";
+message rule.impl_cross_file = "impl 目标 {target} 定义在其他源文件，impl 必须与类型定义位于同一文件";
+message rule.impl_external_trait_target = "trait impl 的目标 {root} 不属于允许的标准库类型";
+message rule.impl_inherent_target = "固有 impl 的目标必须是在当前源文件定义的类型";
+message rule.impl_target_unresolved = "无法解析 impl 目标 {target} 的类型归属";
+message rule.private_fields_for_behavior_type = "存在 impl 的类型 {name} 必须将所有字段设为私有";
+message rule.unnecessary_pub_crate = "crate 可见声明 {name} 可以改为私有";
+message rule.child_public_free_function = "子模块中的独立函数必须保持私有";
+message rule.no_lint_relaxation = "禁止通过 allow 属性放宽 lint 检查";
+message rule.function_parameter_limit = "函数参数数量为 {actual}，最多允许 {maximum} 个";
+message rule.closure_parameter_limit = "闭包参数数量为 {actual}，最多允许 {maximum} 个";
+message rule.tuple_arity = "tuple 元素数量为 {actual}，最多允许 {maximum} 个";
+message rule.declaration_before_use = "名称 {name} 在其声明之前被引用";
+message rule.no_inline_qualified_path = "显式限定路径 {path} 应先导入所需名称再使用";
+message rule.extern_crate_at_scope_start = "extern crate 声明必须位于模块作用域开头";
+message rule.use_at_scope_start = "模块作用域中的 use 声明必须位于外部模块声明之后、其他 item 之前";
+message rule.block_use_at_scope_start = "block 作用域中的 use 声明必须位于首个非 use 语句之前";
+message rule.merge_import_prefix = "此导入与第 {line} 行的导入共享前缀 {prefix}，可合并为一条 use tree";
+message rule.merge_block_import_prefix = "此 block 导入与第 {line} 行共享前缀 {prefix}，可合并为一条 use tree";
+message rule.cfg_use_group_split = "cfg 条件组 {condition} 被其他导入组拆开";
+message rule.cfg_use_group_spacing = "不同 cfg 导入组之间应恰好有一个空行，当前有 {empty_lines} 个";
+message rule.cfg_inside_use_tree = "use tree 花括号内部不能嵌套 cfg 属性";
+message analysis.cfg_dependency_unknown = "依赖 {dependency} 的 target 条件无法静态确定";
+message analysis.include_dynamic_input = "include! 会在编译时引入源码，静态模块图无法确认其内容";
+message analysis.macro_generated_module = "项级宏 {name} 未展开，可能生成模块声明";
+message analysis.module_cycle = "模块 {name} 再次载入当前递归链中的源文件";
+message analysis.path_module_missing = "#[path] 指定的模块文件不存在";
+message analysis.module_layout_ambiguous = "模块 {name} 同时匹配 name.rs 和 name/mod.rs 布局";
+message analysis.module_missing = "找不到模块 {name}；已检查 name.rs 和 name/mod.rs 布局";
+message analysis.module_source_read_error = "读取 Rust 源文件失败 {path}";
+message analysis.module_file_metadata_error = "检查模块文件失败 {path}";
+message analysis.parser_coverage = "{issue}";
+message analysis.malformed_cfg_attribute = "cfg/path 属性无法可靠解释，相关模块分析可能不完整";
+message analysis.malformed_cfg_expression = "无法解析此处的 cfg! predicate";
+message analysis.cfg_macro_identity_unknown = "无法确认此 cfg! 调用是内置宏；其输入按不透明内容处理";
+message analysis.unknown_cfg = "无法静态确定 cfg 条件 {condition}";
+message syntax.unclosed_block_comment = "块注释缺少结束符 */";
+message syntax.unknown_character = "无法识别字符 {character}";
+message syntax.unclosed_raw_string = "raw 字符串缺少结束符";
+message syntax.unclosed_literal = "字面量缺少结束引号";
+message syntax.expect_literal_or_lifetime = "单引号后需要字符字面量或生命周期名称";
+message syntax.invalid_byte_character = "byte 字符字面量格式无效";
+message syntax.expect_radix_digit = "基数前缀后需要至少一个数字";
+message syntax.invalid_radix_digit = "数字字面量包含无效的 {radix} 进制数字";
+message syntax.inner_attribute_position = "内层属性必须位于作用域开头";
+message syntax.expect_attribute_bracket = "属性标记 # 后需要方括号";
+message syntax.attribute_invalid = "属性路径或元数据结构无效";
+message syntax.attribute_unclosed = "属性缺少结束方括号";
+message syntax.visibility_unclosed = "可见性限定缺少结束括号";
+message syntax.expect_module_name = "mod 后需要模块名称";
+message syntax.expect_module_body = "mod 声明需要分号或模块体";
+message syntax.inline_module_unclosed = "inline module 缺少结束花括号";
+message syntax.use_missing_semicolon = "use 声明缺少分号";
+message syntax.use_tree_invalid = "use 树的路径、分组、别名或 glob 结构无效";
+message syntax.extern_crate_missing_semicolon = "extern crate 声明需要分号";
+message syntax.named_item_expect_name = "具名声明关键字后需要名称";
+message syntax.trait_expect_name = "trait 后需要名称";
+message syntax.trait_expect_body = "trait 声明需要模块体";
+message syntax.impl_boundary_unknown = "无法确定 impl 块的边界";
+message syntax.impl_expect_target = "impl 后需要类型目标";
+message syntax.function_expect_name = "fn 后需要函数名称";
+message syntax.function_missing_parameters = "函数签名缺少参数列表";
+message syntax.function_parameters_unclosed = "函数参数列表缺少结束括号";
+message syntax.function_body_unclosed = "函数体缺少结束花括号";
+message syntax.item_unsupported = "当前 item 语法尚未纳入 AST 覆盖范围";
+message syntax.expression_unsupported = "此表达式语法不属于当前支持的稳定语法范围";
+message syntax.unsupported_edition = "不支持 Rust edition {edition}";
+message syntax.macro_opaque = "宏输入作为不透明语法处理，其中的 Rust 代码不会纳入分析";
+message syntax.parse_error_lexical_error = "词法分析遇到无效或无法识别的 token";
+message syntax.parse_error_unexpected_token = "当前语法位置出现意外 token";
+message syntax.parse_error_unexpected_eof = "语法结构在输入结束前未完成";
+message syntax.parse_error_unclosed_delimiter = "开始分隔符没有对应的结束分隔符";
+message syntax.parse_error_invalid_attribute = "属性结构无效";
+message syntax.parse_error_unsupported_edition = "不支持 Rust edition {edition}";
+message syntax.unsupported_item = "此 item 语法尚未建模";
+message syntax.unsupported_associated_item = "此关联 item 语法尚未建模";
+message syntax.unsupported_type = "此类型语法尚未建模";
+message syntax.unsupported_pattern = "此模式语法尚未建模";
+message syntax.unsupported_statement = "此语句语法尚未建模";
+message syntax.unsupported_expression = "此表达式语法尚未建模";
+message syntax.unsupported_attribute = "此属性语法尚未建模";
+message syntax.unsupported_visibility = "此可见性语法尚未建模";
+message syntax.unsupported_use_tree = "此 use tree 语法尚未建模";
+message syntax.unsupported_token = "此 token 结构尚未建模";
+message syntax.delimiter_unclosed = "开始分隔符缺少匹配的结束符";
+message syntax.unexpected_token = "此语法位置出现意外 token";
+message syntax.unmatched_close_delimiter = "出现未匹配或次序错误的结束分隔符";
+message syntax.declaration_body_unclosed = "声明体缺少结束花括号";
+message syntax.orphaned_outer_attribute = "外层属性没有后续 item";
+message config.file_missing = "显式配置文件 {path} 不存在或不是普通文件";
+message config.file_read_error = "读取配置文件 {path} 失败";
+message config.parse_error = "解析配置文件 {path} 失败";
+message config.invalid_root = "配置文件 {path} 的根必须是 TOML 表";
+message config.version_type = "配置文件 {path} 的字段 version 必须是整数";
+message config.unsupported_version = "配置文件 {path} 使用了不支持的版本 {version}，当前支持版本 {supported}";
+message config.invalid_field = "配置文件 {path} 的字段 {field}：{reason, select, unknown_field {未知字段} must_be_table {必须是表} must_be_string {必须是字符串} must_be_nonempty_string {必须是非空字符串} must_be_string_array {必须是字符串数组} must_be_boolean {必须是布尔值} must_be_array_of_tables {必须是表数组} invalid_cfg_name {无效的 cfg 名称} unknown_rule_id {未知规则 ID} unknown_severity {未知级别 {value}} unknown_value {未知值 {value}} duplicate {重复值 {value}} invalid {值无效} other {值无效}}";
+message locale.invalid_cli = "无效的 --locale 值：{locale}";
+message locale.invalid_config = "无效的 [i18n].locale 配置值：{locale}";
+message cargo.error = "Cargo 操作失败";
+message cargo.operation_error = "处理 Cargo 配置 {path} 失败";
+message cargo.workspace_conflict = "--workspace 不能与 --package 同时使用";
+message cargo.target_cfg_missing = "缺少 target {target} 的 cfg 信息";
+message cargo.feature_context_missing = "缺少 package {package} 的 feature 上下文";
+message cargo.no_scan_packages = "manifest 未匹配到可扫描的 workspace package";
+message cargo.package_not_found = "workspace 中不存在 package {name}";
+message cargo.package_ambiguous = "package 名称 {name} 不唯一，请拆分 workspace 或明确 package 名";
+message cargo.package_duplicate = "--package 重复指定 {name}";
+message cargo.feature_package_not_selected = "--features 指定了未选中的 package {package}";
+message cargo.feature_not_found = "package {package} 没有 feature {feature}";
+message cargo.feature_not_declared = "选中的 package 均未声明 feature {feature}";
+message cargo.config_target_type = "Cargo 配置 {path} 的 build.target 必须是字符串";
+message cargo.target_cfg_invalid = "无法解析 Cargo target 条件 {condition}";
+message cargo.target_cfg_query_error = "查询 target {target} 的 cfg 值失败";
+message cargo.manifest_unavailable = "无法访问 manifest {path}";
+message cargo.host_triple_missing = "rustc -vV 输出缺少 host triple";
+message cli.argument_error = "命令行参数无效";
+message cli.argument_unknown_rule = "未知规则 ID：{rule}";
+message cli.argument_duplicate_rule = "规则 {rule} 被重复指定";
+message cli.argument_severity_format = "--severity 格式错误：{value}，应为 ID=warning|error";
+message cli.argument_unknown_severity = "未知级别：{severity}";
+message cli.argument_severity_duplicate = "规则 {rule} 的 --severity 被重复指定";
+message cli.io_error = "读取当前目录失败";
+message cli.about = "检查 Rust 源码是否符合仓库规范";
+message cli.help = "用法：cargo-cop [选项]
+检查 Rust 源码是否符合仓库规范。
+
+选项：
+  --manifest-path <PATH>    指定 Cargo.toml 路径
+  --workspace               扫描整个 workspace
+  -p, --package <NAME>      选择要扫描的 package（可重复指定）
+  --target <TRIPLE>         指定目标三元组
+  --features <LIST>         启用逗号分隔的 features
+  --cfg <CFG>               添加自定义 cfg flag 或键值；可重复指定
+  --all-features            启用所有 features
+  --no-default-features     禁用默认 features
+  --all-targets             扫描所有 targets
+  --config <PATH>           指定配置文件
+  --locale <TAG>            选择输出语言（zh-CN、en-US）
+  --format <FORMAT>         输出格式：human 或 json
+  --disable-rule <ID>       禁用规则（可重复指定）
+  --severity <ID=LEVEL>     设置规则级别（可重复指定）
+  -h, --help                显示帮助
+  -V, --version             显示版本";
+message cli.parse_error = "{kind, select, unknown {命令行选项或子命令未知。使用 --help 查看可用选项。} missing {缺少必需的命令行选项或值。使用 --help 查看用法。} invalid {命令行选项的值或格式无效。使用 --help 查看有效格式。} conflict {提供的命令行选项不能同时使用。} other {命令行参数无效。使用 --help 查看用法。}}";
+message cli.version = "cargo-cop {version}";
+message report.output_write_error = "写入诊断失败";
+message report.summary = "cargo-cop：状态 {status, select, complete {已完成} partial {部分完成} incomplete {未完成} other {未完成}}；错误 {errors} 项，警告 {warnings} 项，已抑制警告 {suppressed_warnings} 项，共 {diagnostics} 项";
+message report.detail_reference = "详见 detail 字段";
+message report.namespace_label = "命名空间";
+message report.cfg_label = "配置条件";

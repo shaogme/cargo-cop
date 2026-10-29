@@ -3,7 +3,7 @@ name: Release
 on:
   push:
     tags:
-      - 'cargo-cop-v[0-9]*'
+      - 'cargo-cop-v*'
   workflow_dispatch:
     inputs:
       tag:

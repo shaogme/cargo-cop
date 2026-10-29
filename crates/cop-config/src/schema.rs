@@ -1,16 +1,14 @@
+use cop_i18n::t;
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::Path,
 };
 
 use cop_cfg::{CfgValue, ScopedCfgValue};
-use cop_model::{
-    LocalizedMessage, RuleId, Severity, CONFIG_INVALID_FIELD, CONFIG_INVALID_ROOT,
-    CONFIG_PARSE_ERROR, CONFIG_UNSUPPORTED_VERSION, CONFIG_VERSION_TYPE,
-};
+use cop_model::{RuleId, Severity};
 use toml::{from_str, map::Map, Value};
 
-use crate::ConfigError;
+use crate::{ConfigError, ConfigFailure};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ScanTargetScope {
@@ -99,20 +97,19 @@ impl ConfigDocument {
         }
     }
 
-    pub(super) fn parse(path: &Path, contents: &str) -> Result<Self, ConfigError> {
+    pub(super) fn parse(path: &Path, contents: &str) -> Result<Self, ConfigFailure> {
+        let path_display = path.display().to_string();
         let value = from_str::<Value>(contents).map_err(|error| {
-            ConfigError::new(
+            ConfigError::from_message(
                 path.to_path_buf(),
-                LocalizedMessage::new(CONFIG_PARSE_ERROR)
-                    .with_text("path", path.display().to_string())
-                    .with_opaque("detail", error.to_string()),
+                t!("config.parse_error", { path: path_display.as_str() }),
             )
+            .with_detail(error.to_string())
         })?;
         let root = value.as_table().ok_or_else(|| {
-            ConfigError::new(
+            ConfigError::from_message(
                 path.to_path_buf(),
-                LocalizedMessage::new(CONFIG_INVALID_ROOT)
-                    .with_text("path", path.display().to_string()),
+                t!("config.invalid_root", { path: path_display.as_str() }),
             )
         })?;
 
@@ -126,19 +123,15 @@ impl ConfigDocument {
             .get("version")
             .and_then(Value::as_integer)
             .ok_or_else(|| {
-                ConfigError::new(
+                ConfigError::from_message(
                     path.to_path_buf(),
-                    LocalizedMessage::new(CONFIG_VERSION_TYPE)
-                        .with_text("path", path.display().to_string()),
+                    t!("config.version_type", { path: path_display.as_str() }),
                 )
             })?;
         if version != 3 {
-            return Err(ConfigError::new(
+            return Err(ConfigError::from_localized(
                 path.to_path_buf(),
-                LocalizedMessage::new(CONFIG_UNSUPPORTED_VERSION)
-                    .with_text("path", path.display().to_string())
-                    .with_number("version", version)
-                    .with_number("supported", 3),
+                t!("config.unsupported_version", { path: path_display.as_str(), version: version, supported: 3 })?,
             ));
         }
 
@@ -171,27 +164,29 @@ impl ConfigDocument {
         }
     }
 
-    pub(super) fn read_locale(path: &Path, contents: &str) -> Result<Option<String>, ConfigError> {
+    pub(super) fn read_locale(
+        path: &Path,
+        contents: &str,
+    ) -> Result<Option<String>, ConfigFailure> {
+        let path_display = path.display().to_string();
         let value = from_str::<Value>(contents).map_err(|error| {
-            ConfigError::new(
+            ConfigError::from_message(
                 path.to_path_buf(),
-                LocalizedMessage::new(CONFIG_PARSE_ERROR)
-                    .with_text("path", path.display().to_string())
-                    .with_opaque("detail", error.to_string()),
+                t!("config.parse_error", { path: path_display.as_str() }),
             )
+            .with_detail(error.to_string())
         })?;
         let root = value.as_table().ok_or_else(|| {
-            ConfigError::new(
+            ConfigError::from_message(
                 path.to_path_buf(),
-                LocalizedMessage::new(CONFIG_INVALID_ROOT)
-                    .with_text("path", path.display().to_string()),
+                t!("config.invalid_root", { path: path_display.as_str() }),
             )
         })?;
         parse_locale(path, root.get("i18n"))
     }
 }
 
-fn parse_locale(path: &Path, value: Option<&Value>) -> Result<Option<String>, ConfigError> {
+fn parse_locale(path: &Path, value: Option<&Value>) -> Result<Option<String>, ConfigFailure> {
     let Some(value) = value else {
         return Ok(None);
     };
@@ -211,7 +206,7 @@ fn parse_locale(path: &Path, value: Option<&Value>) -> Result<Option<String>, Co
         .transpose()
 }
 
-fn parse_scan(path: &Path, value: Option<&Value>) -> Result<ScanDefaults, ConfigError> {
+fn parse_scan(path: &Path, value: Option<&Value>) -> Result<ScanDefaults, ConfigFailure> {
     let Some(value) = value else {
         return Ok(ScanDefaults::default());
     };
@@ -288,7 +283,7 @@ fn parse_scan(path: &Path, value: Option<&Value>) -> Result<ScanDefaults, Config
 fn parse_rules(
     path: &Path,
     value: Option<&Value>,
-) -> Result<BTreeMap<RuleId, (bool, Severity)>, ConfigError> {
+) -> Result<BTreeMap<RuleId, (bool, Severity)>, ConfigFailure> {
     let Some(value) = value else {
         return Ok(BTreeMap::new());
     };
@@ -349,7 +344,7 @@ fn parse_rules(
 fn parse_cfg_overrides(
     path: &Path,
     value: Option<&Value>,
-) -> Result<Vec<ScopedCfgValue>, ConfigError> {
+) -> Result<Vec<ScopedCfgValue>, ConfigFailure> {
     let Some(value) = value else {
         return Ok(Vec::new());
     };
@@ -394,7 +389,7 @@ fn optional_nonempty_string(
     table: &Map<String, Value>,
     prefix: &str,
     name: &str,
-) -> Result<Option<String>, ConfigError> {
+) -> Result<Option<String>, ConfigFailure> {
     table
         .get(name)
         .map(|value| {
@@ -428,7 +423,7 @@ fn check_fields(
     prefix: &str,
     table: &Map<String, Value>,
     expected: &[&str],
-) -> Result<(), ConfigError> {
+) -> Result<(), ConfigFailure> {
     if let Some(field) = table
         .keys()
         .find(|field| !expected.contains(&field.as_str()))
@@ -443,7 +438,7 @@ fn check_fields(
     Ok(())
 }
 
-fn ensure_unique(path: &Path, field: &str, values: &[String]) -> Result<(), ConfigError> {
+fn ensure_unique(path: &Path, field: &str, values: &[String]) -> Result<(), ConfigFailure> {
     let mut seen = BTreeSet::new();
     if let Some(duplicate) = values.iter().find(|value| !seen.insert(value.as_str())) {
         return Err(field_error(path, field, "duplicate", duplicate));
@@ -451,14 +446,12 @@ fn ensure_unique(path: &Path, field: &str, values: &[String]) -> Result<(), Conf
     Ok(())
 }
 
-fn field_error(path: &Path, field: &str, reason: &str, value: &str) -> ConfigError {
-    ConfigError::new(
+fn field_error(path: &Path, field: &str, reason: &str, value: &str) -> ConfigFailure {
+    let path_display = path.display().to_string();
+    let reason = reason.replace('-', "_");
+    ConfigError::from_message(
         path.to_path_buf(),
-        LocalizedMessage::new(CONFIG_INVALID_FIELD)
-            .with_text("path", path.display().to_string())
-            .with_text("field", field)
-            .with_text("reason", reason)
-            .with_text("value", value),
+        t!("config.invalid_field", { path: path_display.as_str(), field: field, reason: reason.as_str(), value: value }),
     )
 }
 
@@ -467,31 +460,36 @@ mod tests {
     use std::path::Path;
 
     use super::ConfigDocument;
+    use crate::ConfigFailure;
+
+    fn message(error: &ConfigFailure) -> &str {
+        match error {
+            ConfigFailure::Config(error) => error.message(),
+            ConfigFailure::Render(error) => panic!("unexpected localization failure: {error}"),
+        }
+    }
 
     #[test]
     fn rejects_invalid_versions_features_and_rule_settings() {
         let cases = [
-            ("", "config-version-type"),
-            ("version = 1", "config-unsupported-version"),
-            (
-                "version = 3\nallow_warnings = \"yes\"",
-                "config-invalid-field",
-            ),
+            ("", "must be an integer"),
+            ("version = 1", "unsupported version"),
+            ("version = 3\nallow_warnings = \"yes\"", "must be a boolean"),
             (
                 "version = 3\n[scan]\nfeatures = [\"fast\", \"fast\"]",
-                "config-invalid-field",
+                "duplicate value",
             ),
-            ("version = 3\n[rules.unknown_rule]", "config-invalid-field"),
+            ("version = 3\n[rules.unknown_rule]", "unknown rule ID"),
             (
                 "version = 3\n[rules.parameter_limit]\nseverity = \"fatal\"",
-                "config-invalid-field",
+                "unknown severity",
             ),
         ];
 
         for (contents, expected) in cases {
             let error = ConfigDocument::parse(Path::new("cargo-cop.toml"), contents)
                 .expect_err("无效配置必须失败");
-            assert_eq!(error.message().id().as_str(), expected);
+            assert!(message(&error).contains(expected), "{error}");
         }
     }
 
@@ -516,7 +514,7 @@ mod tests {
             "version = 3\n\n[[cfg]]\nname = \"custom_gate\"\nunknown = true\n",
         )
         .expect_err("未知 cfg 字段必须拒绝");
-        assert_eq!(error.message().id().as_str(), "config-invalid-field");
+        assert!(message(&error).contains("unknown field"));
     }
 
     #[test]
@@ -524,7 +522,7 @@ mod tests {
         let error = ConfigDocument::parse(Path::new("cargo-cop.toml"), "version = 2")
             .expect_err("旧 schema 必须显式迁移");
 
-        assert_eq!(error.message().id().as_str(), "config-unsupported-version");
+        assert!(message(&error).contains("unsupported version"));
     }
 
     #[test]
@@ -534,7 +532,7 @@ mod tests {
             let error = ConfigDocument::parse(Path::new("cargo-cop.toml"), &contents)
                 .expect_err("内置 cfg 名称不能作为自定义覆盖");
 
-            assert_eq!(error.message().id().as_str(), "config-invalid-field");
+            assert!(message(&error).contains("invalid cfg name"));
         }
     }
 }

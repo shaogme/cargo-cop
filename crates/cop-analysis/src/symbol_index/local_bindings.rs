@@ -455,7 +455,7 @@ fn is_use_tree_leaf(module: &ModuleNode, node: &SyntaxNode) -> bool {
         module
             .parse_output()
             .node(*id)
-            .map_or(true, |child| child.kind() != SyntaxNodeKind::UseTree)
+            .is_none_or(|child| child.kind() != SyntaxNodeKind::UseTree)
     })
 }
 

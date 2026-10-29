@@ -4,7 +4,7 @@ mod load;
 mod resolve;
 mod schema;
 
-pub use load::{ConfigError, ConfigLoader, ConfigRequest, LoadedConfig};
+pub use load::{ConfigError, ConfigFailure, ConfigLoader, ConfigRequest, LoadedConfig};
 pub use resolve::{
     ConfigOverrides, ConfigResolutionInput, ConfigResolver, ResolvedConfig, RuleSetting,
 };

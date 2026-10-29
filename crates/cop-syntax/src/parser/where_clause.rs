@@ -1,6 +1,5 @@
+use cop_i18n::t;
 use std::ops::Range;
-
-use cop_model::{LocalizedMessage, SYNTAX_ITEM_UNSUPPORTED};
 
 use crate::{
     ast::{
@@ -281,7 +280,7 @@ impl WhereClauseParser {
         issues.push(AstFactory::parse_issue(
             kind,
             bounds,
-            LocalizedMessage::new(SYNTAX_ITEM_UNSUPPORTED),
+            t!("syntax.item_unsupported"),
         ));
     }
 }

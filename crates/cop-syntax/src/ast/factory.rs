@@ -1,16 +1,5 @@
+use cop_i18n::RenderError;
 use std::ops::Range;
-
-use cop_model::{
-    LocalizedMessage, MessageArgument, MessageId, SYNTAX_MACRO_OPAQUE,
-    SYNTAX_PARSE_ERROR_INVALID_ATTRIBUTE, SYNTAX_PARSE_ERROR_LEXICAL_ERROR,
-    SYNTAX_PARSE_ERROR_UNCLOSED_DELIMITER, SYNTAX_PARSE_ERROR_UNEXPECTED_EOF,
-    SYNTAX_PARSE_ERROR_UNEXPECTED_TOKEN, SYNTAX_PARSE_ERROR_UNSUPPORTED_EDITION,
-    SYNTAX_UNCLOSED_BLOCK_COMMENT, SYNTAX_UNCLOSED_LITERAL, SYNTAX_UNCLOSED_RAW_STRING,
-    SYNTAX_UNSUPPORTED_ASSOCIATED_ITEM, SYNTAX_UNSUPPORTED_ATTRIBUTE,
-    SYNTAX_UNSUPPORTED_EXPRESSION, SYNTAX_UNSUPPORTED_ITEM, SYNTAX_UNSUPPORTED_PATTERN,
-    SYNTAX_UNSUPPORTED_STATEMENT, SYNTAX_UNSUPPORTED_TOKEN, SYNTAX_UNSUPPORTED_TYPE,
-    SYNTAX_UNSUPPORTED_USE_TREE, SYNTAX_UNSUPPORTED_VISIBILITY,
-};
 
 use super::{
     AstNodeId, Attribute, AttributeInput, CoverageStatus, ExternBlockItem, ExternCrateItem,
@@ -110,45 +99,37 @@ impl AstFactory {
     pub(crate) fn parse_issue(
         kind: ParseIssueKind,
         bounds: Range<usize>,
-        message: LocalizedMessage,
+        message: Result<String, RenderError>,
     ) -> ParseIssue {
-        let code = Self::issue_code(kind, &bounds, message.id());
-        let boundary_unknown = kind == ParseIssueKind::UnclosedDelimiter
-            || (kind == ParseIssueKind::Lexical
-                && matches!(
-                    message.id(),
-                    SYNTAX_UNCLOSED_BLOCK_COMMENT
-                        | SYNTAX_UNCLOSED_LITERAL
-                        | SYNTAX_UNCLOSED_RAW_STRING
-                ));
-        Self::parse_issue_with_code(kind, code, bounds, message, boundary_unknown)
+        let code = Self::issue_code(kind, &bounds);
+        let boundary_unknown = kind == ParseIssueKind::UnclosedDelimiter;
+        ParseIssue::new(kind, code, bounds, boundary_unknown, message)
     }
 
     pub(crate) fn parse_issue_with_code(
         kind: ParseIssueKind,
         code: ParseIssueCode,
         bounds: Range<usize>,
-        message: LocalizedMessage,
+        message: Result<String, RenderError>,
         boundary_unknown: bool,
     ) -> ParseIssue {
-        let stable_message = Self::issue_message(code, &message);
-        ParseIssue::new(kind, code, bounds, boundary_unknown, stable_message)
+        ParseIssue::new(kind, code, bounds, boundary_unknown, message)
     }
 
     pub(crate) fn parse_issue_with_boundary(
         kind: ParseIssueKind,
         bounds: Range<usize>,
-        message: LocalizedMessage,
+        message: Result<String, RenderError>,
         boundary_unknown: bool,
     ) -> ParseIssue {
-        let code = Self::issue_code(kind, &bounds, message.id());
+        let code = Self::issue_code(kind, &bounds);
         Self::parse_issue_with_code(kind, code, bounds, message, boundary_unknown)
     }
 
     pub(crate) fn unsupported_issue(
         construct: UnsupportedConstructKind,
         bounds: Range<usize>,
-        message: LocalizedMessage,
+        message: Result<String, RenderError>,
     ) -> ParseIssue {
         let code = ParseIssueCode::UnsupportedSyntax(construct);
         ParseIssue::new(
@@ -156,73 +137,34 @@ impl AstFactory {
             code,
             bounds,
             false,
-            Self::issue_message(code, &message),
+            message,
         )
     }
 
-    fn issue_code(
-        kind: ParseIssueKind,
-        bounds: &Range<usize>,
-        message: MessageId,
-    ) -> ParseIssueCode {
+    pub(crate) fn opaque_macro_issue(
+        bounds: Range<usize>,
+        message: Result<String, RenderError>,
+    ) -> ParseIssue {
+        ParseIssue::new(
+            ParseIssueKind::UnsupportedSyntax,
+            ParseIssueCode::OpaqueMacroInput,
+            bounds,
+            false,
+            message,
+        )
+    }
+
+    fn issue_code(kind: ParseIssueKind, bounds: &Range<usize>) -> ParseIssueCode {
         match kind {
             ParseIssueKind::Lexical => ParseIssueCode::LexicalError,
             ParseIssueKind::UnexpectedToken if bounds.is_empty() => ParseIssueCode::UnexpectedEof,
             ParseIssueKind::UnexpectedToken => ParseIssueCode::UnexpectedToken,
             ParseIssueKind::InvalidAttribute => ParseIssueCode::InvalidAttribute,
-            ParseIssueKind::UnsupportedSyntax if message == SYNTAX_MACRO_OPAQUE => {
-                ParseIssueCode::OpaqueMacroInput
-            }
             ParseIssueKind::UnsupportedSyntax => {
                 ParseIssueCode::UnsupportedSyntax(UnsupportedConstructKind::Token)
             }
             ParseIssueKind::UnsupportedEdition => ParseIssueCode::UnsupportedEdition,
             ParseIssueKind::UnclosedDelimiter => ParseIssueCode::UnclosedDelimiter,
-        }
-    }
-
-    fn issue_message(code: ParseIssueCode, original: &LocalizedMessage) -> LocalizedMessage {
-        match code {
-            ParseIssueCode::LexicalError => LocalizedMessage::new(SYNTAX_PARSE_ERROR_LEXICAL_ERROR),
-            ParseIssueCode::UnexpectedToken => {
-                LocalizedMessage::new(SYNTAX_PARSE_ERROR_UNEXPECTED_TOKEN)
-            }
-            ParseIssueCode::UnexpectedEof => {
-                LocalizedMessage::new(SYNTAX_PARSE_ERROR_UNEXPECTED_EOF)
-            }
-            ParseIssueCode::UnclosedDelimiter => {
-                LocalizedMessage::new(SYNTAX_PARSE_ERROR_UNCLOSED_DELIMITER)
-            }
-            ParseIssueCode::InvalidAttribute => {
-                LocalizedMessage::new(SYNTAX_PARSE_ERROR_INVALID_ATTRIBUTE)
-            }
-            ParseIssueCode::UnsupportedEdition => {
-                let edition = original
-                    .arguments()
-                    .get("edition")
-                    .and_then(|value| match value {
-                        MessageArgument::Text(value) => Some(value.as_str()),
-                        _ => None,
-                    })
-                    .unwrap_or("unknown");
-                LocalizedMessage::new(SYNTAX_PARSE_ERROR_UNSUPPORTED_EDITION)
-                    .with_text("edition", edition)
-            }
-            ParseIssueCode::OpaqueMacroInput => LocalizedMessage::new(SYNTAX_MACRO_OPAQUE),
-            ParseIssueCode::UnsupportedSyntax(construct) => {
-                LocalizedMessage::new(match construct {
-                    UnsupportedConstructKind::Item => SYNTAX_UNSUPPORTED_ITEM,
-                    UnsupportedConstructKind::AssociatedItem => SYNTAX_UNSUPPORTED_ASSOCIATED_ITEM,
-                    UnsupportedConstructKind::Type => SYNTAX_UNSUPPORTED_TYPE,
-                    UnsupportedConstructKind::Pattern => SYNTAX_UNSUPPORTED_PATTERN,
-                    UnsupportedConstructKind::Statement => SYNTAX_UNSUPPORTED_STATEMENT,
-                    UnsupportedConstructKind::Expression => SYNTAX_UNSUPPORTED_EXPRESSION,
-                    UnsupportedConstructKind::Attribute => SYNTAX_UNSUPPORTED_ATTRIBUTE,
-                    UnsupportedConstructKind::Visibility => SYNTAX_UNSUPPORTED_VISIBILITY,
-                    UnsupportedConstructKind::UseTree => SYNTAX_UNSUPPORTED_USE_TREE,
-                    UnsupportedConstructKind::Token => SYNTAX_UNSUPPORTED_TOKEN,
-                })
-            }
         }
     }
 

@@ -1,15 +1,9 @@
 mod foreign;
 
+use cop_i18n::{t, RenderError};
 use std::ops::Range;
 
 use self::foreign::ForeignItemParser;
-
-use cop_model::{
-    LocalizedMessage, MessageId, SYNTAX_EXTERN_CRATE_MISSING_SEMICOLON,
-    SYNTAX_FUNCTION_BODY_UNCLOSED, SYNTAX_FUNCTION_EXPECT_NAME, SYNTAX_FUNCTION_MISSING_PARAMETERS,
-    SYNTAX_FUNCTION_PARAMETERS_UNCLOSED, SYNTAX_ITEM_UNSUPPORTED, SYNTAX_ORPHANED_OUTER_ATTRIBUTE,
-    SYNTAX_USE_MISSING_SEMICOLON,
-};
 
 use crate::{
     ast::{
@@ -56,7 +50,7 @@ impl ItemSyntaxParser {
                 &mut context,
                 ParseIssueKind::UnexpectedToken,
                 bounds,
-                SYNTAX_USE_MISSING_SEMICOLON,
+                t!("syntax.use_missing_semicolon"),
             );
             Self::recover_item(&mut context);
             return None;
@@ -90,7 +84,7 @@ impl ItemSyntaxParser {
                 &mut context,
                 ParseIssueKind::UnexpectedToken,
                 bounds,
-                SYNTAX_EXTERN_CRATE_MISSING_SEMICOLON,
+                t!("syntax.extern_crate_missing_semicolon"),
             );
             Self::recover_item(&mut context);
         }
@@ -130,7 +124,7 @@ impl ItemSyntaxParser {
             Self::push_current_issue(
                 &mut context,
                 ParseIssueKind::UnexpectedToken,
-                SYNTAX_FUNCTION_EXPECT_NAME,
+                t!("syntax.function_expect_name"),
             );
             ParameterParser::recover_unnamed_function(context.tokens, context.cursor);
             return None;
@@ -143,7 +137,7 @@ impl ItemSyntaxParser {
                 &mut context,
                 ParseIssueKind::UnexpectedToken,
                 bounds,
-                SYNTAX_FUNCTION_MISSING_PARAMETERS,
+                t!("syntax.function_missing_parameters"),
             );
             Self::recover_item(&mut context);
             return None;
@@ -155,7 +149,7 @@ impl ItemSyntaxParser {
                 &mut context,
                 ParseIssueKind::UnclosedDelimiter,
                 bounds,
-                SYNTAX_FUNCTION_PARAMETERS_UNCLOSED,
+                t!("syntax.function_parameters_unclosed"),
             );
             return None;
         };
@@ -265,7 +259,7 @@ impl ItemSyntaxParser {
                     &mut context,
                     ParseIssueKind::UnclosedDelimiter,
                     bounds,
-                    SYNTAX_FUNCTION_BODY_UNCLOSED,
+                    t!("syntax.function_body_unclosed"),
                 );
             }
         } else {
@@ -322,7 +316,7 @@ impl ItemSyntaxParser {
         context.issues.push(AstFactory::unsupported_issue(
             UnsupportedConstructKind::Item,
             start..end,
-            LocalizedMessage::new(SYNTAX_ITEM_UNSUPPORTED),
+            t!("syntax.item_unsupported"),
         ));
         if start_index == *context.cursor {
             return None;
@@ -378,7 +372,7 @@ impl ItemSyntaxParser {
                 context,
                 ParseIssueKind::UnexpectedToken,
                 start..end,
-                SYNTAX_ORPHANED_OUTER_ATTRIBUTE,
+                t!("syntax.orphaned_outer_attribute"),
             );
         }
         let visibility = AstFactory::visibility(VisibilityKind::Private, start..start);
@@ -440,7 +434,7 @@ impl ItemSyntaxParser {
     fn push_current_issue(
         context: &mut ParserContext<'_, '_>,
         kind: ParseIssueKind,
-        message: MessageId,
+        message: Result<String, RenderError>,
     ) {
         let bounds = Self::current_start(context)..Self::current_end(context);
         Self::push_issue(context, kind, bounds, message);
@@ -450,13 +444,11 @@ impl ItemSyntaxParser {
         context: &mut ParserContext<'_, '_>,
         kind: ParseIssueKind,
         bounds: Range<usize>,
-        message: MessageId,
+        message: Result<String, RenderError>,
     ) {
-        context.issues.push(AstFactory::parse_issue(
-            kind,
-            bounds,
-            LocalizedMessage::new(message),
-        ));
+        context
+            .issues
+            .push(AstFactory::parse_issue(kind, bounds, message));
     }
 
     fn consume_identifier(context: &mut ParserContext<'_, '_>, expected: &str) -> bool {

@@ -336,9 +336,7 @@ impl SyntaxFactsCollector {
             && node
                 .parent()
                 .and_then(|id| output.node(id))
-                .map_or(true, |parent| {
-                    parent.kind() != SyntaxNodeKind::MacroDefinition
-                })
+                .is_none_or(|parent| parent.kind() != SyntaxNodeKind::MacroDefinition)
             && node_is_enabled(module, node)
         {
             self.has_non_declarative_opaque = true;
@@ -473,9 +471,7 @@ impl SyntaxFactsCollector {
             let enabled = module
                 .configured_ast()
                 .node_for_range(bounds.start, bounds.end)
-                .map_or(true, |configured| {
-                    configured.availability_decision() != CfgDecision::False
-                });
+                .is_none_or(|configured| configured.availability_decision() != CfgDecision::False);
             let supported =
                 module
                     .configured_ast()

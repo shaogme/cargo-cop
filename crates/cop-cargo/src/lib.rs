@@ -9,7 +9,7 @@ pub use cop_cfg::CfgValue;
 pub use dependency_index::{CargoDependency, DependencyIndex, DependencyKind};
 pub use feature_resolver::{FeatureSelection, ResolvedFeatures};
 pub use metadata::{
-    CargoDiscovery, CargoDiscoveryRequest, CargoError, CargoPackage, CargoProjectLoader,
-    CargoTarget,
+    CargoDiscovery, CargoDiscoveryRequest, CargoError, CargoFailure, CargoPackage,
+    CargoProjectLoader, CargoTarget,
 };
 pub use selection::{CargoProject, CargoSelection, SelectedPackage, TargetContext, TargetSelector};

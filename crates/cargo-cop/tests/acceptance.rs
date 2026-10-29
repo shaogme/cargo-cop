@@ -129,6 +129,85 @@ fn rule_diagnostics(output: &RunOutput, rule_id: &str) -> Vec<Value> {
         .collect()
 }
 
+fn diagnostic_message(diagnostic: &Value) -> &str {
+    diagnostic["message"].as_str().expect("已渲染诊断消息")
+}
+
+fn spacing_values(diagnostic: &Value) -> (i64, i64) {
+    let message = diagnostic_message(diagnostic);
+    if let Some((_, values)) = message.split_once("require ") {
+        let (expected, actual) = values
+            .split_once(" blank lines; found ")
+            .expect("英文间距消息");
+        return (
+            expected.parse().expect("预期空行数"),
+            actual
+                .split_whitespace()
+                .next()
+                .expect("实际空行数")
+                .parse()
+                .expect("实际空行数"),
+        );
+    }
+    let (_, values) = message.split_once("应有 ").expect("中文间距消息");
+    let (expected, actual) = values.split_once(" 个空行，当前有 ").expect("中文间距参数");
+    (
+        expected.parse().expect("预期空行数"),
+        actual
+            .split_whitespace()
+            .next()
+            .expect("实际空行数")
+            .parse()
+            .expect("实际空行数"),
+    )
+}
+
+fn reported_import_line(diagnostic: &Value) -> usize {
+    let message = diagnostic_message(diagnostic);
+    let value = if let Some((_, value)) = message.split_once("line ") {
+        value
+    } else {
+        message.split_once("第 ").expect("中文导入行号").1
+    };
+    let start = value
+        .find(|character: char| character.is_ascii_digit())
+        .expect("导入行号");
+    let digits = value[start..]
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect::<String>();
+    digits.parse().expect("导入行号")
+}
+
+fn has_diagnostic_message_fragment(output: &RunOutput, fragment: &str) -> bool {
+    from_str::<Value>(&output.stdout)
+        .ok()
+        .and_then(|report| report.get("diagnostics").and_then(Value::as_array).cloned())
+        .is_some_and(|diagnostics| {
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic_message(diagnostic).contains(fragment))
+        })
+}
+
+fn diagnostic_name(diagnostic: &Value) -> &str {
+    let message = diagnostic_message(diagnostic);
+    let (prefix, suffix) = if message.starts_with("The crate-visible declaration ") {
+        ("The crate-visible declaration ", " can be private")
+    } else {
+        ("crate 可见声明 ", " 可以改为私有")
+    };
+    message
+        .strip_prefix(prefix)
+        .and_then(|value| value.strip_suffix(suffix))
+        .expect("规则消息中包含声明名称")
+}
+
+fn message_contains_either(diagnostic: &Value, english: &str, chinese: &str) -> bool {
+    let message = diagnostic_message(diagnostic);
+    message.contains(english) || message.contains(chinese)
+}
+
 fn write_package(root: &Path, name: &str, source: &str) {
     fs::create_dir_all(root.join(name).join("src")).expect("创建 package 源码目录");
     fs::write(root.join(name).join("Cargo.toml"), package_manifest(name))
@@ -173,7 +252,8 @@ fn cfg_macro_values_are_target_scoped_and_do_not_change_availability() {
     )
     .expect("选择所有 targets");
     let package = project.packages().first().expect("选中的 package");
-    let snapshot = ProjectAnalyzer::analyze(AnalysisRequest::new(package));
+    let snapshot =
+        ProjectAnalyzer::analyze(AnalysisRequest::new(package)).expect("catalog messages render");
     let mut lib_flavor = Vec::new();
     let mut integration_flavor = Vec::new();
     let mut lib_test = Vec::new();
@@ -233,10 +313,7 @@ fn cfg_macro_unknown_reports_predicate_span_and_cli_values_resolve_it() {
 
     assert_eq!(unknown.status, 0, "{}", unknown.stdout);
     assert_eq!(unknown_report["status"], "partial");
-    assert_eq!(
-        unknown_diagnostic["arguments"]["condition"],
-        "custom_mode = \"fast\""
-    );
+    assert!(diagnostic_message(unknown_diagnostic).contains("custom_mode = \"fast\""));
     assert_eq!(unknown_diagnostic["start"]["column"], start + 1);
     assert_eq!(
         unknown_diagnostic["end"]["column"],
@@ -269,7 +346,11 @@ fn cfg_candidate_shadowed_by_macro_rules_stays_opaque() {
         .any(|diagnostic| diagnostic["analysis_issue"] == "unknown_cfg"));
     assert!(diagnostics.iter().any(|diagnostic| {
         diagnostic["analysis_issue"] == "parser_coverage"
-            && diagnostic["message_id"] == "cfg-macro-identity-unknown"
+            && message_contains_either(
+                diagnostic,
+                "Could not confirm this cfg! call",
+                "无法确认此 cfg! 调用",
+            )
     }));
 }
 
@@ -292,7 +373,11 @@ fn cfg_candidate_with_macro_use_import_stays_opaque() {
         .any(|diagnostic| diagnostic["analysis_issue"] == "unknown_cfg"));
     assert!(diagnostics.iter().any(|diagnostic| {
         diagnostic["analysis_issue"] == "parser_coverage"
-            && diagnostic["message_id"] == "cfg-macro-identity-unknown"
+            && message_contains_either(
+                diagnostic,
+                "Could not confirm this cfg! call",
+                "无法确认此 cfg! 调用",
+            )
     }));
 }
 
@@ -323,7 +408,11 @@ fn cfg_candidate_with_macro_use_module_stays_opaque() {
         .any(|diagnostic| diagnostic["analysis_issue"] == "unknown_cfg"));
     assert!(diagnostics.iter().any(|diagnostic| {
         diagnostic["analysis_issue"] == "parser_coverage"
-            && diagnostic["message_id"] == "cfg-macro-identity-unknown"
+            && message_contains_either(
+                diagnostic,
+                "Could not confirm this cfg! call",
+                "无法确认此 cfg! 调用",
+            )
     }));
 }
 
@@ -342,7 +431,11 @@ fn malformed_builtin_cfg_predicate_reports_the_failing_source_position() {
         .iter()
         .find(|diagnostic| {
             diagnostic["analysis_issue"] == "parser_coverage"
-                && diagnostic["message_id"] == "malformed-cfg-expression"
+                && message_contains_either(
+                    diagnostic,
+                    "Could not parse the cfg! predicate",
+                    "无法解析此处的 cfg! predicate",
+                )
         })
         .expect("malformed cfg predicate 诊断");
     let failing_token = source.find("windows").expect("错误参数位置");
@@ -388,7 +481,7 @@ fn scans_direct_binary_and_cargo_subcommand_with_identical_output() {
     assert_eq!(direct.status, 0, "{}", direct.stderr);
     assert_eq!(cargo.status, 0, "{}", cargo.stderr);
     assert_eq!(direct.stdout, cargo.stdout);
-    assert!(direct.stdout.contains("\"schema_version\":3"));
+    assert!(direct.stdout.contains("\"schema_version\":4"));
     assert!(direct.stdout.contains("\"status\":\"complete\""));
 }
 
@@ -586,22 +679,12 @@ fn uses_one_resolved_locale_for_help_and_json_messages() {
     assert_eq!(chinese["locale"], "zh-CN");
     assert_eq!(english["status"], chinese["status"]);
     assert_eq!(english["summary"], chinese["summary"]);
-    assert_eq!(english_diagnostic["message_id"], "item-spacing");
-    assert_eq!(
-        english_diagnostic["message_id"],
-        chinese_diagnostic["message_id"]
-    );
-    assert_eq!(
-        english_diagnostic["arguments"],
-        chinese_diagnostic["arguments"]
-    );
+    assert_eq!(english_diagnostic["rule_id"], "item_spacing");
+    assert_eq!(english_diagnostic["rule_id"], chinese_diagnostic["rule_id"]);
     assert_ne!(english_diagnostic["message"], chinese_diagnostic["message"]);
     assert_eq!(invalid_arguments.status, 2);
     assert_eq!(argument_error["locale"], "en-US");
-    assert_eq!(
-        argument_error["diagnostics"][0]["message_id"],
-        "cli-parse-error"
-    );
+    assert_eq!(argument_error["diagnostics"][0]["tool_error"], "arguments");
 }
 
 #[test]
@@ -804,7 +887,8 @@ fn keeps_false_and_unknown_configured_nodes_queryable_by_ast_id() {
     )
     .expect("选择 package 与 target");
     let package = project.packages().first().expect("选中的 package");
-    let snapshot = ProjectAnalyzer::analyze(AnalysisRequest::new(package));
+    let snapshot =
+        ProjectAnalyzer::analyze(AnalysisRequest::new(package)).expect("catalog messages render");
     let module = snapshot
         .modules()
         .iter()
@@ -910,7 +994,8 @@ fn preserves_cfg_decisions_across_configured_ast_node_kinds() {
     )
     .expect("选择 package 与 target");
     let package = project.packages().first().expect("选中的 package");
-    let snapshot = ProjectAnalyzer::analyze(AnalysisRequest::new(package));
+    let snapshot =
+        ProjectAnalyzer::analyze(AnalysisRequest::new(package)).expect("catalog messages render");
     let module = snapshot
         .modules()
         .iter()
@@ -1091,7 +1176,14 @@ fn locates_malformed_stacked_cfg_at_the_attribute_that_failed() {
         .as_array()
         .expect("诊断数组")
         .iter()
-        .find(|diagnostic| diagnostic["message_id"] == "malformed-cfg-attribute")
+        .find(|diagnostic| {
+            diagnostic["analysis_issue"] == "parser_coverage"
+                && message_contains_either(
+                    diagnostic,
+                    "Could not reliably interpret a cfg/path attribute",
+                    "cfg/path 属性无法可靠解释",
+                )
+        })
         .expect("malformed 属性诊断");
 
     assert_eq!(malformed["start"]["line"], 2, "{}", output.stdout);
@@ -1113,7 +1205,14 @@ fn locates_trailing_cfg_attribute_tokens_at_the_unexpected_range() {
         .as_array()
         .expect("诊断数组")
         .iter()
-        .find(|diagnostic| diagnostic["message_id"] == "malformed-cfg-attribute")
+        .find(|diagnostic| {
+            diagnostic["analysis_issue"] == "parser_coverage"
+                && message_contains_either(
+                    diagnostic,
+                    "Could not reliably interpret a cfg/path attribute",
+                    "cfg/path 属性无法可靠解释",
+                )
+        })
         .expect("malformed 属性诊断");
 
     assert_eq!(malformed["start"]["line"], 1, "{}", output.stdout);
@@ -1136,7 +1235,14 @@ fn rejects_value_arguments_in_cfg_metadata_positions() {
         .as_array()
         .expect("诊断数组")
         .iter()
-        .filter(|diagnostic| diagnostic["message_id"] == "malformed-cfg-attribute")
+        .filter(|diagnostic| {
+            diagnostic["analysis_issue"] == "parser_coverage"
+                && message_contains_either(
+                    diagnostic,
+                    "Could not reliably interpret a cfg/path attribute",
+                    "cfg/path 属性无法可靠解释",
+                )
+        })
         .map(|diagnostic| diagnostic["start"]["line"].as_u64().expect("诊断行号"))
         .collect::<Vec<_>>();
 
@@ -1290,7 +1396,8 @@ fn resolves_aliases_from_grouped_block_use_leaves() {
     )
     .expect("选择 package 与 target");
     let package = project.packages().first().expect("选中的 package");
-    let snapshot = ProjectAnalyzer::analyze(AnalysisRequest::new(package));
+    let snapshot =
+        ProjectAnalyzer::analyze(AnalysisRequest::new(package)).expect("catalog messages render");
     let module = snapshot
         .modules()
         .iter()
@@ -1331,7 +1438,8 @@ fn keeps_module_analysis_and_diagnostics_on_the_same_unknown_cfg_condition() {
     )
     .expect("选择 package 与 target");
     let package = project.packages().first().expect("选中的 package");
-    let snapshot = ProjectAnalyzer::analyze(AnalysisRequest::new(package));
+    let snapshot =
+        ProjectAnalyzer::analyze(AnalysisRequest::new(package)).expect("catalog messages render");
     let root = snapshot
         .modules()
         .iter()
@@ -1819,8 +1927,8 @@ fn rejects_parent_traversal_in_external_module_path_attributes() {
     assert_eq!(chinese_report["locale"], "zh-CN");
     assert_eq!(chinese_diagnostics.len(), 9);
     assert_eq!(
-        chinese_diagnostics[0]["message_id"],
-        "no-parent-path-attribute"
+        chinese_diagnostics[0]["rule_id"],
+        "no_parent_path_attribute"
     );
     assert!(chinese_diagnostics[0]["message"]
         .as_str()
@@ -1876,9 +1984,7 @@ fn reports_invalid_radix_literals_as_incomplete_scans() {
         .stdout
         .contains("\"analysis_issue\":\"parser_coverage\""));
     assert!(
-        invalid
-            .stdout
-            .contains("词法分析遇到无效或无法识别的 token"),
+        has_diagnostic_message_fragment(&invalid, "基数前缀后需要至少一个数字"),
         "{}",
         invalid.stdout
     );
@@ -2478,10 +2584,10 @@ fn counts_only_active_code_lines_at_module_thresholds() {
             .count(),
         2
     );
-    assert!(output.stdout.contains("\"actual\":69"));
-    assert!(output.stdout.contains("\"actual\":801"));
-    assert!(!output.stdout.contains("\"actual\":70"));
-    assert!(!output.stdout.contains("\"actual\":800"));
+    assert!(has_diagnostic_message_fragment(&output, "69"));
+    assert!(has_diagnostic_message_fragment(&output, "801"));
+    assert!(!has_diagnostic_message_fragment(&output, "is 70;"));
+    assert!(!has_diagnostic_message_fragment(&output, "is 800;"));
 }
 
 #[test]
@@ -2644,11 +2750,8 @@ fn merges_module_import_leaf_pairs_with_the_longest_common_prefix() {
 
     assert_eq!(diagnostics.len(), 1, "{}", output.stdout);
     assert_eq!(diagnostics[0]["start"]["line"], 2);
-    assert_eq!(diagnostics[0]["arguments"]["line"], 1);
-    assert_eq!(
-        diagnostics[0]["arguments"]["prefix"],
-        "crate::model::nested"
-    );
+    assert_eq!(reported_import_line(&diagnostics[0]), 1);
+    assert!(diagnostic_message(&diagnostics[0]).contains("crate::model::nested"));
 }
 
 #[test]
@@ -2665,8 +2768,8 @@ fn merges_module_multi_leaf_imports_with_single_leaf_imports() {
 
     assert_eq!(diagnostics.len(), 1, "{}", output.stdout);
     assert_eq!(diagnostics[0]["start"]["line"], 2);
-    assert_eq!(diagnostics[0]["arguments"]["line"], 1);
-    assert_eq!(diagnostics[0]["arguments"]["prefix"], "crate::model");
+    assert_eq!(reported_import_line(&diagnostics[0]), 1);
+    assert!(diagnostic_message(&diagnostics[0]).contains("crate::model"));
 }
 
 #[test]
@@ -2683,8 +2786,8 @@ fn compares_only_ordinary_leaf_pairs_in_module_imports() {
 
     assert_eq!(diagnostics.len(), 1, "{}", output.stdout);
     assert_eq!(diagnostics[0]["start"]["line"], 4);
-    assert_eq!(diagnostics[0]["arguments"]["line"], 3);
-    assert_eq!(diagnostics[0]["arguments"]["prefix"], "crate::model");
+    assert_eq!(reported_import_line(&diagnostics[0]), 3);
+    assert!(diagnostic_message(&diagnostics[0]).contains("crate::model"));
 }
 
 #[test]
@@ -2701,8 +2804,8 @@ fn merges_nonadjacent_module_imports_with_a_different_root_between() {
 
     assert_eq!(diagnostics.len(), 1, "{}", output.stdout);
     assert_eq!(diagnostics[0]["start"]["line"], 5);
-    assert_eq!(diagnostics[0]["arguments"]["line"], 1);
-    assert_eq!(diagnostics[0]["arguments"]["prefix"], "crate::parser");
+    assert_eq!(reported_import_line(&diagnostics[0]), 1);
+    assert!(diagnostic_message(&diagnostics[0]).contains("crate::parser"));
 }
 
 #[test]
@@ -2719,10 +2822,10 @@ fn reports_each_nonadjacent_import_once_using_the_nearest_compatible_import() {
 
     assert_eq!(diagnostics.len(), 2, "{}", output.stdout);
     assert_eq!(diagnostics[0]["start"]["line"], 3);
-    assert_eq!(diagnostics[0]["arguments"]["line"], 1);
+    assert_eq!(reported_import_line(&diagnostics[0]), 1);
     assert_eq!(diagnostics[1]["start"]["line"], 6);
-    assert_eq!(diagnostics[1]["arguments"]["line"], 3);
-    assert_eq!(diagnostics[1]["arguments"]["prefix"], "crate::model");
+    assert_eq!(reported_import_line(&diagnostics[1]), 3);
+    assert!(diagnostic_message(&diagnostics[1]).contains("crate::model"));
 }
 
 #[test]
@@ -2793,8 +2896,8 @@ fn merges_block_multi_leaf_imports_and_keeps_source_order_for_equal_prefixes() {
 
     assert_eq!(diagnostics.len(), 1, "{}", output.stdout);
     assert_eq!(diagnostics[0]["start"]["line"], 3);
-    assert_eq!(diagnostics[0]["arguments"]["line"], 2);
-    assert_eq!(diagnostics[0]["arguments"]["prefix"], "crate::alpha::left");
+    assert_eq!(reported_import_line(&diagnostics[0]), 2);
+    assert!(diagnostic_message(&diagnostics[0]).contains("crate::alpha::left"));
 }
 
 #[test]
@@ -2811,8 +2914,8 @@ fn merges_block_multi_leaf_imports_with_single_leaf_imports() {
 
     assert_eq!(diagnostics.len(), 1, "{}", output.stdout);
     assert_eq!(diagnostics[0]["start"]["line"], 3);
-    assert_eq!(diagnostics[0]["arguments"]["line"], 2);
-    assert_eq!(diagnostics[0]["arguments"]["prefix"], "crate::model");
+    assert_eq!(reported_import_line(&diagnostics[0]), 2);
+    assert!(diagnostic_message(&diagnostics[0]).contains("crate::model"));
 }
 
 #[test]
@@ -2829,8 +2932,8 @@ fn preserves_single_leaf_block_import_diagnostic_parameters() {
 
     assert_eq!(diagnostics.len(), 1, "{}", output.stdout);
     assert_eq!(diagnostics[0]["start"]["line"], 3);
-    assert_eq!(diagnostics[0]["arguments"]["line"], 2);
-    assert_eq!(diagnostics[0]["arguments"]["prefix"], "crate::model");
+    assert_eq!(reported_import_line(&diagnostics[0]), 2);
+    assert!(diagnostic_message(&diagnostics[0]).contains("crate::model"));
 }
 
 #[test]
@@ -3204,8 +3307,8 @@ fn normalizes_stacked_cfg_conditions_before_import_grouping() {
     );
     let diagnostics = rule_diagnostics(&output, "merge_common_prefix_imports");
     assert_eq!(diagnostics[0]["start"]["line"], 8);
-    assert_eq!(diagnostics[0]["arguments"]["line"], 1);
-    assert_eq!(diagnostics[0]["arguments"]["prefix"], "crate::module");
+    assert_eq!(reported_import_line(&diagnostics[0]), 1);
+    assert!(diagnostic_message(&diagnostics[0]).contains("crate::module"));
     assert!(!output.has_rule("cfg_use_group_spacing"));
 }
 
@@ -3322,10 +3425,10 @@ fn reports_expected_and_actual_spacing_for_repeated_special_definitions() {
     assert_eq!(diagnostics.len(), 6, "{}", output.stdout);
     assert!(diagnostics
         .iter()
-        .all(|diagnostic| diagnostic["arguments"]["expected"].as_i64() == Some(0)));
+        .all(|diagnostic| spacing_values(diagnostic).0 == 0));
     let actual_lines = diagnostics
         .iter()
-        .map(|diagnostic| diagnostic["arguments"]["actual"].as_i64())
+        .map(|diagnostic| Some(spacing_values(diagnostic).1))
         .collect::<Vec<_>>();
     assert_eq!(
         actual_lines,
@@ -3349,10 +3452,10 @@ fn requires_one_line_between_different_and_regular_definition_kinds() {
     assert_eq!(diagnostics.len(), 5, "{}", output.stdout);
     assert!(diagnostics
         .iter()
-        .all(|diagnostic| diagnostic["arguments"]["expected"].as_i64() == Some(1)));
+        .all(|diagnostic| spacing_values(diagnostic).0 == 1));
     let actual_lines = diagnostics
         .iter()
-        .map(|diagnostic| diagnostic["arguments"]["actual"].as_i64())
+        .map(|diagnostic| Some(spacing_values(diagnostic).1))
         .collect::<Vec<_>>();
     assert_eq!(actual_lines, [Some(0), Some(2), Some(0), Some(0), Some(0)]);
 }
@@ -3385,13 +3488,14 @@ fn ignores_item_spacing_pairs_separated_by_cfg_disabled_items() {
         .iter()
         .find(|diagnostic| diagnostic["start"]["line"] == 151);
     assert!(diagnostic.is_none(), "{}", output.stdout);
-    assert!(
-        !output
-            .stdout
-            .contains("\"message_id\":\"syntax-parse-error-unexpected-eof\""),
-        "{}",
-        output.stdout
-    );
+    assert!(!has_diagnostic_message_fragment(
+        &output,
+        "The syntax construct was incomplete at end of input",
+    ));
+    assert!(!has_diagnostic_message_fragment(
+        &output,
+        "语法结构在输入结束前未完成",
+    ));
 }
 
 #[test]
@@ -3433,8 +3537,7 @@ fn requires_one_line_between_impl_blocks_and_every_checked_definition_kind() {
     assert_eq!(output.status, 1, "{}", output.stdout);
     assert_eq!(diagnostics.len(), 18, "{}", output.stdout);
     assert!(diagnostics.iter().all(|diagnostic| {
-        diagnostic["arguments"]["expected"].as_i64() == Some(1)
-            && diagnostic["arguments"]["actual"].as_i64() == Some(0)
+        spacing_values(diagnostic).0 == 1 && Some(spacing_values(diagnostic).1) == Some(0)
     }));
 }
 
@@ -3456,8 +3559,8 @@ fn checks_item_spacing_independently_in_modules_traits_and_impls() {
         .iter()
         .map(|diagnostic| {
             (
-                diagnostic["arguments"]["expected"].as_i64(),
-                diagnostic["arguments"]["actual"].as_i64(),
+                Some(spacing_values(diagnostic).0),
+                Some(spacing_values(diagnostic).1),
             )
         })
         .collect::<Vec<_>>();
@@ -3485,8 +3588,8 @@ fn counts_comment_lines_and_keeps_attributes_with_their_definitions() {
         .iter()
         .map(|diagnostic| {
             (
-                diagnostic["arguments"]["expected"].as_i64(),
-                diagnostic["arguments"]["actual"].as_i64(),
+                Some(spacing_values(diagnostic).0),
+                Some(spacing_values(diagnostic).1),
             )
         })
         .collect::<Vec<_>>();
@@ -3815,9 +3918,7 @@ fn reports_missing_item_names_as_incomplete_syntax() {
     assert!(output
         .stdout
         .contains("\"analysis_issue\":\"parser_coverage\""));
-    assert!(output
-        .stdout
-        .contains("syntax-parse-error-unexpected-token"));
+    assert!(has_diagnostic_message_fragment(&output, "需要名称"));
 }
 
 #[test]
@@ -3871,14 +3972,7 @@ fn reports_only_unnecessary_pub_crate_declarations() {
 
     let output = fixture.run(&["--format", "json"]);
     let diagnostics = rule_diagnostics(&output, "unnecessary_pub_crate");
-    let names = diagnostics
-        .iter()
-        .map(|diagnostic| {
-            diagnostic["arguments"]["name"]
-                .as_str()
-                .expect("诊断声明名称")
-        })
-        .collect::<Vec<_>>();
+    let names = diagnostics.iter().map(diagnostic_name).collect::<Vec<_>>();
 
     assert_eq!(
         names,
@@ -3927,7 +4021,7 @@ fn keeps_candidate_visible_through_used_api_despite_unrelated_self() {
     let diagnostics = rule_diagnostics(&output, "unnecessary_pub_crate");
     let reported_candidates = diagnostics
         .iter()
-        .filter(|diagnostic| diagnostic["arguments"]["name"] == "Candidate")
+        .filter(|diagnostic| diagnostic_name(diagnostic) == "Candidate")
         .collect::<Vec<_>>();
 
     assert!(
@@ -3940,8 +4034,8 @@ fn keeps_candidate_visible_through_used_api_despite_unrelated_self() {
         .iter()
         .filter(|diagnostic| {
             matches!(
-                diagnostic["arguments"]["name"].as_str(),
-                Some("CandidateSelection" | "candidates")
+                diagnostic_name(diagnostic),
+                "CandidateSelection" | "candidates"
             )
         })
         .collect::<Vec<_>>();
@@ -3992,14 +4086,7 @@ mod implementation_only {
 
     let output = fixture.run(&["--format", "json"]);
     let diagnostics = rule_diagnostics(&output, "unnecessary_pub_crate");
-    let mut names = diagnostics
-        .iter()
-        .map(|diagnostic| {
-            diagnostic["arguments"]["name"]
-                .as_str()
-                .expect("诊断声明名称")
-        })
-        .collect::<Vec<_>>();
+    let mut names = diagnostics.iter().map(diagnostic_name).collect::<Vec<_>>();
     names.sort_unstable();
 
     assert_eq!(names, ["Helper", "call"], "{}", output.stdout);
@@ -4030,7 +4117,7 @@ fn reports_pub_crate_constant_despite_cfg_test_macro_coverage() {
     assert!(
         diagnostics
             .iter()
-            .any(|diagnostic| { diagnostic["arguments"]["name"] == "MAX_PROCESS_POINTERS" }),
+            .any(|diagnostic| { diagnostic_name(diagnostic) == "MAX_PROCESS_POINTERS" }),
         "{}\n{}",
         output.stdout,
         output.stderr
@@ -4079,10 +4166,7 @@ fn accounts_for_cfg_and_unknown_conditions_when_checking_pub_crate() {
 
     let output = fixture.run(&["--format", "json", "--features", "enabled"]);
     let diagnostics = rule_diagnostics(&output, "unnecessary_pub_crate");
-    let names = diagnostics
-        .iter()
-        .map(|diagnostic| diagnostic["arguments"]["name"].as_str().expect("声明名称"))
-        .collect::<Vec<_>>();
+    let names = diagnostics.iter().map(diagnostic_name).collect::<Vec<_>>();
 
     assert_eq!(names, ["inactive_outside_use"], "{}", output.stdout);
 }
@@ -4098,14 +4182,7 @@ fn does_not_propagate_api_dependencies_across_incompatible_cfgs() {
 
     let output = fixture.run(&["--format", "json"]);
     let diagnostics = rule_diagnostics(&output, "unnecessary_pub_crate");
-    let names = diagnostics
-        .iter()
-        .map(|diagnostic| {
-            diagnostic["arguments"]["name"]
-                .as_str()
-                .expect("诊断声明名称")
-        })
-        .collect::<Vec<_>>();
+    let names = diagnostics.iter().map(diagnostic_name).collect::<Vec<_>>();
 
     assert_eq!(names, ["Hidden"], "{}\n{}", output.stdout, output.stderr);
     assert!(output.stdout.contains("\"status\":\"partial\""));
@@ -4158,14 +4235,7 @@ fn respects_restricted_field_visibility_when_propagating_pub_crate() {
 
     let output = fixture.run(&["--format", "json"]);
     let diagnostics = rule_diagnostics(&output, "unnecessary_pub_crate");
-    let names = diagnostics
-        .iter()
-        .map(|diagnostic| {
-            diagnostic["arguments"]["name"]
-                .as_str()
-                .expect("诊断声明名称")
-        })
-        .collect::<Vec<_>>();
+    let names = diagnostics.iter().map(diagnostic_name).collect::<Vec<_>>();
 
     assert_eq!(
         names,
@@ -4291,14 +4361,7 @@ fn propagates_pub_crate_dependency_chains_and_ignores_unretained_apis() {
 
     let output = fixture.run(&["--format", "json"]);
     let diagnostics = rule_diagnostics(&output, "unnecessary_pub_crate");
-    let names = diagnostics
-        .iter()
-        .map(|diagnostic| {
-            diagnostic["arguments"]["name"]
-                .as_str()
-                .expect("诊断声明名称")
-        })
-        .collect::<Vec<_>>();
+    let names = diagnostics.iter().map(diagnostic_name).collect::<Vec<_>>();
 
     assert_eq!(
         names,
@@ -4329,14 +4392,7 @@ fn tracks_api_dependencies_by_definition_identity_with_raw_identifiers() {
 
     let output = fixture.run(&["--format", "json"]);
     let diagnostics = rule_diagnostics(&output, "unnecessary_pub_crate");
-    let names = diagnostics
-        .iter()
-        .map(|diagnostic| {
-            diagnostic["arguments"]["name"]
-                .as_str()
-                .expect("诊断声明名称")
-        })
-        .collect::<Vec<_>>();
+    let names = diagnostics.iter().map(diagnostic_name).collect::<Vec<_>>();
 
     assert_eq!(names, ["Shared"], "{}\n{}", output.stdout, output.stderr);
     let diagnostic = &diagnostics[0];

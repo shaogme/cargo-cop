@@ -19,7 +19,7 @@
 
 ## 环境要求
 
-- Rust 和 Cargo 1.75 或更高版本（workspace 的最低支持版本为 Rust 1.75）。
+- Rust 和 Cargo 1.85 或更高版本（workspace 的最低支持版本为 Rust 1.85）。
 - `cargo` 和 `rustc` 可从 `PATH` 调用。
 
 运行时工具会查询 Cargo 元数据和 Rust target 的 `cfg` 信息，但不会构建被检查的 package 或其依赖。
@@ -56,7 +56,7 @@ steps:
   - uses: actions/checkout@main
   - uses: shaogme/cargo-cop@main
     with:
-      version: 0.2.2
+      version: 0.2.3
   - run: cargo cop --workspace
 ```
 
@@ -67,7 +67,7 @@ steps:
   - uses: actions/checkout@main
   - uses: shaogme/cargo-cop@main
     with:
-      version: 0.2.2
+      version: 0.2.3
       from-source: true
   - run: cargo cop --workspace
 ```
@@ -181,7 +181,7 @@ fn run() {}
 
 ## 报告与退出码
 
-人类可读输出每条诊断占一行，最后附带汇总信息。JSON 输出使用 schema 版本 `3`，包含 locale、扫描状态、汇总计数和诊断数组。每条诊断在适用时包含诊断类型、级别、规则或问题代码、package、target、源码路径和范围、本地化消息，以及 namespace 或 `cfg` 条件。
+人类可读输出每条诊断占一行，最后附带汇总信息。JSON 输出使用 schema 版本 `4`，包含 locale、扫描状态、汇总计数和诊断数组。每条诊断在适用时包含诊断类型、级别、规则或问题代码、package、target、源码路径和范围、已渲染的本地化消息、独立 detail，以及 namespace 或 `cfg` 条件。
 
 | 退出码 | 含义 |
 | --- | --- |
@@ -212,7 +212,7 @@ Workspace 将命令行应用与分析流程分层：
 | `cop-syntax` | 自有 Rust 词法分析器、语法树、解析器和解析覆盖状态。 |
 | `cop-analysis` | `cfg` 求值、模块图发现、不可变定义/引用事实、路径解析、API 依赖和 impl 所有者索引、分析状态。 |
 | `cop-rules` | 20 条源码规范检查规则。 |
-| `cop-model` | 共享规则 ID、诊断、位置、消息和扫描状态类型。 |
+| `cop-model` | 共享规则 ID、诊断、源码位置和扫描状态类型。 |
 | `cop-report` | 诊断稳定排序、人类可读和 JSON 渲染。 |
 | `cop-i18n` | 英文和简体中文消息。 |
 
@@ -226,4 +226,4 @@ cargo clippy -- -D warnings
 cargo test
 ```
 
-Workspace 使用 Rust 2021 edition，最低支持 Rust 1.75。许可证条款见 [LICENSE-MIT](LICENSE-MIT) 和 [LICENSE-APACHE](LICENSE-APACHE)。
+cargo-cop workspace 使用 Rust 2021 edition，最低支持 Rust 1.85。诊断消息通过 u18n 在构建时从英文和简体中文目录编译生成。许可证条款见 [LICENSE-MIT](LICENSE-MIT) 和 [LICENSE-APACHE](LICENSE-APACHE)。

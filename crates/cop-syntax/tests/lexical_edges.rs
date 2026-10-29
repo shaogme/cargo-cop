@@ -6,7 +6,7 @@ use cop_syntax::{
 };
 
 fn parse(source: SourceFile) -> ParseOutput {
-    RustParser::parse(source, ParseOptions::default())
+    RustParser::parse(source, ParseOptions::default()).expect("catalog messages render")
 }
 
 #[test]
@@ -21,7 +21,7 @@ fn inspect<'a>(value: &'a str) {
 }
 "####,
     );
-    let lexed = RustLexer::lex(&source);
+    let lexed = RustLexer::lex(&source).expect("catalog messages render");
 
     assert!(lexed.issues().is_empty());
     assert!(matches!(

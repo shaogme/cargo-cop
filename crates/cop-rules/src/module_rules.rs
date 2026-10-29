@@ -1,3 +1,4 @@
+use cop_i18n::{t, PluralCount, RenderError};
 use std::path::Path;
 
 use crate::support::{RuleDiagnosticAdapter, RuleReport, SyntaxSupport};
@@ -5,10 +6,7 @@ use cop_analysis::{
     AnalysisSnapshot, CfgCondition, ItemFact, ItemKindFact, ModuleNode, SymbolVisibility,
 };
 use cop_config::ResolvedConfig;
-use cop_model::{
-    Diagnostic, LocalizedMessage, RuleId, CHILD_MODULE_LINE_COUNT, CHILD_MODULE_VISIBILITY,
-    ITEM_SPACING, MODULE_FILE_LAYOUT, NO_PARENT_PATH_ATTRIBUTE, OUT_OF_LINE_MODULES_AT_SCOPE_START,
-};
+use cop_model::{Diagnostic, RuleId};
 
 pub(super) struct ModuleRuleSet;
 
@@ -17,7 +15,7 @@ fn check_item_spacing_items(
     module: &ModuleNode,
     diagnostics: &mut Vec<Diagnostic>,
     adapter: &RuleDiagnosticAdapter<'_>,
-) {
+) -> Result<(), RenderError> {
     for pair in items.windows(2) {
         let previous = &pair[0];
         let current = &pair[1];
@@ -44,14 +42,13 @@ fn check_item_spacing_items(
                 diagnostics,
                 RuleReport::new(
                     RuleId::ItemSpacing,
-                    LocalizedMessage::new(ITEM_SPACING)
-                        .with_number("expected", expected_lines as i64)
-                        .with_number("actual", actual_lines as i64),
+                    t!("rule.item_spacing", { expected: expected_lines as i64, actual: PluralCount::new((actual_lines as i64) as u64) })?,
                     Some(current_bounds),
                 ),
             );
         }
     }
+    Ok(())
 }
 
 fn has_parent_component(path: &str) -> bool {
@@ -76,13 +73,13 @@ fn check_parent_path_attributes(
     module: &ModuleNode,
     diagnostics: &mut Vec<Diagnostic>,
     adapter: &RuleDiagnosticAdapter<'_>,
-) {
+) -> Result<(), RenderError> {
     let Some(scope) = snapshot
         .facts()
         .syntax_for_module(module)
         .and_then(|syntax| syntax.root_scope())
     else {
-        return;
+        return Ok(());
     };
     for item in scope.items().iter().filter(|item| item.is_enabled()) {
         if !matches!(item.kind(), ItemKindFact::Module { inline: false }) {
@@ -100,7 +97,7 @@ fn check_parent_path_attributes(
                 diagnostics,
                 RuleReport::new(
                     RuleId::NoParentPathAttribute,
-                    LocalizedMessage::new(NO_PARENT_PATH_ATTRIBUTE),
+                    t!("rule.no_parent_path_attribute")?,
                     Some(path_attribute.bounds()),
                 )
                 .with_cfg_condition(merge_condition(
@@ -110,6 +107,7 @@ fn check_parent_path_attributes(
             );
         }
     }
+    Ok(())
 }
 
 impl ModuleRuleSet {
@@ -117,26 +115,27 @@ impl ModuleRuleSet {
         snapshot: &AnalysisSnapshot,
         configuration: &ResolvedConfig,
         diagnostics: &mut Vec<Diagnostic>,
-    ) {
+    ) -> Result<(), RenderError> {
         let adapter = RuleDiagnosticAdapter::new(configuration);
         for module in snapshot.modules() {
-            Self::no_parent_path_attribute(snapshot, module, diagnostics, &adapter);
+            Self::no_parent_path_attribute(snapshot, module, diagnostics, &adapter)?;
             if module.is_order_only() {
                 continue;
             }
-            Self::out_of_line_modules(snapshot, module, diagnostics, &adapter);
-            Self::module_layout(module, diagnostics, &adapter);
-            Self::child_module_visibility(snapshot, module, diagnostics, &adapter);
-            Self::item_spacing(snapshot, module, diagnostics, &adapter);
-            Self::module_line_count(snapshot, module, diagnostics, &adapter);
+            Self::out_of_line_modules(snapshot, module, diagnostics, &adapter)?;
+            Self::module_layout(module, diagnostics, &adapter)?;
+            Self::child_module_visibility(snapshot, module, diagnostics, &adapter)?;
+            Self::item_spacing(snapshot, module, diagnostics, &adapter)?;
+            Self::module_line_count(snapshot, module, diagnostics, &adapter)?;
         }
+        Ok(())
     }
 
     fn module_layout(
         module: &ModuleNode,
         diagnostics: &mut Vec<Diagnostic>,
         adapter: &RuleDiagnosticAdapter<'_>,
-    ) {
+    ) -> Result<(), RenderError> {
         if module.is_crate_root()
             || module.is_inline()
             || !module
@@ -144,7 +143,7 @@ impl ModuleRuleSet {
                 .file_name()
                 .is_some_and(|name| name == "mod.rs")
         {
-            return;
+            return Ok(());
         }
         if let Some(span) = module.declared_at() {
             adapter.push(
@@ -152,11 +151,12 @@ impl ModuleRuleSet {
                 diagnostics,
                 RuleReport::at_span(
                     RuleId::ModuleFileLayout,
-                    LocalizedMessage::new(MODULE_FILE_LAYOUT),
+                    t!("rule.module_file_layout")?,
                     span.clone(),
                 ),
             );
         }
+        Ok(())
     }
 
     fn out_of_line_modules(
@@ -164,13 +164,13 @@ impl ModuleRuleSet {
         module: &ModuleNode,
         diagnostics: &mut Vec<Diagnostic>,
         adapter: &RuleDiagnosticAdapter<'_>,
-    ) {
+    ) -> Result<(), RenderError> {
         let Some(scope) = snapshot
             .facts()
             .syntax_for_module(module)
             .and_then(|syntax| syntax.root_scope())
         else {
-            return;
+            return Ok(());
         };
         let mut preceding_non_modules: Vec<Option<String>> = Vec::new();
         for item in scope.items().iter().filter(|item| item.is_enabled()) {
@@ -189,7 +189,7 @@ impl ModuleRuleSet {
                             diagnostics,
                             RuleReport::new(
                                 RuleId::OutOfLineModulesAtScopeStart,
-                                LocalizedMessage::new(OUT_OF_LINE_MODULES_AT_SCOPE_START),
+                                t!("rule.out_of_line_modules_at_scope_start")?,
                                 Some(item.bounds()),
                             ),
                         );
@@ -198,6 +198,7 @@ impl ModuleRuleSet {
                 _ => preceding_non_modules.push(condition),
             }
         }
+        Ok(())
     }
 
     fn no_parent_path_attribute(
@@ -205,8 +206,8 @@ impl ModuleRuleSet {
         module: &ModuleNode,
         diagnostics: &mut Vec<Diagnostic>,
         adapter: &RuleDiagnosticAdapter<'_>,
-    ) {
-        check_parent_path_attributes(snapshot, module, diagnostics, adapter);
+    ) -> Result<(), RenderError> {
+        check_parent_path_attributes(snapshot, module, diagnostics, adapter)
     }
 
     fn child_module_visibility(
@@ -214,13 +215,13 @@ impl ModuleRuleSet {
         module: &ModuleNode,
         diagnostics: &mut Vec<Diagnostic>,
         adapter: &RuleDiagnosticAdapter<'_>,
-    ) {
+    ) -> Result<(), RenderError> {
         let Some(scope) = snapshot
             .facts()
             .syntax_for_module(module)
             .and_then(|syntax| syntax.root_scope())
         else {
-            return;
+            return Ok(());
         };
         for item in scope.items().iter().filter(|item| item.is_enabled()) {
             let ItemKindFact::Module { inline } = item.kind() else {
@@ -266,11 +267,12 @@ impl ModuleRuleSet {
                 diagnostics,
                 RuleReport::new(
                     RuleId::ChildModuleVisibility,
-                    LocalizedMessage::new(CHILD_MODULE_VISIBILITY).with_text("module", name),
+                    t!("rule.child_module_visibility", { module: name })?,
                     Some(item.bounds()),
                 ),
             );
         }
+        Ok(())
     }
 
     fn item_spacing(
@@ -278,13 +280,14 @@ impl ModuleRuleSet {
         module: &ModuleNode,
         diagnostics: &mut Vec<Diagnostic>,
         adapter: &RuleDiagnosticAdapter<'_>,
-    ) {
+    ) -> Result<(), RenderError> {
         let Some(syntax) = snapshot.facts().syntax_for_module(module) else {
-            return;
+            return Ok(());
         };
         for scope in syntax.scopes() {
-            check_item_spacing_items(scope.items(), module, diagnostics, adapter);
+            check_item_spacing_items(scope.items(), module, diagnostics, adapter)?;
         }
+        Ok(())
     }
 
     fn module_line_count(
@@ -292,33 +295,32 @@ impl ModuleRuleSet {
         module: &ModuleNode,
         diagnostics: &mut Vec<Diagnostic>,
         adapter: &RuleDiagnosticAdapter<'_>,
-    ) {
+    ) -> Result<(), RenderError> {
         if module.is_crate_root() || module.is_inline() {
-            return;
+            return Ok(());
         }
         let line_count = snapshot
             .facts()
             .syntax_for_module(module)
             .map_or(0, |syntax| syntax.code_line_count());
         if (70..=800).contains(&line_count) {
-            return;
+            return Ok(());
         }
         let file_name = module
             .display_path()
             .file_name()
-            .unwrap_or_else(|| Path::new("").as_os_str());
+            .unwrap_or_else(|| Path::new("").as_os_str())
+            .to_string_lossy()
+            .into_owned();
         adapter.push(
             module,
             diagnostics,
             RuleReport::new(
                 RuleId::ChildModuleLineCount,
-                LocalizedMessage::new(CHILD_MODULE_LINE_COUNT)
-                    .with_text("file", file_name.to_string_lossy())
-                    .with_number("actual", line_count as i64)
-                    .with_number("minimum", 70)
-                    .with_number("maximum", 800),
+                t!("rule.child_module_line_count", { file: file_name.as_str(), actual: line_count as i64, minimum: 70, maximum: 800 })?,
                 Some(0..0),
             ),
         );
+        Ok(())
     }
 }

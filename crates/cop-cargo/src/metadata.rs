@@ -1,3 +1,4 @@
+use cop_i18n::{t, RenderError};
 use std::{
     collections::BTreeMap,
     env,
@@ -7,9 +8,7 @@ use std::{
     process::Command,
 };
 
-use cop_model::{
-    LocalizedMessage, ToolErrorKind, CARGO_ERROR, CARGO_MANIFEST_UNAVAILABLE, IO_ERROR,
-};
+use cop_model::ToolErrorKind;
 use serde::Deserialize;
 use serde_json::from_slice;
 
@@ -53,7 +52,14 @@ pub struct CargoDiscovery {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CargoError {
     kind: ToolErrorKind,
-    message: LocalizedMessage,
+    message: String,
+    detail: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CargoFailure {
+    Cargo(CargoError),
+    Render(RenderError),
 }
 
 pub struct CargoProjectLoader;
@@ -205,48 +211,110 @@ impl CargoTarget {
 }
 
 impl CargoError {
-    pub(crate) fn new(kind: ToolErrorKind, message: LocalizedMessage) -> Self {
-        Self { kind, message }
+    pub(crate) fn from_localized(kind: ToolErrorKind, message: String) -> CargoFailure {
+        CargoFailure::Cargo(Self {
+            kind,
+            message,
+            detail: None,
+        })
+    }
+
+    pub(crate) fn with_detail(mut self, detail: impl Into<String>) -> Self {
+        self.detail = Some(detail.into());
+        self
     }
 
     pub fn kind(&self) -> ToolErrorKind {
         self.kind
     }
 
-    pub fn message(&self) -> &LocalizedMessage {
+    pub fn message(&self) -> &str {
         &self.message
+    }
+
+    pub fn detail(&self) -> Option<&str> {
+        self.detail.as_deref()
     }
 }
 
 impl fmt::Display for CargoError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.message.id().as_str())
+        formatter.write_str(&self.message)?;
+        if let Some(detail) = &self.detail {
+            write!(formatter, ": {detail}")?;
+        }
+        Ok(())
     }
 }
 
 impl Error for CargoError {}
 
+impl fmt::Display for CargoFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Cargo(error) => error.fmt(formatter),
+            Self::Render(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl Error for CargoFailure {}
+
+impl CargoFailure {
+    pub(crate) fn from_message(kind: ToolErrorKind, message: Result<String, RenderError>) -> Self {
+        match message {
+            Ok(message) => CargoError::from_localized(kind, message),
+            Err(error) => Self::Render(error),
+        }
+    }
+
+    pub(crate) fn with_detail(self, detail: impl Into<String>) -> Self {
+        match self {
+            Self::Cargo(error) => Self::Cargo(error.with_detail(detail)),
+            Self::Render(error) => Self::Render(error),
+        }
+    }
+}
+
+impl From<CargoError> for CargoFailure {
+    fn from(error: CargoError) -> Self {
+        Self::Cargo(error)
+    }
+}
+
+impl From<RenderError> for CargoFailure {
+    fn from(error: RenderError) -> Self {
+        Self::Render(error)
+    }
+}
+
 impl CargoProjectLoader {
-    pub fn discover(request: CargoDiscoveryRequest) -> Result<CargoDiscovery, CargoError> {
-        let current_directory = env::current_dir().map_err(|error| {
-            CargoError::new(
-                ToolErrorKind::Io,
-                LocalizedMessage::new(IO_ERROR).with_opaque("detail", error.to_string()),
-            )
-        })?;
+    pub fn discover(request: CargoDiscoveryRequest) -> Result<CargoDiscovery, CargoFailure> {
+        let current_directory = match env::current_dir() {
+            Ok(directory) => directory,
+            Err(error) => {
+                return Err(
+                    CargoError::from_localized(ToolErrorKind::Io, t!("cli.io_error")?)
+                        .with_detail(error.to_string()),
+                );
+            }
+        };
         let requested_path = if request.manifest_path.is_absolute() {
             request.manifest_path
         } else {
             current_directory.join(request.manifest_path)
         };
-        let manifest_path = requested_path.canonicalize().map_err(|error| {
-            CargoError::new(
-                ToolErrorKind::Manifest,
-                LocalizedMessage::new(CARGO_MANIFEST_UNAVAILABLE)
-                    .with_text("path", requested_path.display().to_string())
-                    .with_opaque("detail", error.to_string()),
-            )
-        })?;
+        let manifest_path = match requested_path.canonicalize() {
+            Ok(path) => path,
+            Err(error) => {
+                let path = requested_path.display().to_string();
+                return Err(CargoError::from_localized(
+                    ToolErrorKind::Manifest,
+                    t!("cargo.manifest_unavailable", { path: path.as_str() })?,
+                )
+                .with_detail(error.to_string()));
+            }
+        };
 
         let output = Command::new("cargo")
             .arg("metadata")
@@ -256,26 +324,26 @@ impl CargoProjectLoader {
             .arg("--manifest-path")
             .arg(&manifest_path)
             .output()
-            .map_err(|error| {
-                CargoError::new(
-                    ToolErrorKind::CargoMetadata,
-                    LocalizedMessage::new(CARGO_ERROR).with_opaque("detail", error.to_string()),
-                )
+            .map_err(|error| match t!("cargo.error") {
+                Ok(message) => CargoError::from_localized(ToolErrorKind::CargoMetadata, message)
+                    .with_detail(error.to_string()),
+                Err(render_error) => CargoFailure::Render(render_error),
             })?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-            return Err(CargoError::new(
+            return Err(CargoError::from_localized(
                 ToolErrorKind::CargoMetadata,
-                LocalizedMessage::new(CARGO_ERROR).with_opaque("detail", stderr),
-            ));
+                t!("cargo.error")?,
+            )
+            .with_detail(stderr));
         }
 
-        let metadata = from_slice::<MetadataDto>(&output.stdout).map_err(|error| {
-            CargoError::new(
-                ToolErrorKind::CargoMetadata,
-                LocalizedMessage::new(CARGO_ERROR).with_opaque("detail", error.to_string()),
-            )
-        })?;
+        let metadata =
+            from_slice::<MetadataDto>(&output.stdout).map_err(|error| match t!("cargo.error") {
+                Ok(message) => CargoError::from_localized(ToolErrorKind::CargoMetadata, message)
+                    .with_detail(error.to_string()),
+                Err(render_error) => CargoFailure::Render(render_error),
+            })?;
         let mut packages = metadata
             .packages
             .into_iter()

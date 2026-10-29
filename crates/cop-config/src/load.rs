@@ -6,7 +6,8 @@ use std::{
 };
 
 use cop_cfg::ScopedCfgValue;
-use cop_model::{LocalizedMessage, RuleId, Severity, CONFIG_FILE_MISSING, CONFIG_FILE_READ_ERROR};
+use cop_i18n::{t, RenderError};
+use cop_model::{RuleId, Severity};
 
 use crate::schema::{ConfigDocument, ConfigDocumentParts, ScanDefaults};
 
@@ -30,7 +31,14 @@ pub struct LoadedConfig {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ConfigError {
     path: PathBuf,
-    message: LocalizedMessage,
+    message: String,
+    detail: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ConfigFailure {
+    Config(ConfigError),
+    Render(RenderError),
 }
 
 pub struct ConfigLoader;
@@ -76,34 +84,80 @@ impl LoadedConfig {
 }
 
 impl ConfigError {
-    pub(super) fn new(path: PathBuf, message: LocalizedMessage) -> Self {
-        Self { path, message }
+    pub(super) fn from_localized(path: PathBuf, message: String) -> ConfigFailure {
+        ConfigFailure::Config(Self {
+            path,
+            message,
+            detail: None,
+        })
+    }
+
+    pub(super) fn from_message(
+        path: PathBuf,
+        message: Result<String, RenderError>,
+    ) -> ConfigFailure {
+        match message {
+            Ok(message) => Self::from_localized(path, message),
+            Err(error) => ConfigFailure::Render(error),
+        }
     }
 
     pub fn path(&self) -> &Path {
         &self.path
     }
 
-    pub fn message(&self) -> &LocalizedMessage {
+    pub fn message(&self) -> &str {
         &self.message
+    }
+
+    pub fn detail(&self) -> Option<&str> {
+        self.detail.as_deref()
     }
 }
 
 impl fmt::Display for ConfigError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            formatter,
-            "{}: {}",
-            self.path.display(),
-            self.message.id().as_str()
-        )
+        write!(formatter, "{}: {}", self.path.display(), self.message)?;
+        if let Some(detail) = &self.detail {
+            write!(formatter, ": {detail}")?;
+        }
+        Ok(())
     }
 }
 
 impl Error for ConfigError {}
 
+impl fmt::Display for ConfigFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Config(error) => error.fmt(formatter),
+            Self::Render(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl Error for ConfigFailure {}
+
+impl ConfigFailure {
+    pub(super) fn with_detail(self, detail: impl Into<String>) -> Self {
+        match self {
+            Self::Config(mut error) => {
+                error.detail = Some(detail.into());
+                Self::Config(error)
+            }
+            Self::Render(error) => Self::Render(error),
+        }
+    }
+}
+
+impl From<RenderError> for ConfigFailure {
+    fn from(error: RenderError) -> Self {
+        Self::Render(error)
+    }
+}
+
 impl ConfigLoader {
-    pub fn read_locale(request: ConfigRequest) -> Result<Option<String>, ConfigError> {
+    pub fn read_locale(request: ConfigRequest) -> Result<Option<String>, ConfigFailure> {
         let explicit_path = request.explicit_path.map(|path| {
             if path.is_absolute() {
                 path
@@ -114,28 +168,27 @@ impl ConfigLoader {
         let path = explicit_path
             .clone()
             .unwrap_or_else(|| request.discovery_directory.join("cargo-cop.toml"));
+        let path_display = path.display().to_string();
         if !path.is_file() {
             if explicit_path.is_some() {
-                return Err(ConfigError::new(
+                return Err(ConfigError::from_localized(
                     path.clone(),
-                    LocalizedMessage::new(CONFIG_FILE_MISSING)
-                        .with_text("path", path.display().to_string()),
+                    t!("config.file_missing", { path: path_display.as_str() })?,
                 ));
             }
             return Ok(None);
         }
         let contents = fs::read_to_string(&path).map_err(|error| {
-            ConfigError::new(
+            ConfigError::from_message(
                 path.clone(),
-                LocalizedMessage::new(CONFIG_FILE_READ_ERROR)
-                    .with_text("path", path.display().to_string())
-                    .with_opaque("detail", error.to_string()),
+                t!("config.file_read_error", { path: path_display.as_str() }),
             )
+            .with_detail(error.to_string())
         })?;
         ConfigDocument::read_locale(&path, &contents)
     }
 
-    pub fn load(request: ConfigRequest) -> Result<LoadedConfig, ConfigError> {
+    pub fn load(request: ConfigRequest) -> Result<LoadedConfig, ConfigFailure> {
         let explicit_path = request.explicit_path.map(|path| {
             if path.is_absolute() {
                 path
@@ -146,12 +199,12 @@ impl ConfigLoader {
         let path = explicit_path
             .clone()
             .unwrap_or_else(|| request.discovery_directory.join("cargo-cop.toml"));
+        let path_display = path.display().to_string();
         let exists = path.is_file();
         if explicit_path.is_some() && !exists {
-            return Err(ConfigError::new(
+            return Err(ConfigError::from_localized(
                 path.clone(),
-                LocalizedMessage::new(CONFIG_FILE_MISSING)
-                    .with_text("path", path.display().to_string()),
+                t!("config.file_missing", { path: path_display.as_str() })?,
             ));
         }
         if !exists {
@@ -173,12 +226,11 @@ impl ConfigLoader {
         }
 
         let contents = fs::read_to_string(&path).map_err(|error| {
-            ConfigError::new(
+            ConfigError::from_message(
                 path.clone(),
-                LocalizedMessage::new(CONFIG_FILE_READ_ERROR)
-                    .with_text("path", path.display().to_string())
-                    .with_opaque("detail", error.to_string()),
+                t!("config.file_read_error", { path: path_display.as_str() }),
             )
+            .with_detail(error.to_string())
         })?;
         let document = ConfigDocument::parse(&path, &contents)?;
         let ConfigDocumentParts {

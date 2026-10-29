@@ -13,6 +13,8 @@ keywords = ["lint", "rust", "static-analysis"]
 categories.workspace = true
 
 [dependencies]
+cop-i18n.workspace = true
+u18n.workspace = true
 cop-config.workspace = true
 cop-analysis.workspace = true
 cop-syntax.workspace = true

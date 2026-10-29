@@ -8,10 +8,7 @@ mod syntax;
 
 use std::ops::Range;
 
-use cop_model::{
-    LocalizedMessage, SYNTAX_UNCLOSED_BLOCK_COMMENT, SYNTAX_UNCLOSED_LITERAL,
-    SYNTAX_UNCLOSED_RAW_STRING,
-};
+use cop_i18n::RenderError;
 
 use crate::{
     lexer::{LexIssue, LexOutput, Token, Trivia},
@@ -94,7 +91,7 @@ pub struct ParseIssue {
     end: usize,
     source_node_id: Option<AstNodeId>,
     boundary_unknown: bool,
-    message: LocalizedMessage,
+    message: Result<String, RenderError>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -255,12 +252,9 @@ impl From<&LexIssue> for ParseIssue {
         let mut parsed = AstFactory::parse_issue(
             ParseIssueKind::Lexical,
             issue.start()..issue.end(),
-            issue.message().clone(),
+            Ok(issue.message().to_owned()),
         );
-        parsed.boundary_unknown = matches!(
-            issue.message().id(),
-            SYNTAX_UNCLOSED_BLOCK_COMMENT | SYNTAX_UNCLOSED_LITERAL | SYNTAX_UNCLOSED_RAW_STRING
-        );
+        parsed.boundary_unknown = issue.boundary_unknown();
         parsed
     }
 }
@@ -271,7 +265,7 @@ impl ParseIssue {
         code: ParseIssueCode,
         bounds: Range<usize>,
         boundary_unknown: bool,
-        message: LocalizedMessage,
+        message: Result<String, RenderError>,
     ) -> Self {
         Self {
             kind,
@@ -331,8 +325,8 @@ impl ParseIssue {
         }
     }
 
-    pub fn message(&self) -> &LocalizedMessage {
-        &self.message
+    pub fn message(&self) -> Result<&str, RenderError> {
+        self.message.as_deref().map_err(|error| *error)
     }
 }
 

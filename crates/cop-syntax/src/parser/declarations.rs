@@ -1,9 +1,5 @@
+use cop_i18n::{t, RenderError};
 use std::ops::Range;
-
-use cop_model::{
-    LocalizedMessage, MessageId, SYNTAX_DECLARATION_BODY_UNCLOSED, SYNTAX_INNER_ATTRIBUTE_POSITION,
-    SYNTAX_NAMED_ITEM_EXPECT_NAME,
-};
 
 use super::{
     attributes::AttributeParser,
@@ -71,7 +67,7 @@ impl DeclarationParser {
                 ParseIssueKind::UnexpectedToken,
                 Self::current_start(context.source, context.tokens, *cursor)
                     ..Self::current_end(context.source, context.tokens, *cursor),
-                SYNTAX_NAMED_ITEM_EXPECT_NAME,
+                t!("syntax.named_item_expect_name"),
             );
         }
         let has_body = matches!(keyword.as_str(), "struct" | "enum" | "union");
@@ -264,7 +260,7 @@ impl DeclarationParser {
                             context.issues,
                             ParseIssueKind::UnexpectedToken,
                             attribute.start()..attribute.end(),
-                            SYNTAX_INNER_ATTRIBUTE_POSITION,
+                            t!("syntax.inner_attribute_position"),
                         );
                     }
                 }
@@ -482,7 +478,7 @@ impl DeclarationParser {
                             .get(start)
                             .map_or(context.source.len(), Token::start)
                             ..context.source.len(),
-                        SYNTAX_DECLARATION_BODY_UNCLOSED,
+                        t!("syntax.declaration_body_unclosed"),
                     );
                     return start..*cursor;
                 }
@@ -601,12 +597,8 @@ impl DeclarationParser {
         issues: &mut Vec<ParseIssue>,
         kind: ParseIssueKind,
         bounds: Range<usize>,
-        message: MessageId,
+        message: Result<String, RenderError>,
     ) {
-        issues.push(AstFactory::parse_issue(
-            kind,
-            bounds,
-            LocalizedMessage::new(message),
-        ));
+        issues.push(AstFactory::parse_issue(kind, bounds, message));
     }
 }

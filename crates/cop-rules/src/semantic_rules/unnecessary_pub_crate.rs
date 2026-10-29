@@ -1,3 +1,4 @@
+use cop_i18n::{t, RenderError};
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     ops::Range,
@@ -7,7 +8,7 @@ use cop_analysis::{
     AnalysisReference, AnalysisSnapshot, DefinitionId, ModuleNode, PathResolution,
     PathResolutionKind, ReferenceId, ReferenceKind, SymbolKind, SymbolRecord, SymbolVisibility,
 };
-use cop_model::{Diagnostic, LocalizedMessage, RuleId, UNNECESSARY_PUB_CRATE};
+use cop_model::{Diagnostic, RuleId};
 
 use crate::support::{RuleDiagnosticAdapter, RuleReport, SyntaxSupport};
 
@@ -42,11 +43,11 @@ impl UnnecessaryPubCrateRule {
         snapshot: &AnalysisSnapshot,
         diagnostics: &mut Vec<Diagnostic>,
         adapter: &RuleDiagnosticAdapter<'_>,
-    ) {
+    ) -> Result<(), RenderError> {
         let mut analysis = CandidateAnalysis::new(snapshot);
         analysis.scan_references(snapshot);
         analysis.propagate_api_dependencies(snapshot);
-        analysis.report(snapshot, diagnostics, adapter);
+        analysis.report(snapshot, diagnostics, adapter)
     }
 }
 
@@ -397,7 +398,7 @@ impl CandidateAnalysis {
         snapshot: &AnalysisSnapshot,
         diagnostics: &mut Vec<Diagnostic>,
         adapter: &RuleDiagnosticAdapter<'_>,
-    ) {
+    ) -> Result<(), RenderError> {
         for (index, candidate) in self.candidates.iter().enumerate() {
             if self.required[index] || self.uncertain[index] {
                 continue;
@@ -410,12 +411,12 @@ impl CandidateAnalysis {
                 diagnostics,
                 RuleReport::new(
                     RuleId::UnnecessaryPubCrate,
-                    LocalizedMessage::new(UNNECESSARY_PUB_CRATE)
-                        .with_text("name", candidate.symbol.name()),
+                    t!("rule.unnecessary_pub_crate", { name: candidate.symbol.name() })?,
                     Some(candidate.visibility_bounds.clone()),
                 ),
             );
         }
+        Ok(())
     }
 }
 

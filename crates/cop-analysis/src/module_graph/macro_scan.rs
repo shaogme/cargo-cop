@@ -60,9 +60,10 @@ impl MacroScanner {
             {
                 continue;
             }
-            if configured_ast.node(node.id()).map_or(true, |configured| {
-                configured.availability_decision() == CfgDecision::False
-            }) {
+            if configured_ast
+                .node(node.id())
+                .is_none_or(|configured| configured.availability_decision() == CfgDecision::False)
+            {
                 continue;
             }
             if node.kind() == SyntaxNodeKind::Macro {

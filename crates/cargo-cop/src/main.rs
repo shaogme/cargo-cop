@@ -1,9 +1,18 @@
 mod application;
 
-use std::process::ExitCode;
+use std::{
+    io::{self, Write},
+    process::ExitCode,
+};
 
 use application::Application;
 
 fn main() -> ExitCode {
-    Application::run()
+    match Application::run() {
+        Ok(exit_code) => exit_code,
+        Err(error) => {
+            let _ = writeln!(io::stderr().lock(), "{error}");
+            ExitCode::from(2)
+        }
+    }
 }

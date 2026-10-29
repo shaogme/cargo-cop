@@ -12,9 +12,7 @@ mod types;
 mod use_tree;
 mod where_clause;
 
-use cop_model::{
-    LocalizedMessage, SYNTAX_PARSE_ERROR_UNEXPECTED_TOKEN, SYNTAX_UNSUPPORTED_EDITION,
-};
+use cop_i18n::{t, RenderError};
 
 use crate::{
     ast::{
@@ -57,9 +55,9 @@ impl Default for ParseOptions {
 pub struct RustParser;
 
 impl RustParser {
-    pub fn parse(source: SourceFile, options: ParseOptions) -> ParseOutput {
+    pub fn parse(source: SourceFile, options: ParseOptions) -> Result<ParseOutput, RenderError> {
         let edition = options.rust_edition();
-        let lexed = RustLexer::lex_for_edition(&source, edition);
+        let lexed = RustLexer::lex_for_edition(&source, edition)?;
         let mut issues = lexed
             .issues()
             .iter()
@@ -91,8 +89,7 @@ impl RustParser {
             issues.push(AstFactory::parse_issue(
                 ParseIssueKind::UnsupportedEdition,
                 0..0,
-                LocalizedMessage::new(SYNTAX_UNSUPPORTED_EDITION)
-                    .with_text("edition", options.edition()),
+                t!("syntax.unsupported_edition", { edition: options.edition() }),
             ));
             Vec::new()
         };
@@ -104,7 +101,6 @@ impl RustParser {
             left.start()
                 .cmp(&right.start())
                 .then_with(|| left.end().cmp(&right.end()))
-                .then_with(|| left.message().cmp(right.message()))
         });
         issues.dedup_by(|left, right| left.kind() == right.kind() && left.start() == right.start());
         Self::record_uncovered_ranges(&mut ast_nodes, root_id, &issues);
@@ -117,17 +113,20 @@ impl RustParser {
             inner_attributes,
         );
         AstFactory::apply_issues(&mut ast_nodes, &issues);
+        for issue in &issues {
+            issue.message()?;
+        }
         let coverage = ast_nodes
             .iter()
             .map(SyntaxNode::coverage)
             .fold(Recovery::coverage_for(&issues), AstFactory::merge_coverage);
-        ParseOutput::new(ParseOutputParts {
+        Ok(ParseOutput::new(ParseOutputParts {
             source,
             lexed,
             ast_nodes,
             issues,
             coverage,
-        })
+        }))
     }
 
     fn record_uncovered_ranges(
@@ -191,7 +190,7 @@ impl RustParser {
             issues.push(AstFactory::parse_issue(
                 ParseIssueKind::UnexpectedToken,
                 attribute.start()..attribute.end(),
-                LocalizedMessage::new(SYNTAX_PARSE_ERROR_UNEXPECTED_TOKEN),
+                t!("syntax.parse_error_unexpected_token"),
             ));
         }
     }

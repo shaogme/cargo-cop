@@ -469,7 +469,7 @@ mod tests {
     #[test]
     fn checkpoints_restore_and_delimiter_skips_stay_inside_the_range() {
         let source = SourceFile::new("src/lib.rs", "left, (inside, nested), right");
-        let lexed = RustLexer::lex(&source);
+        let lexed = RustLexer::lex(&source).expect("catalog messages render");
         let tokens = lexed.tokens();
         let open = tokens
             .iter()
@@ -495,7 +495,7 @@ mod tests {
     #[test]
     fn recovery_stops_at_synchronization_tokens_without_crossing_its_bound() {
         let source = SourceFile::new("src/lib.rs", "broken, kept");
-        let lexed = RustLexer::lex(&source);
+        let lexed = RustLexer::lex(&source).expect("catalog messages render");
         let tokens = lexed.tokens();
         let comma = tokens
             .iter()
@@ -510,7 +510,7 @@ mod tests {
     #[test]
     fn recovery_discards_a_partial_angle_before_the_next_synchronization_token() {
         let source = SourceFile::new("src/lib.rs", "<<, kept");
-        let lexed = RustLexer::lex(&source);
+        let lexed = RustLexer::lex(&source).expect("catalog messages render");
         let tokens = lexed.tokens();
         let comma = tokens
             .iter()
@@ -527,7 +527,7 @@ mod tests {
     #[test]
     fn compound_angle_tokens_split_and_restore_by_character() {
         let source = SourceFile::new("src/lib.rs", "<< >>");
-        let lexed = RustLexer::lex(&source);
+        let lexed = RustLexer::lex(&source).expect("catalog messages render");
         let tokens = lexed.tokens();
         let mut cursor = TokenCursor::new(tokens, 0..tokens.len()).expect("有界游标");
 
@@ -569,7 +569,7 @@ mod tests {
     #[test]
     fn arbitrary_punctuation_prefixes_preserve_the_remaining_source_range() {
         let source = SourceFile::new("src/lib.rs", "<<=");
-        let lexed = RustLexer::lex(&source);
+        let lexed = RustLexer::lex(&source).expect("catalog messages render");
         let tokens = lexed.tokens();
         let mut cursor = TokenCursor::new(tokens, 0..tokens.len()).expect("有界游标");
 

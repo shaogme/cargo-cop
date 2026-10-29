@@ -1,10 +1,5 @@
+use cop_i18n::{t, RenderError};
 use std::mem;
-
-use cop_model::{
-    LocalizedMessage, SYNTAX_EXPECT_LITERAL_OR_LIFETIME, SYNTAX_EXPECT_RADIX_DIGIT,
-    SYNTAX_INVALID_BYTE_CHARACTER, SYNTAX_INVALID_RADIX_DIGIT, SYNTAX_UNCLOSED_BLOCK_COMMENT,
-    SYNTAX_UNCLOSED_LITERAL, SYNTAX_UNCLOSED_RAW_STRING, SYNTAX_UNKNOWN_CHARACTER,
-};
 
 use crate::SourceFile;
 
@@ -116,7 +111,8 @@ pub struct Token {
 pub struct LexIssue {
     start: usize,
     end: usize,
-    message: LocalizedMessage,
+    message: String,
+    boundary_unknown: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -198,8 +194,12 @@ impl LexIssue {
         self.end
     }
 
-    pub fn message(&self) -> &LocalizedMessage {
+    pub fn message(&self) -> &str {
         &self.message
+    }
+
+    pub(crate) fn boundary_unknown(&self) -> bool {
+        self.boundary_unknown
     }
 }
 
@@ -218,15 +218,21 @@ impl LexOutput {
 }
 
 impl RustLexer {
-    pub fn lex(source: &SourceFile) -> LexOutput {
+    pub fn lex(source: &SourceFile) -> Result<LexOutput, RenderError> {
         Self::lex_for_edition(source, Some(RustEdition::E2021))
     }
 
-    pub fn lex_with_edition(source: &SourceFile, edition: RustEdition) -> LexOutput {
+    pub fn lex_with_edition(
+        source: &SourceFile,
+        edition: RustEdition,
+    ) -> Result<LexOutput, RenderError> {
         Self::lex_for_edition(source, Some(edition))
     }
 
-    pub(crate) fn lex_for_edition(source: &SourceFile, edition: Option<RustEdition>) -> LexOutput {
+    pub(crate) fn lex_for_edition(
+        source: &SourceFile,
+        edition: Option<RustEdition>,
+    ) -> Result<LexOutput, RenderError> {
         Scanner {
             source,
             edition,
@@ -240,26 +246,26 @@ impl RustLexer {
 }
 
 impl Scanner<'_> {
-    fn run(mut self) -> LexOutput {
+    fn run(mut self) -> Result<LexOutput, RenderError> {
         while self.cursor < self.source.len() {
-            self.scan_trivia();
+            self.scan_trivia()?;
             if self.cursor == self.source.len() {
                 break;
             }
-            self.scan_token();
+            self.scan_token()?;
         }
-        LexOutput {
+        Ok(LexOutput {
             tokens: self.tokens,
             trailing_trivia: self.pending_trivia,
             issues: self.issues,
-        }
+        })
     }
 
-    fn scan_trivia(&mut self) {
+    fn scan_trivia(&mut self) -> Result<(), RenderError> {
         loop {
             let start = self.cursor;
             let Some(character) = self.current_character() else {
-                return;
+                return Ok(());
             };
             if character.is_whitespace() {
                 self.advance_whitespace();
@@ -282,14 +288,14 @@ impl Scanner<'_> {
                     end: self.cursor,
                 });
             } else if self.starts_with("/*") {
-                self.scan_block_comment(start);
+                self.scan_block_comment(start)?;
             } else {
-                return;
+                return Ok(());
             }
         }
     }
 
-    fn scan_block_comment(&mut self, start: usize) {
+    fn scan_block_comment(&mut self, start: usize) -> Result<(), RenderError> {
         self.cursor += 2;
         let mut depth = 1usize;
         while self.cursor < self.source.len() && depth > 0 {
@@ -307,7 +313,8 @@ impl Scanner<'_> {
             self.issues.push(LexIssue {
                 start,
                 end: self.cursor,
-                message: LocalizedMessage::new(SYNTAX_UNCLOSED_BLOCK_COMMENT),
+                message: t!("syntax.unclosed_block_comment")?,
+                boundary_unknown: true,
             });
         }
         self.pending_trivia.push(Trivia {
@@ -315,36 +322,38 @@ impl Scanner<'_> {
             start,
             end: self.cursor,
         });
+        Ok(())
     }
 
-    fn scan_token(&mut self) {
+    fn scan_token(&mut self) -> Result<(), RenderError> {
         let start = self.cursor;
         let character = self.current_character().unwrap_or('\0');
         let kind = if let Some((length, literal_kind)) = self.raw_string_prefix() {
-            self.scan_raw_string(length, start, literal_kind)
+            self.scan_raw_string(length, start, literal_kind)?
         } else if let Some((length, literal_kind)) = self.quoted_prefix() {
             self.cursor += length;
-            self.scan_quoted(start, literal_kind)
+            self.scan_quoted(start, literal_kind)?
         } else if character == 'r' && self.peek_character(1) == Some('#') {
             self.scan_raw_identifier(start)
         } else if character == 'b' && self.peek_character(1) == Some('\'') {
             self.cursor += 1;
-            self.scan_byte_character(start)
+            self.scan_byte_character(start)?
         } else if character == '\'' {
-            self.scan_lifetime_or_character()
+            self.scan_lifetime_or_character()?
         } else if character.is_ascii_digit() {
-            self.scan_number(start)
+            self.scan_number(start)?
         } else if is_identifier_start(character) {
             self.scan_identifier(start)
         } else {
             self.scan_symbol()
         };
         if let TokenKind::Unknown(character) = &kind {
+            let character = character.to_string();
             self.issues.push(LexIssue {
                 start,
                 end: self.cursor,
-                message: LocalizedMessage::new(SYNTAX_UNKNOWN_CHARACTER)
-                    .with_text("character", character.to_string()),
+                message: t!("syntax.unknown_character", { character: character.as_str() })?,
+                boundary_unknown: false,
             });
         }
         self.tokens.push(Token {
@@ -353,6 +362,7 @@ impl Scanner<'_> {
             end: self.cursor,
             leading_trivia: mem::take(&mut self.pending_trivia),
         });
+        Ok(())
     }
 
     fn raw_string_prefix(&self) -> Option<(usize, LiteralKind)> {
@@ -390,7 +400,7 @@ impl Scanner<'_> {
         prefix_length: usize,
         start: usize,
         literal_kind: LiteralKind,
-    ) -> TokenKind {
+    ) -> Result<TokenKind, RenderError> {
         let raw_prefix = &self.source.text()[self.cursor..self.cursor + prefix_length];
         let hash_count = raw_prefix.bytes().filter(|byte| *byte == b'#').count();
         self.cursor += prefix_length;
@@ -414,13 +424,18 @@ impl Scanner<'_> {
             self.issues.push(LexIssue {
                 start,
                 end: self.cursor,
-                message: LocalizedMessage::new(SYNTAX_UNCLOSED_RAW_STRING),
+                message: t!("syntax.unclosed_raw_string")?,
+                boundary_unknown: true,
             });
         }
-        TokenKind::Literal(literal_kind)
+        Ok(TokenKind::Literal(literal_kind))
     }
 
-    fn scan_quoted(&mut self, start: usize, literal_kind: LiteralKind) -> TokenKind {
+    fn scan_quoted(
+        &mut self,
+        start: usize,
+        literal_kind: LiteralKind,
+    ) -> Result<TokenKind, RenderError> {
         let quote = if matches!(literal_kind, LiteralKind::String | LiteralKind::ByteString) {
             '"'
         } else {
@@ -445,17 +460,18 @@ impl Scanner<'_> {
             self.issues.push(LexIssue {
                 start,
                 end: self.cursor,
-                message: LocalizedMessage::new(SYNTAX_UNCLOSED_LITERAL),
+                message: t!("syntax.unclosed_literal")?,
+                boundary_unknown: true,
             });
         }
-        TokenKind::Literal(literal_kind)
+        Ok(TokenKind::Literal(literal_kind))
     }
 
-    fn scan_lifetime_or_character(&mut self) -> TokenKind {
+    fn scan_lifetime_or_character(&mut self) -> Result<TokenKind, RenderError> {
         let start = self.cursor;
         if let Some(end) = self.character_literal_end(start, false) {
             self.cursor = end;
-            return TokenKind::Literal(LiteralKind::Character);
+            return Ok(TokenKind::Literal(LiteralKind::Character));
         }
         self.cursor = start + 1;
         while self.current_character().is_some_and(is_identifier_continue) {
@@ -466,13 +482,16 @@ impl Scanner<'_> {
             self.issues.push(LexIssue {
                 start,
                 end: self.cursor,
-                message: LocalizedMessage::new(SYNTAX_EXPECT_LITERAL_OR_LIFETIME),
+                message: t!("syntax.expect_literal_or_lifetime")?,
+                boundary_unknown: false,
             });
         }
-        TokenKind::Lifetime(self.source.text()[start..self.cursor].to_owned())
+        Ok(TokenKind::Lifetime(
+            self.source.text()[start..self.cursor].to_owned(),
+        ))
     }
 
-    fn scan_byte_character(&mut self, start: usize) -> TokenKind {
+    fn scan_byte_character(&mut self, start: usize) -> Result<TokenKind, RenderError> {
         if let Some(end) = self.character_literal_end(self.cursor, true) {
             self.cursor = end;
         } else {
@@ -480,10 +499,11 @@ impl Scanner<'_> {
             self.issues.push(LexIssue {
                 start,
                 end: self.cursor,
-                message: LocalizedMessage::new(SYNTAX_INVALID_BYTE_CHARACTER),
+                message: t!("syntax.invalid_byte_character")?,
+                boundary_unknown: false,
             });
         }
-        TokenKind::Literal(LiteralKind::Byte)
+        Ok(TokenKind::Literal(LiteralKind::Byte))
     }
 
     fn character_literal_end(&self, quote_offset: usize, is_byte: bool) -> Option<usize> {
@@ -558,7 +578,7 @@ impl Scanner<'_> {
         None
     }
 
-    fn scan_number(&mut self, start: usize) -> TokenKind {
+    fn scan_number(&mut self, start: usize) -> Result<TokenKind, RenderError> {
         let radix = match self.source.text().as_bytes().get(self.cursor + 1) {
             Some(b'x' | b'X') => Some(16),
             Some(b'o' | b'O') => Some(8),
@@ -585,19 +605,20 @@ impl Scanner<'_> {
                 self.issues.push(LexIssue {
                     start,
                     end: self.cursor,
-                    message: LocalizedMessage::new(SYNTAX_EXPECT_RADIX_DIGIT),
+                    message: t!("syntax.expect_radix_digit")?,
+                    boundary_unknown: false,
                 });
             }
             if has_invalid_digit {
                 self.issues.push(LexIssue {
                     start: digits_start,
                     end: self.cursor,
-                    message: LocalizedMessage::new(SYNTAX_INVALID_RADIX_DIGIT)
-                        .with_number("radix", radix as i64),
+                    message: t!("syntax.invalid_radix_digit", { radix: radix as i64 })?,
+                    boundary_unknown: false,
                 });
             }
             self.consume_numeric_suffix();
-            return TokenKind::Literal(LiteralKind::Number);
+            return Ok(TokenKind::Literal(LiteralKind::Number));
         }
 
         self.consume_decimal_digits();
@@ -630,7 +651,7 @@ impl Scanner<'_> {
             }
         }
         self.consume_numeric_suffix();
-        TokenKind::Literal(LiteralKind::Number)
+        Ok(TokenKind::Literal(LiteralKind::Number))
     }
 
     fn consume_decimal_digits(&mut self) {
@@ -657,7 +678,7 @@ impl Scanner<'_> {
             remaining.strip_prefix(suffix).is_some_and(|rest| {
                 rest.chars()
                     .next()
-                    .map_or(true, |character| !is_identifier_continue(character))
+                    .is_none_or(|character| !is_identifier_continue(character))
             })
         })
     }

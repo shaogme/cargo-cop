@@ -1,12 +1,12 @@
+use cop_i18n::t;
 use std::ops::Range;
 
 use cop_cfg::CfgExpression;
-use cop_model::{LocalizedMessage, SYNTAX_MACRO_OPAQUE};
 
 use crate::{
     ast::{
         AstFactory, AstNodeId, CfgCandidate, CoverageStatus, MacroInputStatus, MacroInvocation,
-        ParseIssue, ParseIssueKind, PathSyntax, SyntaxNode, SyntaxNodeData, SyntaxNodeKind,
+        ParseIssue, PathSyntax, SyntaxNode, SyntaxNodeData, SyntaxNodeKind,
     },
     parser::{patterns::PatternParser, types::TypeParser},
     recovery::Recovery,
@@ -208,10 +208,9 @@ impl MacroInputSupport {
             context.ast_nodes,
             context.issues,
         );
-        context.issues.push(AstFactory::parse_issue(
-            ParseIssueKind::UnsupportedSyntax,
+        context.issues.push(AstFactory::opaque_macro_issue(
             input.clone(),
-            LocalizedMessage::new(SYNTAX_MACRO_OPAQUE),
+            t!("syntax.macro_opaque"),
         ));
     }
 

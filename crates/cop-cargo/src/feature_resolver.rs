@@ -1,8 +1,9 @@
+use cop_i18n::t;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-use cop_model::{LocalizedMessage, ToolErrorKind, CARGO_FEATURE_NOT_FOUND};
+use cop_model::ToolErrorKind;
 
-use crate::{CargoError, CargoPackage};
+use crate::{CargoError, CargoFailure, CargoPackage};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FeatureSelection {
@@ -77,7 +78,7 @@ impl FeatureResolver {
     pub(crate) fn resolve(
         package: &CargoPackage,
         selection: &FeatureSelection,
-    ) -> Result<ResolvedFeatures, CargoError> {
+    ) -> Result<ResolvedFeatures, CargoFailure> {
         let definitions = package.features();
         let mut resolved = ResolvedFeatures::default();
         let mut pending = VecDeque::new();
@@ -100,11 +101,9 @@ impl FeatureResolver {
                 continue;
             };
             if !definitions.contains_key(feature) {
-                return Err(CargoError::new(
+                return Err(CargoError::from_localized(
                     ToolErrorKind::Arguments,
-                    LocalizedMessage::new(CARGO_FEATURE_NOT_FOUND)
-                        .with_text("package", package.name())
-                        .with_text("feature", feature),
+                    t!("cargo.feature_not_found", { package: package.name(), feature: feature })?,
                 ));
             }
             pending.push_back(feature.to_owned());

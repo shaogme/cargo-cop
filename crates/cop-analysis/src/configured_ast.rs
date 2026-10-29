@@ -483,9 +483,8 @@ impl ConfiguredAst {
     }
 
     pub fn is_enabled_range(&self, start: usize, end: usize) -> bool {
-        self.node_for_range(start, end).map_or(true, |node| {
-            node.availability_decision() != CfgDecision::False
-        })
+        self.node_for_range(start, end)
+            .is_none_or(|node| node.availability_decision() != CfgDecision::False)
     }
 
     pub fn is_issue_enabled(&self, issue: &ParseIssue) -> bool {
@@ -651,7 +650,7 @@ impl ConfiguredRangeQuery<'_> {
         if right - left == 1 {
             if let Some(index) = self.index.sorted_node_indices.get(left).copied() {
                 let candidate = &self.nodes[index];
-                let is_better = self.best.map_or(true, |best_index| {
+                let is_better = self.best.is_none_or(|best_index| {
                     let current = &self.nodes[best_index];
                     (
                         candidate.end().saturating_sub(candidate.start()),

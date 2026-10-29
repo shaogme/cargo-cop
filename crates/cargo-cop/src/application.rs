@@ -1,7 +1,9 @@
 use std::{
     collections::{BTreeSet, HashSet},
     env,
+    error::Error,
     ffi::{OsStr, OsString},
+    fmt,
     io::{self, Write},
     path::{Path, PathBuf},
     process::ExitCode,
@@ -10,21 +12,17 @@ use std::{
 use clap::{error::ErrorKind as ClapErrorKind, ArgAction, Parser, ValueEnum};
 use cop_analysis::{AnalysisRequest, ProjectAnalyzer};
 use cop_cargo::{
-    CargoDiscovery, CargoDiscoveryRequest, CargoError, CargoProject, CargoProjectLoader,
+    CargoDiscovery, CargoDiscoveryRequest, CargoFailure, CargoProject, CargoProjectLoader,
     CargoSelection, FeatureSelection, TargetSelector,
 };
 use cop_cfg::{CfgExpression, CfgValue};
 use cop_config::{
-    ConfigError, ConfigLoader, ConfigOverrides, ConfigRequest, ConfigResolutionInput,
+    ConfigFailure, ConfigLoader, ConfigOverrides, ConfigRequest, ConfigResolutionInput,
     ConfigResolver, ResolvedConfig, ScanTargetScope,
 };
-use cop_i18n::{Locale, MessageFormatter};
+use cop_i18n::{set_current_locale, t, Locale, RenderError};
 use cop_model::{
-    Diagnostic, LocalizedMessage, RuleId, ScanResult, ScanStatus, Severity, ToolErrorKind,
-    UnknownRuleId, ARGUMENT_DUPLICATE_RULE, ARGUMENT_SEVERITY_DUPLICATE, ARGUMENT_SEVERITY_FORMAT,
-    ARGUMENT_UNKNOWN_RULE, ARGUMENT_UNKNOWN_SEVERITY, CARGO_TARGET_CFG_INVALID,
-    CARGO_WORKSPACE_CONFLICT, CLI_HELP, CLI_PARSE_ERROR, CLI_VERSION, IO_ERROR, LOCALE_INVALID_CLI,
-    LOCALE_INVALID_CONFIG, OUTPUT_WRITE_ERROR,
+    Diagnostic, RuleId, ScanResult, ScanStatus, Severity, ToolErrorKind, UnknownRuleId,
 };
 use cop_report::{ReportFormat, Reporter};
 use cop_rules::RuleEngine;
@@ -69,10 +67,19 @@ struct CliOptions {
     severities: Vec<String>,
 }
 
-struct ApplicationError {
+#[derive(Debug)]
+pub(super) struct ApplicationError {
     kind: ToolErrorKind,
-    message: LocalizedMessage,
+    message: String,
+    detail: Option<String>,
     locale_override: Option<Locale>,
+}
+
+#[derive(Debug)]
+pub(super) enum ApplicationFailure {
+    Domain(ApplicationError),
+    Render(RenderError),
+    Io(io::Error),
 }
 
 struct ScanOutput {
@@ -96,7 +103,7 @@ struct StderrLogger;
 
 static STDERR_LOGGER: StderrLogger = StderrLogger;
 
-pub struct Application;
+pub(super) struct Application;
 
 impl Log for StderrLogger {
     fn enabled(&self, metadata: &Metadata<'_>) -> bool {
@@ -122,30 +129,110 @@ impl OutputFormat {
 }
 
 impl ApplicationError {
-    fn new(kind: ToolErrorKind, message: LocalizedMessage) -> Self {
+    fn new(kind: ToolErrorKind, message: String) -> Self {
         Self {
             kind,
             message,
+            detail: None,
             locale_override: None,
         }
+    }
+
+    fn with_detail(mut self, detail: impl Into<String>) -> Self {
+        self.detail = Some(detail.into());
+        self
     }
 
     fn with_locale(mut self, locale: Locale) -> Self {
         self.locale_override = Some(locale);
         self
     }
+}
 
-    fn from_cargo(error: CargoError) -> Self {
-        Self::new(error.kind(), error.message().clone())
+impl ApplicationFailure {
+    fn localized(kind: ToolErrorKind, message: Result<String, RenderError>) -> Self {
+        match message {
+            Ok(message) => Self::Domain(ApplicationError::new(kind, message)),
+            Err(error) => Self::Render(error),
+        }
     }
 
-    fn from_config(error: ConfigError) -> Self {
-        Self::new(ToolErrorKind::Configuration, error.message().clone())
+    fn from_cargo(failure: CargoFailure) -> Self {
+        match failure {
+            CargoFailure::Cargo(error) => {
+                let domain_error = ApplicationError::new(error.kind(), error.message().to_owned());
+                let domain_error = match error.detail() {
+                    Some(detail) => domain_error.with_detail(detail.to_owned()),
+                    None => domain_error,
+                };
+                Self::Domain(domain_error)
+            }
+            CargoFailure::Render(error) => Self::Render(error),
+        }
+    }
+
+    fn from_config(failure: ConfigFailure) -> Self {
+        match failure {
+            ConfigFailure::Config(error) => {
+                let domain_error =
+                    ApplicationError::new(ToolErrorKind::Configuration, error.message().to_owned());
+                let domain_error = match error.detail() {
+                    Some(detail) => domain_error.with_detail(detail.to_owned()),
+                    None => domain_error,
+                };
+                Self::Domain(domain_error)
+            }
+            ConfigFailure::Render(error) => Self::Render(error),
+        }
+    }
+
+    fn with_locale(self, locale: Locale) -> Self {
+        match self {
+            Self::Domain(error) => Self::Domain(error.with_locale(locale)),
+            failure => failure,
+        }
+    }
+
+    fn with_detail(self, detail: impl Into<String>) -> Self {
+        match self {
+            Self::Domain(error) => Self::Domain(error.with_detail(detail)),
+            failure => failure,
+        }
+    }
+}
+
+impl fmt::Display for ApplicationFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Domain(error) => {
+                formatter.write_str(&error.message)?;
+                if let Some(detail) = &error.detail {
+                    write!(formatter, ": {detail}")?;
+                }
+                Ok(())
+            }
+            Self::Render(error) => error.fmt(formatter),
+            Self::Io(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl Error for ApplicationFailure {}
+
+impl From<RenderError> for ApplicationFailure {
+    fn from(error: RenderError) -> Self {
+        Self::Render(error)
+    }
+}
+
+impl From<io::Error> for ApplicationFailure {
+    fn from(error: io::Error) -> Self {
+        Self::Io(error)
     }
 }
 
 impl Application {
-    pub fn run() -> ExitCode {
+    pub(super) fn run() -> Result<ExitCode, ApplicationFailure> {
         let _ = set_logger(&STDERR_LOGGER);
         set_max_level(LevelFilter::Error);
         let mut arguments = env::args_os().collect::<Vec<_>>();
@@ -163,24 +250,24 @@ impl Application {
             &[lc_all.as_deref(), lc_messages.as_deref(), lang.as_deref()],
         )
         .unwrap_or(Locale::EN_US);
+        set_current_locale(environment_locale.as_tag());
         let startup = match Self::startup_locale(&arguments, environment_locale) {
             Ok(startup) => startup,
-            Err(error) => {
+            Err(ApplicationFailure::Domain(error)) => {
                 return Self::write_error_report(error, format, &fallback_root, environment_locale);
             }
+            Err(error) => return Err(error),
         };
         let locale = startup.locale;
         if contains_option(&arguments, "--help", "-h") {
-            let help = MessageFormatter::new(locale).text(CLI_HELP);
-            let _ = writeln!(io::stdout().lock(), "{help}");
-            return ExitCode::SUCCESS;
+            let help = t!("cli.help")?;
+            writeln!(io::stdout().lock(), "{help}")?;
+            return Ok(ExitCode::SUCCESS);
         }
         if contains_option(&arguments, "--version", "-V") {
-            let version =
-                LocalizedMessage::new(CLI_VERSION).with_text("version", env!("CARGO_PKG_VERSION"));
-            let text = MessageFormatter::new(locale).format(&version);
-            let _ = writeln!(io::stdout().lock(), "{text}");
-            return ExitCode::SUCCESS;
+            let version = t!("cli.version", { version: env!("CARGO_PKG_VERSION") })?;
+            writeln!(io::stdout().lock(), "{version}")?;
+            return Ok(ExitCode::SUCCESS);
         }
 
         let options = match CliOptions::try_parse_from(arguments) {
@@ -188,42 +275,49 @@ impl Application {
             Err(error) => {
                 let exit_code = error.exit_code().clamp(0, 255) as u8;
                 let kind = cli_parse_error_kind(error.kind());
-                let message = LocalizedMessage::new(CLI_PARSE_ERROR).with_text("kind", kind);
+                let message = t!("cli.parse_error", { kind: kind })?;
                 let report_error = ApplicationError::new(ToolErrorKind::Arguments, message);
-                let _ = Self::write_error_report(report_error, format, &fallback_root, locale);
-                return ExitCode::from(exit_code);
+                Self::write_error_report(report_error, format, &fallback_root, locale)?;
+                return Ok(ExitCode::from(exit_code));
             }
         };
         let format = options.format.report_format();
         match Self::scan(options, locale, startup.discovery) {
             Ok(output) => {
-                if let Err(error) = Self::write_report(
+                match Self::write_report(
                     &output.result,
                     &output.workspace_root,
                     format,
                     output.locale,
                 ) {
-                    Self::write_output_error(output.locale, error);
-                    return ExitCode::from(2);
+                    Ok(()) => Ok(ExitCode::from(output.result.exit_code())),
+                    Err(ApplicationFailure::Io(error)) => {
+                        Self::write_output_error(output.locale, error)?;
+                        Ok(ExitCode::from(2))
+                    }
+                    Err(error) => Err(error),
                 }
-                ExitCode::from(output.result.exit_code())
             }
-            Err(error) => Self::write_error_report(error, format, &fallback_root, locale),
+            Err(ApplicationFailure::Domain(error)) => {
+                Self::write_error_report(error, format, &fallback_root, locale)
+            }
+            Err(error) => Err(error),
         }
     }
 
     fn startup_locale(
         arguments: &[OsString],
         environment_locale: Locale,
-    ) -> Result<StartupContext, ApplicationError> {
+    ) -> Result<StartupContext, ApplicationFailure> {
         if let Some(value) = option_value(arguments, "--locale") {
             let locale = Locale::parse_explicit(&value).map_err(|_| {
-                ApplicationError::new(
+                ApplicationFailure::localized(
                     ToolErrorKind::Arguments,
-                    LocalizedMessage::new(LOCALE_INVALID_CLI).with_text("locale", value),
+                    t!("locale.invalid_cli", { locale: value.as_str() }),
                 )
                 .with_locale(environment_locale)
             })?;
+            set_current_locale(locale.as_tag());
             return Ok(StartupContext {
                 locale,
                 discovery: None,
@@ -232,18 +326,18 @@ impl Application {
 
         let current_directory = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let (request, discovery) = config_request(arguments, current_directory);
-        let config_locale = ConfigLoader::read_locale(request).map_err(|error| {
-            ApplicationError::from_config(error).with_locale(environment_locale)
-        })?;
+        let config_locale =
+            ConfigLoader::read_locale(request).map_err(ApplicationFailure::from_config)?;
         match config_locale {
             Some(value) => {
                 let locale = Locale::parse_explicit(&value).map_err(|_| {
-                    ApplicationError::new(
+                    ApplicationFailure::localized(
                         ToolErrorKind::Configuration,
-                        LocalizedMessage::new(LOCALE_INVALID_CONFIG).with_text("locale", value),
+                        t!("locale.invalid_config", { locale: value.as_str() }),
                     )
                     .with_locale(environment_locale)
                 })?;
+                set_current_locale(locale.as_tag());
                 Ok(StartupContext { locale, discovery })
             }
             None => Ok(StartupContext {
@@ -258,39 +352,40 @@ impl Application {
         format: ReportFormat,
         workspace_root: &Path,
         fallback_locale: Locale,
-    ) -> ExitCode {
+    ) -> Result<ExitCode, ApplicationFailure> {
         let locale = error.locale_override.unwrap_or(fallback_locale);
-        let result = ScanResult::new(
-            ScanStatus::Incomplete,
-            vec![Diagnostic::tool(error.kind, error.message)],
-            0,
-        );
-        if let Err(write_error) = Self::write_report(&result, workspace_root, format, locale) {
-            Self::write_output_error(locale, write_error);
+        let mut diagnostic = Diagnostic::tool(error.kind, error.message);
+        if let Some(detail) = error.detail {
+            diagnostic = diagnostic.with_detail(detail);
         }
-        ExitCode::from(result.exit_code())
+        let result = ScanResult::new(ScanStatus::Incomplete, vec![diagnostic], 0);
+        Self::write_report(&result, workspace_root, format, locale)?;
+        Ok(ExitCode::from(result.exit_code()))
     }
 
-    fn write_output_error(locale: Locale, error: io::Error) {
-        let message =
-            LocalizedMessage::new(OUTPUT_WRITE_ERROR).with_opaque("detail", error.to_string());
-        let text = MessageFormatter::new(locale).format(&message);
-        let _ = writeln!(io::stderr().lock(), "{text}");
+    fn write_output_error(locale: Locale, error: io::Error) -> Result<(), ApplicationFailure> {
+        let message = t!(
+            "report.output_write_error",
+            locale = locale.as_tag().as_locale(),
+            {}
+        )?;
+        writeln!(io::stderr().lock(), "{message}: {error}")?;
+        Ok(())
     }
 
     fn scan(
         options: CliOptions,
         fallback_locale: Locale,
         discovery: Option<CargoDiscovery>,
-    ) -> Result<ScanOutput, ApplicationError> {
+    ) -> Result<ScanOutput, ApplicationFailure> {
         let prepared = Self::prepare(&options, fallback_locale, discovery)?;
         let mut diagnostics = Vec::new();
         let mut status = ScanStatus::Complete;
         for package in prepared.project.packages() {
-            let snapshot = ProjectAnalyzer::analyze(AnalysisRequest::new(package));
+            let snapshot = ProjectAnalyzer::analyze(AnalysisRequest::new(package))?;
             status = status.combine(snapshot.status());
             diagnostics.extend(snapshot.diagnostics().iter().cloned());
-            let rule_diagnostics = RuleEngine::run(&snapshot, &prepared.configuration);
+            let rule_diagnostics = RuleEngine::run(&snapshot, &prepared.configuration)?;
             status = status.combine(ScanStatus::from_diagnostics(&rule_diagnostics));
             diagnostics.extend(rule_diagnostics);
         }
@@ -317,19 +412,17 @@ impl Application {
         options: &CliOptions,
         fallback_locale: Locale,
         discovery: Option<CargoDiscovery>,
-    ) -> Result<PreparedScan, ApplicationError> {
+    ) -> Result<PreparedScan, ApplicationFailure> {
         if options.workspace && !options.packages.is_empty() {
-            return Err(ApplicationError::new(
+            return Err(ApplicationFailure::localized(
                 ToolErrorKind::Arguments,
-                LocalizedMessage::new(CARGO_WORKSPACE_CONFLICT),
+                t!("cargo.workspace_conflict"),
             ));
         }
         let overrides = Self::config_overrides(options)?;
         let current_directory = env::current_dir().map_err(|error| {
-            ApplicationError::new(
-                ToolErrorKind::Io,
-                LocalizedMessage::new(IO_ERROR).with_opaque("detail", error.to_string()),
-            )
+            ApplicationFailure::localized(ToolErrorKind::Io, t!("cli.io_error"))
+                .with_detail(error.to_string())
         })?;
         let manifest_path = options
             .manifest_path
@@ -338,33 +431,34 @@ impl Application {
         let discovery = match discovery {
             Some(discovery) => discovery,
             None => CargoProjectLoader::discover(CargoDiscoveryRequest::new(manifest_path))
-                .map_err(ApplicationError::from_cargo)?,
+                .map_err(ApplicationFailure::from_cargo)?,
         };
         let loaded_config = ConfigLoader::load(ConfigRequest::new(
             options.config.clone(),
             discovery.workspace_root().to_path_buf(),
             current_directory.clone(),
         ))
-        .map_err(ApplicationError::from_config)?;
+        .map_err(ApplicationFailure::from_config)?;
         let locale = if let Some(value) = options.locale.as_deref() {
             Locale::parse_explicit(value).map_err(|_| {
-                ApplicationError::new(
+                ApplicationFailure::localized(
                     ToolErrorKind::Arguments,
-                    LocalizedMessage::new(LOCALE_INVALID_CLI).with_text("locale", value),
+                    t!("locale.invalid_cli", { locale: value }),
                 )
                 .with_locale(fallback_locale)
             })?
         } else if let Some(value) = loaded_config.locale() {
             Locale::parse_explicit(value).map_err(|_| {
-                ApplicationError::new(
+                ApplicationFailure::localized(
                     ToolErrorKind::Configuration,
-                    LocalizedMessage::new(LOCALE_INVALID_CONFIG).with_text("locale", value),
+                    t!("locale.invalid_config", { locale: value }),
                 )
                 .with_locale(fallback_locale)
             })?
         } else {
             fallback_locale
         };
+        set_current_locale(locale.as_tag());
         let configuration =
             ConfigResolver::resolve(ConfigResolutionInput::new(loaded_config, overrides));
         let scan = configuration.scan();
@@ -381,7 +475,7 @@ impl Application {
             .with_cfg_overrides(configuration.cfg_overrides().to_vec())
             .with_current_directory(current_directory);
         let project =
-            TargetSelector::select(discovery, selection).map_err(ApplicationError::from_cargo)?;
+            TargetSelector::select(discovery, selection).map_err(ApplicationFailure::from_cargo)?;
         Ok(PreparedScan {
             project,
             configuration,
@@ -389,7 +483,7 @@ impl Application {
         })
     }
 
-    fn config_overrides(options: &CliOptions) -> Result<ConfigOverrides, ApplicationError> {
+    fn config_overrides(options: &CliOptions) -> Result<ConfigOverrides, ApplicationFailure> {
         let mut overrides = ConfigOverrides::default()
             .with_target(options.target.clone())
             .with_features(if options.features.is_empty() {
@@ -404,10 +498,9 @@ impl Application {
             let mut values = BTreeSet::new();
             for value in &options.cfg_values {
                 let expression = CfgExpression::parse(value).map_err(|_| {
-                    ApplicationError::new(
+                    ApplicationFailure::localized(
                         ToolErrorKind::Arguments,
-                        LocalizedMessage::new(CARGO_TARGET_CFG_INVALID)
-                            .with_text("condition", value),
+                        t!("cargo.target_cfg_invalid", { condition: value }),
                     )
                 })?;
                 let cfg_value = match expression {
@@ -416,18 +509,16 @@ impl Application {
                     CfgExpression::All { .. }
                     | CfgExpression::Any { .. }
                     | CfgExpression::Not { .. } => {
-                        return Err(ApplicationError::new(
+                        return Err(ApplicationFailure::localized(
                             ToolErrorKind::Arguments,
-                            LocalizedMessage::new(CARGO_TARGET_CFG_INVALID)
-                                .with_text("condition", value),
+                            t!("cargo.target_cfg_invalid", { condition: value }),
                         ));
                     }
                 };
                 if CfgValue::is_builtin_name(cfg_value.name()) {
-                    return Err(ApplicationError::new(
+                    return Err(ApplicationFailure::localized(
                         ToolErrorKind::Arguments,
-                        LocalizedMessage::new(CARGO_TARGET_CFG_INVALID)
-                            .with_text("condition", value),
+                        t!("cargo.target_cfg_invalid", { condition: value }),
                     ));
                 }
                 values.insert(cfg_value);
@@ -437,15 +528,15 @@ impl Application {
         let mut disabled = BTreeSet::new();
         for value in &options.disabled_rules {
             let rule: RuleId = value.parse().map_err(|error: UnknownRuleId| {
-                ApplicationError::new(
+                ApplicationFailure::localized(
                     ToolErrorKind::Arguments,
-                    LocalizedMessage::new(ARGUMENT_UNKNOWN_RULE).with_text("rule", error.value()),
+                    t!("cli.argument_unknown_rule", { rule: error.value() }),
                 )
             })?;
             if !disabled.insert(rule) {
-                return Err(ApplicationError::new(
+                return Err(ApplicationFailure::localized(
                     ToolErrorKind::Arguments,
-                    LocalizedMessage::new(ARGUMENT_DUPLICATE_RULE).with_text("rule", rule.as_str()),
+                    t!("cli.argument_duplicate_rule", { rule: rule.as_str() }),
                 ));
             }
             overrides = overrides.disable_rule(rule);
@@ -453,32 +544,30 @@ impl Application {
         let mut severities = BTreeSet::new();
         for value in &options.severities {
             let (rule_name, severity_name) = value.split_once('=').ok_or_else(|| {
-                ApplicationError::new(
+                ApplicationFailure::localized(
                     ToolErrorKind::Arguments,
-                    LocalizedMessage::new(ARGUMENT_SEVERITY_FORMAT).with_text("value", value),
+                    t!("cli.argument_severity_format", { value: value.as_str() }),
                 )
             })?;
             let rule: RuleId = rule_name.parse().map_err(|error: UnknownRuleId| {
-                ApplicationError::new(
+                ApplicationFailure::localized(
                     ToolErrorKind::Arguments,
-                    LocalizedMessage::new(ARGUMENT_UNKNOWN_RULE).with_text("rule", error.value()),
+                    t!("cli.argument_unknown_rule", { rule: error.value() }),
                 )
             })?;
             if !severities.insert(rule) {
-                return Err(ApplicationError::new(
+                return Err(ApplicationFailure::localized(
                     ToolErrorKind::Arguments,
-                    LocalizedMessage::new(ARGUMENT_SEVERITY_DUPLICATE)
-                        .with_text("rule", rule.as_str()),
+                    t!("cli.argument_severity_duplicate", { rule: rule.as_str() }),
                 ));
             }
             let severity = match severity_name {
                 "warning" => Severity::Warning,
                 "error" => Severity::Error,
                 other => {
-                    return Err(ApplicationError::new(
+                    return Err(ApplicationFailure::localized(
                         ToolErrorKind::Arguments,
-                        LocalizedMessage::new(ARGUMENT_UNKNOWN_SEVERITY)
-                            .with_text("severity", other),
+                        t!("cli.argument_unknown_severity", { severity: other }),
                     ));
                 }
             };
@@ -492,9 +581,10 @@ impl Application {
         workspace_root: &Path,
         format: ReportFormat,
         locale: Locale,
-    ) -> io::Result<()> {
-        let report = Reporter::render(result, workspace_root, format, locale);
-        writeln!(io::stdout().lock(), "{report}")
+    ) -> Result<(), ApplicationFailure> {
+        let report = Reporter::render(result, workspace_root, format, locale)?;
+        writeln!(io::stdout().lock(), "{report}")?;
+        Ok(())
     }
 }
 

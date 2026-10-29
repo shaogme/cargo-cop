@@ -8,17 +8,21 @@ mod syntax_rules;
 
 use cop_analysis::AnalysisSnapshot;
 use cop_config::ResolvedConfig;
+use cop_i18n::RenderError;
 use cop_model::Diagnostic;
 
 pub struct RuleEngine;
 
 impl RuleEngine {
-    pub fn run(snapshot: &AnalysisSnapshot, configuration: &ResolvedConfig) -> Vec<Diagnostic> {
+    pub fn run(
+        snapshot: &AnalysisSnapshot,
+        configuration: &ResolvedConfig,
+    ) -> Result<Vec<Diagnostic>, RenderError> {
         let mut diagnostics = Vec::new();
-        module_rules::ModuleRuleSet::run(snapshot, configuration, &mut diagnostics);
-        import_rules::ImportRuleSet::run(snapshot, configuration, &mut diagnostics);
-        semantic_rules::SemanticRuleSet::run(snapshot, configuration, &mut diagnostics);
-        syntax_rules::SyntaxRuleSet::run(snapshot, configuration, &mut diagnostics);
-        diagnostics
+        module_rules::ModuleRuleSet::run(snapshot, configuration, &mut diagnostics)?;
+        import_rules::ImportRuleSet::run(snapshot, configuration, &mut diagnostics)?;
+        semantic_rules::SemanticRuleSet::run(snapshot, configuration, &mut diagnostics)?;
+        syntax_rules::SyntaxRuleSet::run(snapshot, configuration, &mut diagnostics)?;
+        Ok(diagnostics)
     }
 }

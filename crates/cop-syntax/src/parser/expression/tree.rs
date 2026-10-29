@@ -1,9 +1,5 @@
+use cop_i18n::t;
 use std::ops::Range;
-
-use cop_model::{
-    LocalizedMessage, SYNTAX_EXPRESSION_UNSUPPORTED, SYNTAX_ITEM_UNSUPPORTED,
-    SYNTAX_PARSE_ERROR_UNEXPECTED_TOKEN,
-};
 
 use crate::{
     ast::{
@@ -118,7 +114,7 @@ impl ExpressionTree {
                 issues.push(AstFactory::parse_issue_with_boundary(
                     kind,
                     error.bounds(),
-                    LocalizedMessage::new(SYNTAX_ITEM_UNSUPPORTED),
+                    t!("syntax.item_unsupported"),
                     error.kind() == SyntaxErrorKind::UnclosedDelimiter,
                 ));
             }
@@ -142,7 +138,7 @@ impl ExpressionTree {
         issues.push(AstFactory::unsupported_issue(
             UnsupportedConstructKind::Expression,
             bounds,
-            LocalizedMessage::new(SYNTAX_ITEM_UNSUPPORTED),
+            t!("syntax.item_unsupported"),
         ));
     }
 
@@ -275,7 +271,7 @@ impl ExpressionTree {
         issues.push(AstFactory::parse_issue_with_boundary(
             kind,
             error.bounds(),
-            LocalizedMessage::new(SYNTAX_ITEM_UNSUPPORTED),
+            t!("syntax.item_unsupported"),
             error.kind() == SyntaxErrorKind::UnclosedDelimiter,
         ));
         None
@@ -339,7 +335,7 @@ impl ExpressionTree {
             context.issues.push(AstFactory::parse_issue(
                 ParseIssueKind::UnexpectedToken,
                 bounds,
-                LocalizedMessage::new(SYNTAX_PARSE_ERROR_UNEXPECTED_TOKEN),
+                t!("syntax.parse_error_unexpected_token"),
             ));
         }
     }
@@ -629,7 +625,7 @@ impl ExpressionTree {
                     details.kind,
                     details.code,
                     bounds,
-                    LocalizedMessage::new(SYNTAX_ITEM_UNSUPPORTED),
+                    t!("syntax.item_unsupported"),
                     details.boundary_unknown,
                 ));
             }
@@ -644,7 +640,7 @@ impl ExpressionTree {
                 context.issues.push(AstFactory::unsupported_issue(
                     UnsupportedConstructKind::Expression,
                     syntax.bounds(),
-                    LocalizedMessage::new(SYNTAX_EXPRESSION_UNSUPPORTED),
+                    t!("syntax.expression_unsupported"),
                 ));
             }
         }

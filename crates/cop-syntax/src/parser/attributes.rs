@@ -1,9 +1,5 @@
+use cop_i18n::{t, RenderError};
 use std::ops::Range;
-
-use cop_model::{
-    LocalizedMessage, MessageId, SYNTAX_ATTRIBUTE_INVALID, SYNTAX_ATTRIBUTE_UNCLOSED,
-    SYNTAX_EXPECT_ATTRIBUTE_BRACKET, SYNTAX_VISIBILITY_UNCLOSED,
-};
 
 use crate::{
     ast::{
@@ -41,7 +37,7 @@ impl AttributeParser {
                     issues,
                     ParseIssueKind::InvalidAttribute,
                     start..Self::current_end(source, tokens, *cursor),
-                    SYNTAX_EXPECT_ATTRIBUTE_BRACKET,
+                    t!("syntax.expect_attribute_bracket"),
                 );
                 continue;
             }
@@ -51,7 +47,7 @@ impl AttributeParser {
                     issues,
                     ParseIssueKind::UnclosedDelimiter,
                     start..end,
-                    SYNTAX_ATTRIBUTE_UNCLOSED,
+                    t!("syntax.attribute_unclosed"),
                 );
                 *cursor = tokens.len();
                 break;
@@ -65,7 +61,7 @@ impl AttributeParser {
                         issues,
                         ParseIssueKind::InvalidAttribute,
                         token.start()..token.end(),
-                        SYNTAX_ATTRIBUTE_INVALID,
+                        t!("syntax.attribute_invalid"),
                     );
                     Self::fallback_meta(tokens, open_index, close_index, token.start()..token.end())
                 }
@@ -74,7 +70,7 @@ impl AttributeParser {
                         issues,
                         ParseIssueKind::InvalidAttribute,
                         bounds.clone(),
-                        SYNTAX_ATTRIBUTE_INVALID,
+                        t!("syntax.attribute_invalid"),
                     );
                     Self::fallback_meta(tokens, open_index, close_index, bounds)
                 }
@@ -128,7 +124,7 @@ impl AttributeParser {
                 issues,
                 ParseIssueKind::UnclosedDelimiter,
                 start..Self::current_end(source, tokens, *cursor),
-                SYNTAX_VISIBILITY_UNCLOSED,
+                t!("syntax.visibility_unclosed"),
             );
         }
         let end = tokens
@@ -368,12 +364,8 @@ impl AttributeParser {
         issues: &mut Vec<ParseIssue>,
         kind: ParseIssueKind,
         bounds: Range<usize>,
-        message: MessageId,
+        message: Result<String, RenderError>,
     ) {
-        issues.push(AstFactory::parse_issue(
-            kind,
-            bounds,
-            LocalizedMessage::new(message),
-        ));
+        issues.push(AstFactory::parse_issue(kind, bounds, message));
     }
 }

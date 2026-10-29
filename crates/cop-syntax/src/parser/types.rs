@@ -1,6 +1,5 @@
+use cop_i18n::t;
 use std::ops::Range;
-
-use cop_model::{LocalizedMessage, SYNTAX_ITEM_UNSUPPORTED, SYNTAX_MACRO_OPAQUE};
 
 use crate::{
     ast::{
@@ -328,10 +327,9 @@ impl TypeParser {
                     input.clone(),
                     Vec::new(),
                 );
-                issues.push(AstFactory::parse_issue(
-                    ParseIssueKind::UnsupportedSyntax,
+                issues.push(AstFactory::opaque_macro_issue(
                     input.clone(),
-                    LocalizedMessage::new(SYNTAX_MACRO_OPAQUE),
+                    t!("syntax.macro_opaque"),
                 ));
                 Self::emit_path_argument_macros(path, parent, tokens, ast_nodes, issues);
             }
@@ -443,7 +441,7 @@ impl TypeParser {
         issues.push(AstFactory::parse_issue(
             issue_kind,
             error_bounds,
-            LocalizedMessage::new(SYNTAX_ITEM_UNSUPPORTED),
+            t!("syntax.item_unsupported"),
         ));
     }
 

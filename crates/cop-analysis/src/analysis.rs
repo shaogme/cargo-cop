@@ -1,7 +1,6 @@
 use cop_cargo::{DependencyKind, SelectedPackage};
-use cop_model::{
-    AnalysisIssueKind, Diagnostic, LocalizedMessage, ScanStatus, Severity, CFG_DEPENDENCY_UNKNOWN,
-};
+use cop_i18n::{t, RenderError};
+use cop_model::{AnalysisIssueKind, Diagnostic, ScanStatus, Severity};
 
 use crate::{
     cfg_eval::{CfgDecision, CfgEvaluator},
@@ -35,11 +34,11 @@ impl<'a> AnalysisRequest<'a> {
 }
 
 impl ProjectAnalyzer {
-    pub fn analyze(request: AnalysisRequest<'_>) -> AnalysisSnapshot {
+    pub fn analyze(request: AnalysisRequest<'_>) -> Result<AnalysisSnapshot, RenderError> {
         let mut modules = Vec::new();
         let mut diagnostics = Vec::new();
         for (context_index, target) in request.package.targets().iter().enumerate() {
-            let graph = ModuleGraph::build(request.package(), target, context_index);
+            let graph = ModuleGraph::build(request.package(), target, context_index)?;
             let (mut target_modules, mut target_diagnostics) = graph.into_parts();
             modules.append(&mut target_modules);
             diagnostics.append(&mut target_diagnostics);
@@ -67,8 +66,7 @@ impl ProjectAnalyzer {
                             Diagnostic::analysis(
                                 AnalysisIssueKind::UnknownCfg,
                                 Severity::Warning,
-                                LocalizedMessage::new(CFG_DEPENDENCY_UNKNOWN)
-                                    .with_text("dependency", dependency.rust_name()),
+                                t!("analysis.cfg_dependency_unknown", { dependency: dependency.rust_name() })?,
                             )
                             .with_package(request.package.name())
                             .with_package_manifest_path(request.package.manifest_path())
@@ -110,12 +108,12 @@ impl ProjectAnalyzer {
         });
         let facts = AnalysisFacts::build(request.package(), &modules);
         let status = ScanStatus::from_diagnostics(&diagnostics);
-        AnalysisSnapshot {
+        Ok(AnalysisSnapshot {
             modules,
             facts,
             diagnostics,
             status,
-        }
+        })
     }
 }
 

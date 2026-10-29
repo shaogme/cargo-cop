@@ -1,22 +1,10 @@
-#![forbid(unsafe_code)]
+pub use u18n::{PluralCount, RenderError};
 
-use std::{borrow::Cow, collections::HashMap};
+use std::{error::Error, fmt};
 
-use cop_model::{LocalizedMessage, MessageArgument, MessageId};
-use fluent_bundle::FluentValue;
-use fluent_templates::static_loader;
 use language_tags::LanguageTag;
-use log::error;
-use unic_langid::LanguageIdentifier;
 
-include!(concat!(env!("OUT_DIR"), "/supported_locales.rs"));
-
-static_loader! {
-    static LOCALES = {
-        locales: "./locales",
-        fallback_language: "en-US",
-    };
-}
+include!(concat!(env!("OUT_DIR"), "/u18n_messages.rs"));
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct Locale(&'static str);
@@ -24,10 +12,6 @@ pub struct Locale(&'static str);
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LocaleError {
     value: String,
-}
-
-pub struct MessageFormatter {
-    locale: Locale,
 }
 
 impl Locale {
@@ -63,8 +47,11 @@ impl Locale {
         self.0
     }
 
-    fn language_identifier(self) -> LanguageIdentifier {
-        self.as_str().parse().expect("内置 locale tag 有效")
+    pub fn as_tag(self) -> LocaleTag {
+        match self.0 {
+            "en-US" => LocaleTag::EnUs,
+            _ => LocaleTag::ZhCn,
+        }
     }
 }
 
@@ -74,115 +61,23 @@ impl LocaleError {
     }
 }
 
-impl MessageFormatter {
-    pub fn new(locale: Locale) -> Self {
-        Self { locale }
-    }
-
-    pub fn locale(&self) -> Locale {
-        self.locale
-    }
-
-    pub fn format(&self, message: &LocalizedMessage) -> String {
-        if let Err(error) = message.validate() {
-            error!(
-                "invalid message arguments for {}: {}",
-                error.id().as_str(),
-                error.argument()
-            );
-            return message.id().as_str().to_owned();
-        }
-        let arguments = fluent_arguments(message);
-        let requested = self.locale.language_identifier();
-        if let Some(value) =
-            LOCALES.lookup_no_default_fallback(&requested, message.id().as_str(), Some(&arguments))
-        {
-            return value;
-        }
-        error!(
-            "missing Fluent message {} for {}",
-            message.id().as_str(),
-            self.locale.as_str()
-        );
-        if self.locale != Locale::EN_US {
-            let fallback = Locale::EN_US.language_identifier();
-            if let Some(value) = LOCALES.lookup_no_default_fallback(
-                &fallback,
-                message.id().as_str(),
-                Some(&arguments),
-            ) {
-                return value;
-            }
-        }
-        message.id().as_str().to_owned()
-    }
-
-    pub fn text(&self, id: MessageId) -> String {
-        self.format(&LocalizedMessage::new(id))
+impl fmt::Display for LocaleError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "unsupported locale `{}`", self.value)
     }
 }
 
-fn fluent_arguments(
-    message: &LocalizedMessage,
-) -> HashMap<Cow<'static, str>, FluentValue<'static>> {
-    message
-        .arguments()
-        .iter()
-        .map(|(name, argument)| {
-            let value = match argument {
-                MessageArgument::Text(value) | MessageArgument::Opaque(value) => {
-                    FluentValue::from(value.clone())
-                }
-                MessageArgument::Number(value) => FluentValue::from(*value),
-                MessageArgument::Boolean(value) => {
-                    FluentValue::from(if *value { "true" } else { "false" })
-                }
-            };
-            (Cow::Owned(name.clone()), value)
-        })
-        .collect()
-}
+impl Error for LocaleError {}
 
 fn resolve_tag(value: &str) -> Option<Locale> {
     let tag = LanguageTag::parse(value.trim()).ok()?;
     tag.validate().ok()?;
-    if tag.extended_language().is_some() {
-        return match tag.primary_language().to_ascii_lowercase().as_str() {
-            "en" => Some(Locale::EN_US),
-            "zh" => Some(Locale::ZH_CN),
-            _ => None,
-        };
-    }
-
-    let mut subtags = vec![tag.primary_language().to_ascii_lowercase()];
-    if let Some(script) = tag.script() {
-        subtags.push(script.to_owned());
-    }
-    if let Some(region) = tag.region() {
-        subtags.push(region.to_owned());
-    }
-    subtags.extend(tag.variant_subtags().map(str::to_owned));
-    let language_identifier = subtags.join("-").parse::<LanguageIdentifier>().ok()?;
-    let requested = language_identifier.to_string();
-    let resource_tag = match requested.as_str() {
-        "en" => "en-US",
-        "zh" => "zh-CN",
-        _ => requested.as_str(),
-    };
-    let Some(locale) = SUPPORTED_LOCALES
-        .iter()
-        .find(|locale| locale.eq_ignore_ascii_case(resource_tag))
-    else {
-        return match tag.primary_language().to_ascii_lowercase().as_str() {
-            "en" => Some(Locale::EN_US),
-            "zh" => Some(Locale::ZH_CN),
-            _ => None,
-        };
-    };
-    match *locale {
-        "zh-CN" => Some(Locale::ZH_CN),
-        "en-US" => Some(Locale::EN_US),
-        other => Some(Locale(other)),
+    if tag.primary_language().eq_ignore_ascii_case("zh") {
+        Some(Locale::ZH_CN)
+    } else if tag.primary_language().eq_ignore_ascii_case("en") {
+        Some(Locale::EN_US)
+    } else {
+        None
     }
 }
 
@@ -208,26 +103,26 @@ fn resolve_environment_value(value: &str) -> Option<Locale> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Locale, SUPPORTED_LOCALES};
+    use super::Locale;
 
     #[test]
-    fn resolves_posix_environment_values_as_english_before_lower_priority_values() {
+    fn resolves_posix_environment_values_before_lower_priority_values() {
         assert_eq!(
-            Locale::resolve(None, None, &[Some("C.UTF-8"), Some("en_US.UTF-8")]),
+            Locale::resolve(None, None, &[Some("C.UTF-8"), Some("zh_CN.UTF-8")]),
             Ok(Locale::EN_US)
         );
         assert_eq!(
-            Locale::resolve(None, None, &[Some("POSIX@latin"), Some("en_US")]),
+            Locale::resolve(None, None, &[Some("POSIX@latin"), Some("zh_CN")]),
             Ok(Locale::EN_US)
         );
         assert_eq!(
-            Locale::resolve(None, None, &[Some("123"), Some("en_US.UTF-8")]),
-            Ok(Locale::EN_US)
+            Locale::resolve(None, None, &[Some("123"), Some("zh_CN.UTF-8")]),
+            Ok(Locale::ZH_CN)
         );
     }
 
     #[test]
-    fn resolves_explicit_locale_values_before_config_and_environment() {
+    fn rejects_explicit_locales_outside_supported_languages() {
         assert_eq!(
             Locale::resolve(Some("en"), Some("zh-CN"), &[Some("zh_CN")]),
             Ok(Locale::EN_US)
@@ -248,14 +143,5 @@ mod tests {
             Locale::resolve(None, None, &[Some("en_us.UTF-8")]),
             Ok(Locale::EN_US)
         );
-    }
-
-    #[test]
-    fn resolves_every_embedded_locale_from_the_catalog_list() {
-        for locale in SUPPORTED_LOCALES {
-            let resolved = Locale::parse_explicit(locale).expect("嵌入目录中的 locale 有效");
-            let expected = *locale;
-            assert_eq!(resolved.as_str(), expected);
-        }
     }
 }

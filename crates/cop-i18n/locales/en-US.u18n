@@ -1,0 +1,159 @@
+locale en-US;
+
+message rule.item_spacing = "Adjacent definitions require {expected} blank lines; found {actual, plural, one {# blank line} other {# blank lines}}";
+message rule.module_file_layout = "Submodule entry files must not use the mod.rs layout";
+message rule.out_of_line_modules_at_scope_start = "Out-of-line module declarations must follow extern crate declarations and stay before use declarations and other items";
+message rule.child_module_visibility = "Non-private submodule {module} may contain only declarations and use items with private, public, or pub(crate) visibility";
+message rule.child_module_line_count = "The effective line count of submodule file {file} is {actual}; it must be between {minimum} and {maximum}";
+message rule.no_parent_path_attribute = "A #[path] attribute must not traverse to a parent directory";
+message rule.no_parent_glob_import = "Child modules must not use super::* to import parent implementation details";
+message rule.no_parent_private_path = "The child module path depends on private item {item} from ancestor module {ancestor}";
+message rule.impl_cross_file = "The impl target {target} is defined in another source file; impl blocks must be in the same file as the type definition";
+message rule.impl_external_trait_target = "The trait impl target root {root} is not an allowed standard library type";
+message rule.impl_inherent_target = "An inherent impl target must be a type defined in the current source file";
+message rule.impl_target_unresolved = "Could not resolve the type ownership of impl target {target}";
+message rule.private_fields_for_behavior_type = "All fields of type {name} with an impl block must be private";
+message rule.unnecessary_pub_crate = "The crate-visible declaration {name} can be private";
+message rule.child_public_free_function = "Free functions in child modules must be private";
+message rule.no_lint_relaxation = "Do not relax lint checks with an allow attribute";
+message rule.function_parameter_limit = "This function has {actual} parameters; the maximum is {maximum}";
+message rule.closure_parameter_limit = "This closure has {actual} parameters; the maximum is {maximum}";
+message rule.tuple_arity = "This tuple has {actual} elements; the maximum is {maximum}";
+message rule.declaration_before_use = "Name {name} is referenced before its declaration";
+message rule.no_inline_qualified_path = "Explicitly qualified path {path} should use an imported name instead";
+message rule.extern_crate_at_scope_start = "extern crate declarations must appear at the start of a module scope";
+message rule.use_at_scope_start = "Module-scope use declarations must follow out-of-line modules and precede other items";
+message rule.block_use_at_scope_start = "A use declaration in a block must appear before the first non-use statement";
+message rule.merge_import_prefix = "This import shares the prefix {prefix} with the import on line {line}; merge them into one use tree";
+message rule.merge_block_import_prefix = "This block import shares the prefix {prefix} with the import on line {line}; merge them into one use tree";
+message rule.cfg_use_group_split = "The cfg import group {condition} is split by another import group";
+message rule.cfg_use_group_spacing = "Different cfg import groups must have exactly one blank line between them; found {empty_lines, plural, one {# blank line} other {# blank lines}}";
+message rule.cfg_inside_use_tree = "Do not nest cfg attributes inside braces of a use tree";
+message analysis.cfg_dependency_unknown = "Could not statically determine the target condition for dependency {dependency}";
+message analysis.include_dynamic_input = "include! brings source code in at compile time, so the static module graph cannot determine its contents";
+message analysis.macro_generated_module = "The item macro {name} was not expanded and may generate a module declaration";
+message analysis.module_cycle = "Module {name} loads a source file that is already active in the current recursion chain";
+message analysis.path_module_missing = "The module file specified by #[path] does not exist";
+message analysis.module_layout_ambiguous = "Module {name} matches both the name.rs and name/mod.rs layouts";
+message analysis.module_missing = "Could not find module {name}; checked the name.rs and name/mod.rs layouts";
+message analysis.module_source_read_error = "Could not read Rust source file {path}";
+message analysis.module_file_metadata_error = "Could not inspect module file {path}";
+message analysis.parser_coverage = "{issue}";
+message analysis.malformed_cfg_attribute = "Could not reliably interpret a cfg/path attribute; module analysis may be incomplete";
+message analysis.malformed_cfg_expression = "Could not parse the cfg! predicate at this source location";
+message analysis.cfg_macro_identity_unknown = "Could not confirm this cfg! call is the built-in macro; its input remains opaque";
+message analysis.unknown_cfg = "Could not statically determine cfg condition {condition}";
+message syntax.unclosed_block_comment = "Block comment is missing its closing */";
+message syntax.unknown_character = "Unrecognized character {character}";
+message syntax.unclosed_raw_string = "Raw string is missing its closing delimiter";
+message syntax.unclosed_literal = "Literal is missing its closing quote";
+message syntax.expect_literal_or_lifetime = "A character literal or lifetime name is required after a single quote";
+message syntax.invalid_byte_character = "Invalid byte character literal";
+message syntax.expect_radix_digit = "At least one digit is required after the radix prefix";
+message syntax.invalid_radix_digit = "Numeric literal contains a digit that is invalid in base {radix}";
+message syntax.inner_attribute_position = "Inner attributes must be at the beginning of a scope";
+message syntax.expect_attribute_bracket = "An opening bracket is required after the attribute marker #";
+message syntax.attribute_invalid = "Attribute path or metadata structure is invalid";
+message syntax.attribute_unclosed = "Attribute is missing its closing bracket";
+message syntax.visibility_unclosed = "Visibility restriction is missing its closing parenthesis";
+message syntax.expect_module_name = "A module name is required after mod";
+message syntax.expect_module_body = "A module declaration must end with a semicolon or have a module body";
+message syntax.inline_module_unclosed = "Inline module is missing its closing brace";
+message syntax.use_missing_semicolon = "use declaration is missing its semicolon";
+message syntax.use_tree_invalid = "Use tree path, group, alias, or glob structure is invalid";
+message syntax.extern_crate_missing_semicolon = "extern crate declaration must end with a semicolon";
+message syntax.named_item_expect_name = "A name is required after the named item keyword";
+message syntax.trait_expect_name = "A name is required after trait";
+message syntax.trait_expect_body = "Trait declaration must have a body";
+message syntax.impl_boundary_unknown = "Could not determine the boundary of the impl block";
+message syntax.impl_expect_target = "A type target is required after impl";
+message syntax.function_expect_name = "A function name is required after fn";
+message syntax.function_missing_parameters = "Function signature is missing its parameter list";
+message syntax.function_parameters_unclosed = "Function parameter list is missing its closing parenthesis";
+message syntax.function_body_unclosed = "Function body is missing its closing brace";
+message syntax.item_unsupported = "This item syntax is not yet covered by the AST";
+message syntax.expression_unsupported = "This expression syntax is outside the supported stable syntax set";
+message syntax.unsupported_edition = "Rust edition {edition} is not supported";
+message syntax.macro_opaque = "Macro input is opaque and its internal Rust syntax is not analyzed";
+message syntax.parse_error_lexical_error = "Lexing encountered an invalid or unrecognized token";
+message syntax.parse_error_unexpected_token = "Unexpected token in this syntax position";
+message syntax.parse_error_unexpected_eof = "The syntax construct was incomplete at end of input";
+message syntax.parse_error_unclosed_delimiter = "An opening delimiter has no matching closing delimiter";
+message syntax.parse_error_invalid_attribute = "The attribute structure is invalid";
+message syntax.parse_error_unsupported_edition = "Rust edition {edition} is not supported";
+message syntax.unsupported_item = "This item syntax is not modeled";
+message syntax.unsupported_associated_item = "This associated item syntax is not modeled";
+message syntax.unsupported_type = "This type syntax is not modeled";
+message syntax.unsupported_pattern = "This pattern syntax is not modeled";
+message syntax.unsupported_statement = "This statement syntax is not modeled";
+message syntax.unsupported_expression = "This expression syntax is not modeled";
+message syntax.unsupported_attribute = "This attribute syntax is not modeled";
+message syntax.unsupported_visibility = "This visibility syntax is not modeled";
+message syntax.unsupported_use_tree = "This use tree syntax is not modeled";
+message syntax.unsupported_token = "This token structure is not modeled";
+message syntax.delimiter_unclosed = "Opening delimiter is missing its matching closing delimiter";
+message syntax.unexpected_token = "Unexpected token in this syntax position";
+message syntax.unmatched_close_delimiter = "Closing delimiter has no matching opener or is out of order";
+message syntax.declaration_body_unclosed = "Declaration body is missing its closing brace";
+message syntax.orphaned_outer_attribute = "Outer attribute is not followed by an item";
+message config.file_missing = "Explicit configuration file {path} does not exist or is not a regular file";
+message config.file_read_error = "Could not read configuration file {path}";
+message config.parse_error = "Could not parse configuration file {path}";
+message config.invalid_root = "The root of configuration file {path} must be a TOML table";
+message config.version_type = "Field version in configuration file {path} must be an integer";
+message config.unsupported_version = "Configuration file {path} uses unsupported version {version}; the supported version is {supported}";
+message config.invalid_field = "Field {field} in configuration file {path}: {reason, select, unknown_field {unknown field} must_be_table {must be a table} must_be_string {must be a string} must_be_nonempty_string {must be a non-empty string} must_be_string_array {must be an array of strings} must_be_boolean {must be a boolean} must_be_array_of_tables {must be an array of tables} invalid_cfg_name {invalid cfg name} unknown_rule_id {unknown rule ID} unknown_severity {unknown severity {value}} unknown_value {unknown value {value}} duplicate {duplicate value {value}} invalid {invalid value} other {invalid value}}";
+message locale.invalid_cli = "Invalid --locale value: {locale}";
+message locale.invalid_config = "Invalid [i18n].locale configuration value: {locale}";
+message cargo.error = "Cargo operation failed";
+message cargo.operation_error = "Could not process Cargo configuration at {path}";
+message cargo.workspace_conflict = "--workspace cannot be used together with --package";
+message cargo.target_cfg_missing = "cfg information is missing for target {target}";
+message cargo.feature_context_missing = "feature context is missing for package {package}";
+message cargo.no_scan_packages = "The manifest did not match a scannable workspace package";
+message cargo.package_not_found = "Package {name} does not exist in the workspace";
+message cargo.package_ambiguous = "Package name {name} is ambiguous; split the workspace or specify a unique package name";
+message cargo.package_duplicate = "--package specifies {name} more than once";
+message cargo.feature_package_not_selected = "--features references package {package}, which is not selected";
+message cargo.feature_not_found = "Package {package} does not have feature {feature}";
+message cargo.feature_not_declared = "None of the selected packages declares feature {feature}";
+message cargo.config_target_type = "Cargo configuration {path} must set build.target to a string";
+message cargo.target_cfg_invalid = "Could not parse Cargo target condition {condition}";
+message cargo.target_cfg_query_error = "Could not query cfg values for target {target}";
+message cargo.manifest_unavailable = "Could not access manifest {path}";
+message cargo.host_triple_missing = "rustc -vV output is missing the host triple";
+message cli.argument_error = "Invalid command-line arguments";
+message cli.argument_unknown_rule = "Unknown rule ID: {rule}";
+message cli.argument_duplicate_rule = "Rule {rule} was specified more than once";
+message cli.argument_severity_format = "Invalid --severity value {value}; expected ID=warning|error";
+message cli.argument_unknown_severity = "Unknown severity: {severity}";
+message cli.argument_severity_duplicate = "--severity was specified more than once for rule {rule}";
+message cli.io_error = "Could not read current directory";
+message cli.about = "Check whether Rust source code follows repository conventions";
+message cli.help = "Usage: cargo-cop [OPTIONS]
+Check whether Rust source code follows repository conventions.
+
+Options:
+  --manifest-path <PATH>    Path to Cargo.toml
+  --workspace               Scan the entire workspace
+  -p, --package <NAME>      Select packages to scan; may be repeated
+  --target <TRIPLE>         Target triple to scan
+  --features <LIST>         Enable comma-separated features
+  --cfg <CFG>               Add a custom cfg flag or key/value; may be repeated
+  --all-features            Enable all features
+  --no-default-features     Disable default features
+  --all-targets             Scan all targets
+  --config <PATH>           Configuration file path
+  --locale <TAG>            Output locale (zh-CN, en-US)
+  --format <FORMAT>         Output format: human or json
+  --disable-rule <ID>       Disable a rule; may be repeated
+  --severity <ID=LEVEL>     Set rule severity; may be repeated
+  -h, --help                Print help
+  -V, --version             Print version";
+message cli.parse_error = "{kind, select, unknown {Unknown command-line option or subcommand. Use --help to see available options.} missing {A required command-line option or value is missing. Use --help to see usage.} invalid {A command-line option has an invalid value or format. Use --help to see valid forms.} conflict {The supplied command-line options cannot be used together.} other {Invalid command-line arguments. Use --help to see usage.}}";
+message cli.version = "cargo-cop {version}";
+message report.output_write_error = "Could not write diagnostics";
+message report.summary = "cargo-cop: status {status, select, complete {complete} partial {partial} incomplete {incomplete} other {incomplete}}; {errors, plural, one {# error} other {# errors}}, {warnings, plural, one {# warning} other {# warnings}}, {suppressed_warnings, plural, one {# warning suppressed} other {# warnings suppressed}}, {diagnostics, plural, one {# diagnostic} other {# diagnostics}}";
+message report.detail_reference = "see the detail field";
+message report.namespace_label = "namespace";
+message report.cfg_label = "cfg";

@@ -4,7 +4,7 @@ author: Shao G.
 
 inputs:
   version:
-    description: Release version to install (for example, 0.2.2 or v0.2.2). Defaults to the latest release.
+    description: Release version to install (for example, 0.2.3 or v0.2.2). Defaults to the latest release.
     required: false
     default: latest
   from-source:

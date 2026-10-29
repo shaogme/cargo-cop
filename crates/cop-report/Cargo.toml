@@ -15,4 +15,5 @@ categories.workspace = true
 [dependencies]
 cop-model.workspace = true
 cop-i18n.workspace = true
+u18n.workspace = true
 serde_json.workspace = true

@@ -4,10 +4,8 @@ use cop_analysis::{
     ShapeParameterFact, SymbolKind, SyntaxShapeKind,
 };
 use cop_config::ResolvedConfig;
-use cop_model::{
-    Diagnostic, LocalizedMessage, RuleId, CLOSURE_PARAMETER_LIMIT, DECLARATION_BEFORE_USE,
-    FUNCTION_PARAMETER_LIMIT, NO_LINT_RELAXATION, TUPLE_ARITY,
-};
+use cop_i18n::{t, RenderError};
+use cop_model::{Diagnostic, RuleId};
 
 pub(super) struct SyntaxRuleSet;
 
@@ -16,35 +14,37 @@ impl SyntaxRuleSet {
         snapshot: &AnalysisSnapshot,
         configuration: &ResolvedConfig,
         diagnostics: &mut Vec<Diagnostic>,
-    ) {
+    ) -> Result<(), RenderError> {
         let adapter = RuleDiagnosticAdapter::new(configuration);
         for module in snapshot.modules() {
             if module.is_order_only() {
                 continue;
             }
-            Self::lint_relaxation(module, diagnostics, &adapter);
-            Self::syntax_shapes(module, snapshot, diagnostics, &adapter);
-            Self::declaration_order(module, snapshot, diagnostics, &adapter);
+            Self::lint_relaxation(module, diagnostics, &adapter)?;
+            Self::syntax_shapes(module, snapshot, diagnostics, &adapter)?;
+            Self::declaration_order(module, snapshot, diagnostics, &adapter)?;
         }
+        Ok(())
     }
 
     fn lint_relaxation(
         module: &ModuleNode,
         diagnostics: &mut Vec<Diagnostic>,
         adapter: &RuleDiagnosticAdapter<'_>,
-    ) {
+    ) -> Result<(), RenderError> {
         for attribute in module.lint_relaxations() {
             adapter.push(
                 module,
                 diagnostics,
                 RuleReport::new(
                     RuleId::NoLintRelaxation,
-                    LocalizedMessage::new(NO_LINT_RELAXATION),
+                    t!("rule.no_lint_relaxation")?,
                     Some(attribute.start()..attribute.end()),
                 )
                 .with_cfg_condition(attribute.condition().map(str::to_owned)),
             );
         }
+        Ok(())
     }
 
     fn syntax_shapes(
@@ -52,9 +52,9 @@ impl SyntaxRuleSet {
         snapshot: &AnalysisSnapshot,
         diagnostics: &mut Vec<Diagnostic>,
         adapter: &RuleDiagnosticAdapter<'_>,
-    ) {
+    ) -> Result<(), RenderError> {
         let Some(syntax) = snapshot.facts().syntax_for_module(module) else {
-            return;
+            return Ok(());
         };
         for shape in syntax.shapes() {
             let bounds = shape.bounds();
@@ -70,9 +70,7 @@ impl SyntaxRuleSet {
                             diagnostics,
                             RuleReport::new(
                                 RuleId::ParameterLimit,
-                                LocalizedMessage::new(CLOSURE_PARAMETER_LIMIT)
-                                    .with_number("actual", parameter_count as i64)
-                                    .with_number("maximum", 5),
+                                t!("rule.closure_parameter_limit", { actual: parameter_count as i64, maximum: 5 })?,
                                 Some(bounds),
                             )
                             .with_cfg_condition(closure_parameter_condition(parameters)),
@@ -86,9 +84,7 @@ impl SyntaxRuleSet {
                             diagnostics,
                             RuleReport::new(
                                 RuleId::TupleArity,
-                                LocalizedMessage::new(TUPLE_ARITY)
-                                    .with_number("actual", *arity as i64)
-                                    .with_number("maximum", 2),
+                                t!("rule.tuple_arity", { actual: *arity as i64, maximum: 2 })?,
                                 Some(bounds),
                             ),
                         );
@@ -101,9 +97,7 @@ impl SyntaxRuleSet {
                             diagnostics,
                             RuleReport::new(
                                 RuleId::ParameterLimit,
-                                LocalizedMessage::new(FUNCTION_PARAMETER_LIMIT)
-                                    .with_number("actual", *parameter_count as i64)
-                                    .with_number("maximum", 5),
+                                t!("rule.function_parameter_limit", { actual: *parameter_count as i64, maximum: 5 })?,
                                 Some(bounds),
                             ),
                         );
@@ -111,6 +105,7 @@ impl SyntaxRuleSet {
                 }
             }
         }
+        Ok(())
     }
 
     fn declaration_order(
@@ -118,14 +113,15 @@ impl SyntaxRuleSet {
         snapshot: &AnalysisSnapshot,
         diagnostics: &mut Vec<Diagnostic>,
         adapter: &RuleDiagnosticAdapter<'_>,
-    ) {
+    ) -> Result<(), RenderError> {
         for reference in snapshot.facts().references_for_module(module) {
             if matches!(reference.kind(), ReferenceKind::Path | ReferenceKind::Call)
                 || (reference.kind() == ReferenceKind::Use && !reference.is_glob())
             {
-                check_ordered_path(reference, module, diagnostics, adapter);
+                check_ordered_path(reference, module, diagnostics, adapter)?;
             }
         }
+        Ok(())
     }
 }
 
@@ -166,7 +162,7 @@ fn check_ordered_path(
     module: &ModuleNode,
     diagnostics: &mut Vec<Diagnostic>,
     adapter: &RuleDiagnosticAdapter<'_>,
-) {
+) -> Result<(), RenderError> {
     let bounds = reference.bounds();
     if !module
         .configured_ast()
@@ -177,7 +173,7 @@ fn check_ordered_path(
             bounds.end,
         )
     {
-        return;
+        return Ok(());
     }
     let reference_condition = reference.condition();
     let resolution = reference.resolution();
@@ -187,23 +183,24 @@ fn check_ordered_path(
             && is_ordered_declaration(symbol.kind())
             && SyntaxSupport::conditions_may_coexist(reference_condition, symbol.cfg_condition())
     }) else {
-        return;
+        return Ok(());
     };
     let Some(declaration_span) = symbol.span() else {
-        return;
+        return Ok(());
     };
     if bounds.start >= declaration_span.byte_range().start {
-        return;
+        return Ok(());
     }
     adapter.push(
         module,
         diagnostics,
         RuleReport::new(
             RuleId::DeclarationBeforeUse,
-            LocalizedMessage::new(DECLARATION_BEFORE_USE).with_text("name", symbol.name()),
+            t!("rule.declaration_before_use", { name: symbol.name() })?,
             Some(bounds),
         ),
     );
+    Ok(())
 }
 
 fn is_ordered_declaration(kind: SymbolKind) -> bool {

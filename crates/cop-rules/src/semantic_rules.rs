@@ -6,11 +6,8 @@ use cop_analysis::{
     SymbolVisibility,
 };
 use cop_config::ResolvedConfig;
-use cop_model::{
-    AnalysisIssueKind, Diagnostic, LocalizedMessage, RuleId, Severity, CHILD_PUBLIC_FREE_FUNCTION,
-    IMPL_CROSS_FILE, IMPL_EXTERNAL_TRAIT_TARGET, IMPL_INHERENT_TARGET, IMPL_TARGET_UNRESOLVED,
-    NO_PARENT_GLOB_IMPORT, NO_PARENT_PRIVATE_PATH, PRIVATE_FIELDS_FOR_BEHAVIOR_TYPE,
-};
+use cop_i18n::{t, RenderError};
+use cop_model::{AnalysisIssueKind, Diagnostic, RuleId, Severity};
 
 pub(super) struct SemanticRuleSet;
 
@@ -19,18 +16,19 @@ impl SemanticRuleSet {
         snapshot: &AnalysisSnapshot,
         configuration: &ResolvedConfig,
         diagnostics: &mut Vec<Diagnostic>,
-    ) {
+    ) -> Result<(), RenderError> {
         let adapter = RuleDiagnosticAdapter::new(configuration);
         for module in snapshot.modules() {
             if module.is_order_only() {
                 continue;
             }
-            Self::parent_private_paths(module, snapshot, diagnostics, &adapter);
-            Self::impl_locality(module, snapshot, diagnostics, &adapter);
-            Self::private_behavior_fields(module, snapshot, diagnostics, &adapter);
-            Self::public_free_functions(snapshot, module, diagnostics, &adapter);
+            Self::parent_private_paths(module, snapshot, diagnostics, &adapter)?;
+            Self::impl_locality(module, snapshot, diagnostics, &adapter)?;
+            Self::private_behavior_fields(module, snapshot, diagnostics, &adapter)?;
+            Self::public_free_functions(snapshot, module, diagnostics, &adapter)?;
         }
-        unnecessary_pub_crate::UnnecessaryPubCrateRule::run(snapshot, diagnostics, &adapter);
+        unnecessary_pub_crate::UnnecessaryPubCrateRule::run(snapshot, diagnostics, &adapter)?;
+        Ok(())
     }
 
     fn parent_private_paths(
@@ -38,9 +36,9 @@ impl SemanticRuleSet {
         snapshot: &AnalysisSnapshot,
         diagnostics: &mut Vec<Diagnostic>,
         adapter: &RuleDiagnosticAdapter<'_>,
-    ) {
+    ) -> Result<(), RenderError> {
         if module.is_crate_root() {
-            return;
+            return Ok(());
         }
         for reference in snapshot.facts().references_for_module(module) {
             let bounds = reference.bounds();
@@ -55,14 +53,15 @@ impl SemanticRuleSet {
                     diagnostics,
                     RuleReport::new(
                         RuleId::NoParentPrivateDependency,
-                        LocalizedMessage::new(NO_PARENT_GLOB_IMPORT),
+                        t!("rule.no_parent_glob_import")?,
                         Some(bounds),
                     ),
                 );
                 continue;
             }
-            check_parent_path(reference, module, diagnostics, adapter);
+            check_parent_path(reference, module, diagnostics, adapter)?;
         }
+        Ok(())
     }
 
     fn impl_locality(
@@ -70,7 +69,7 @@ impl SemanticRuleSet {
         snapshot: &AnalysisSnapshot,
         diagnostics: &mut Vec<Diagnostic>,
         adapter: &RuleDiagnosticAdapter<'_>,
-    ) {
+    ) -> Result<(), RenderError> {
         for implementation in snapshot.facts().impls_for_module(module) {
             if !implementation.is_target_supported() {
                 continue;
@@ -99,8 +98,7 @@ impl SemanticRuleSet {
                             diagnostics,
                             RuleReport::new(
                                 RuleId::ImplLocality,
-                                LocalizedMessage::new(IMPL_CROSS_FILE)
-                                    .with_text("target", symbol.name()),
+                                t!("rule.impl_cross_file", { target: symbol.name() })?,
                                 Some(bounds),
                             ),
                         );
@@ -122,8 +120,7 @@ impl SemanticRuleSet {
                         diagnostics,
                         RuleReport::new(
                             RuleId::ImplLocality,
-                            LocalizedMessage::new(IMPL_EXTERNAL_TRAIT_TARGET)
-                                .with_text("root", root),
+                            t!("rule.impl_external_trait_target", { root: root })?,
                             Some(bounds),
                         ),
                     );
@@ -133,7 +130,7 @@ impl SemanticRuleSet {
                         diagnostics,
                         RuleReport::new(
                             RuleId::ImplLocality,
-                            LocalizedMessage::new(IMPL_INHERENT_TARGET),
+                            t!("rule.impl_inherent_target")?,
                             Some(bounds),
                         ),
                     );
@@ -149,7 +146,7 @@ impl SemanticRuleSet {
                     diagnostics,
                     RuleReport::new(
                         RuleId::ImplLocality,
-                        LocalizedMessage::new(IMPL_INHERENT_TARGET),
+                        t!("rule.impl_inherent_target")?,
                         Some(bounds),
                     ),
                 );
@@ -161,11 +158,11 @@ impl SemanticRuleSet {
                     | PathResolutionKind::Ambiguous
                     | PathResolutionKind::AliasCycle
             ) {
+                let unresolved_target = path.join("::");
                 let mut issue = Diagnostic::analysis(
                     AnalysisIssueKind::ParserCoverage,
                     Severity::Warning,
-                    LocalizedMessage::new(IMPL_TARGET_UNRESOLVED)
-                        .with_text("target", path.join("::")),
+                    t!("rule.impl_target_unresolved", { target: unresolved_target.as_str() })?,
                 )
                 .with_package(module.package_name())
                 .with_package_manifest_path(module.package_manifest_path())
@@ -182,6 +179,7 @@ impl SemanticRuleSet {
                 diagnostics.push(issue);
             }
         }
+        Ok(())
     }
 
     fn private_behavior_fields(
@@ -189,13 +187,13 @@ impl SemanticRuleSet {
         snapshot: &AnalysisSnapshot,
         diagnostics: &mut Vec<Diagnostic>,
         adapter: &RuleDiagnosticAdapter<'_>,
-    ) {
+    ) -> Result<(), RenderError> {
         let Some(scope) = snapshot
             .facts()
             .syntax_for_module(module)
             .and_then(|syntax| syntax.root_scope())
         else {
-            return;
+            return Ok(());
         };
         for item in scope.items().iter().filter(|item| item.is_enabled()) {
             if !matches!(
@@ -228,13 +226,13 @@ impl SemanticRuleSet {
                     diagnostics,
                     RuleReport::new(
                         RuleId::PrivateFieldsForBehaviorTypes,
-                        LocalizedMessage::new(PRIVATE_FIELDS_FOR_BEHAVIOR_TYPE)
-                            .with_text("name", name),
+                        t!("rule.private_fields_for_behavior_type", { name: name })?,
                         Some(field.bounds()),
                     ),
                 );
             }
         }
+        Ok(())
     }
 
     fn public_free_functions(
@@ -242,16 +240,16 @@ impl SemanticRuleSet {
         module: &ModuleNode,
         diagnostics: &mut Vec<Diagnostic>,
         adapter: &RuleDiagnosticAdapter<'_>,
-    ) {
+    ) -> Result<(), RenderError> {
         if module.is_crate_root() {
-            return;
+            return Ok(());
         }
         let Some(scope) = snapshot
             .facts()
             .syntax_for_module(module)
             .and_then(|syntax| syntax.root_scope())
         else {
-            return;
+            return Ok(());
         };
         for item in scope.items().iter().filter(|item| item.is_enabled()) {
             let is_public_function = matches!(item.kind(), ItemKindFact::Function)
@@ -262,12 +260,13 @@ impl SemanticRuleSet {
                     diagnostics,
                     RuleReport::new(
                         RuleId::ChildPublicFreeFunctions,
-                        LocalizedMessage::new(CHILD_PUBLIC_FREE_FUNCTION),
+                        t!("rule.child_public_free_function")?,
                         Some(item.bounds()),
                     ),
                 );
             }
         }
+        Ok(())
     }
 }
 
@@ -276,7 +275,7 @@ fn check_parent_path(
     module: &ModuleNode,
     diagnostics: &mut Vec<Diagnostic>,
     adapter: &RuleDiagnosticAdapter<'_>,
-) {
+) -> Result<(), RenderError> {
     let bounds = reference.bounds();
     if !module
         .configured_ast()
@@ -287,38 +286,38 @@ fn check_parent_path(
             bounds.end,
         )
     {
-        return;
+        return Ok(());
     }
     if !matches!(
         reference.segments().first().map(String::as_str),
         Some("super" | "crate")
     ) {
-        return;
+        return Ok(());
     }
     let resolution = reference.resolution();
     let Some(symbol) = resolution.symbol() else {
-        return;
+        return Ok(());
     };
     if !SyntaxSupport::conditions_may_coexist(reference.condition(), symbol.cfg_condition()) {
-        return;
+        return Ok(());
     }
     if !matches!(symbol.visibility(), SymbolVisibility::Private)
         || symbol.namespace().len() >= module.namespace().len()
         || !module.namespace().starts_with(symbol.namespace())
     {
-        return;
+        return Ok(());
     }
+    let ancestor = symbol.namespace().join("::");
     adapter.push(
         module,
         diagnostics,
         RuleReport::new(
             RuleId::NoParentPrivateDependency,
-            LocalizedMessage::new(NO_PARENT_PRIVATE_PATH)
-                .with_text("ancestor", symbol.namespace().join("::"))
-                .with_text("item", symbol.name()),
+            t!("rule.no_parent_private_path", { ancestor: ancestor.as_str(), item: symbol.name() })?,
             Some(bounds),
         ),
     );
+    Ok(())
 }
 
 fn is_repository_type(kind: SymbolKind) -> bool {

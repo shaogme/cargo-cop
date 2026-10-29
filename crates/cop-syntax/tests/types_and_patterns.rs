@@ -5,7 +5,7 @@ use cop_syntax::{
 };
 
 fn parse(source: SourceFile) -> ParseOutput {
-    RustParser::parse(source, ParseOptions::default())
+    RustParser::parse(source, ParseOptions::default()).expect("catalog messages render")
 }
 
 #[test]
@@ -196,7 +196,7 @@ fn attributed((#[cfg(any())] visible, hidden): (Value, Value)) {}
     assert!(parsed
         .issues()
         .iter()
-        .any(|issue| { issue.message().id().as_str() == "syntax-macro-opaque" }));
+        .any(|issue| { issue.code() == cop_syntax::ParseIssueCode::OpaqueMacroInput }));
 }
 
 #[test]

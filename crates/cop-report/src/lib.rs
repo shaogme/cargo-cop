@@ -5,13 +5,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use cop_i18n::{Locale, MessageFormatter};
-use cop_model::{
-    Diagnostic, DiagnosticKind, LocalizedMessage, MessageArgument, RuleId, ScanResult,
-    JSON_SCHEMA_VERSION, REPORT_CFG_LABEL, REPORT_DETAIL_REFERENCE, REPORT_NAMESPACE_LABEL,
-    REPORT_SUMMARY,
-};
-use serde_json::{json, Map, Value};
+use cop_i18n::{t, Locale, PluralCount, RenderError};
+use cop_model::{Diagnostic, DiagnosticKind, RuleId, ScanResult, JSON_SCHEMA_VERSION};
+use serde_json::{json, Value};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ReportFormat {
@@ -34,13 +30,12 @@ impl Reporter {
         workspace_root: &Path,
         format: ReportFormat,
         locale: Locale,
-    ) -> String {
-        let formatter = MessageFormatter::new(locale);
+    ) -> Result<String, RenderError> {
         let diagnostics = sorted_diagnostics(result.diagnostics(), workspace_root);
         match format {
-            ReportFormat::Human => render_human(result, &diagnostics, workspace_root, &formatter),
+            ReportFormat::Human => render_human(result, &diagnostics, workspace_root, locale),
             ReportFormat::Json => {
-                render_json(result, &diagnostics, workspace_root, locale, &formatter).to_string()
+                Ok(render_json(result, &diagnostics, workspace_root, locale).to_string())
             }
         }
     }
@@ -101,8 +96,8 @@ fn render_human(
     result: &ScanResult,
     diagnostics: &[Diagnostic],
     workspace_root: &Path,
-    formatter: &MessageFormatter,
-) -> String {
+    locale: Locale,
+) -> Result<String, RenderError> {
     let mut lines = Vec::new();
     for diagnostic in diagnostics {
         let mut heading = format!("{}[{}]", diagnostic.severity(), diagnostic_code(diagnostic));
@@ -120,29 +115,37 @@ fn render_human(
                 span.start_column()
             ));
         }
-        heading.push_str(&format!(": {}", formatter.format(diagnostic.message())));
+        heading.push_str(&format!(": {}", diagnostic.message()));
+        if let Some(detail) = diagnostic.detail() {
+            heading.push_str(&format!(": {detail}"));
+        }
         if let Some(namespace) = diagnostic.namespace() {
-            heading.push_str(&format!(
-                " [{}: {namespace}]",
-                formatter.text(REPORT_NAMESPACE_LABEL)
-            ));
+            let label = t!(
+                "report.namespace_label",
+                locale = locale.as_tag().as_locale(),
+                {}
+            )?;
+            heading.push_str(&format!(" [{label}: {namespace}]"));
         }
         if let Some(condition) = diagnostic.cfg_condition() {
-            heading.push_str(&format!(
-                " [{}: {condition}]",
-                formatter.text(REPORT_CFG_LABEL)
-            ));
+            let label = t!("report.cfg_label", locale = locale.as_tag().as_locale(), {})?;
+            heading.push_str(&format!(" [{label}: {condition}]"));
         }
         lines.push(heading);
     }
-    let summary = LocalizedMessage::new(REPORT_SUMMARY)
-        .with_text("status", result.status().as_str())
-        .with_number("errors", result.error_count() as i64)
-        .with_number("warnings", result.warning_count() as i64)
-        .with_number("suppressed_warnings", result.suppressed_warnings() as i64)
-        .with_number("diagnostics", result.diagnostic_count() as i64);
-    lines.push(formatter.format(&summary));
-    lines.join("\n")
+    let summary = t!(
+        "report.summary",
+        locale = locale.as_tag().as_locale(),
+        {
+            status: result.status().as_str(),
+            errors: PluralCount::new(result.error_count() as u64),
+            warnings: PluralCount::new(result.warning_count() as u64),
+            suppressed_warnings: PluralCount::new(result.suppressed_warnings() as u64),
+            diagnostics: PluralCount::new(result.diagnostic_count() as u64),
+        }
+    )?;
+    lines.push(summary);
+    Ok(lines.join("\n"))
 }
 
 fn render_json(
@@ -150,11 +153,10 @@ fn render_json(
     diagnostics: &[Diagnostic],
     workspace_root: &Path,
     locale: Locale,
-    formatter: &MessageFormatter,
 ) -> Value {
     let values = diagnostics
         .iter()
-        .map(|diagnostic| diagnostic_json(diagnostic, workspace_root, formatter))
+        .map(|diagnostic| diagnostic_json(diagnostic, workspace_root))
         .collect::<Vec<_>>();
     json!({
         "schema_version": JSON_SCHEMA_VERSION,
@@ -170,11 +172,7 @@ fn render_json(
     })
 }
 
-fn diagnostic_json(
-    diagnostic: &Diagnostic,
-    workspace_root: &Path,
-    formatter: &MessageFormatter,
-) -> Value {
+fn diagnostic_json(diagnostic: &Diagnostic, workspace_root: &Path) -> Value {
     let span = diagnostic.span();
     let fields = diagnostic_fields(diagnostic);
     json!({
@@ -198,51 +196,11 @@ fn diagnostic_json(
             "line": value.end_line(),
             "column": value.end_column(),
         })),
-        "message_id": diagnostic.message().id().as_str(),
-        "arguments": message_arguments_json(diagnostic.message()),
-        "message": json_message(diagnostic.message(), formatter),
-        "detail": opaque_detail(diagnostic.message()),
+        "message": diagnostic.message(),
+        "detail": diagnostic.detail(),
         "namespace": diagnostic.namespace(),
         "cfg_condition": diagnostic.cfg_condition(),
     })
-}
-
-fn message_arguments_json(message: &LocalizedMessage) -> Value {
-    let arguments = message
-        .arguments()
-        .iter()
-        .filter(|(_, argument)| !matches!(argument, MessageArgument::Opaque(_)))
-        .map(|(name, argument)| {
-            let value = match argument {
-                MessageArgument::Text(value) | MessageArgument::Opaque(value) => {
-                    Value::String(value.clone())
-                }
-                MessageArgument::Number(value) => json!(value),
-                MessageArgument::Boolean(value) => json!(value),
-            };
-            (name.clone(), value)
-        })
-        .collect::<Map<String, Value>>();
-    Value::Object(arguments)
-}
-
-fn json_message(message: &LocalizedMessage, formatter: &MessageFormatter) -> String {
-    let detail_reference = formatter.text(REPORT_DETAIL_REFERENCE);
-    let display_message = message
-        .arguments()
-        .iter()
-        .filter(|(_, argument)| matches!(argument, MessageArgument::Opaque(_)))
-        .fold(message.clone(), |display_message, (name, _)| {
-            display_message.with_opaque(name, detail_reference.clone())
-        });
-    formatter.format(&display_message)
-}
-
-fn opaque_detail(message: &LocalizedMessage) -> Option<&str> {
-    match message.arguments().get("detail") {
-        Some(MessageArgument::Opaque(value)) => Some(value),
-        _ => None,
-    }
 }
 
 fn diagnostic_fields(diagnostic: &Diagnostic) -> DiagnosticTypeFields {
@@ -289,42 +247,44 @@ fn display_path(path: Option<&Path>, workspace_root: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use std::{error::Error, path::Path};
 
+    use cop_i18n::{t, Locale, PluralCount};
     use cop_model::{
-        Diagnostic, LocalizedMessage, RuleId, ScanResult, ScanStatus, Severity, SourceLocation,
-        SourceSpan, ToolErrorKind, CONFIG_FILE_READ_ERROR, ITEM_SPACING, MODULE_FILE_LAYOUT,
+        Diagnostic, RuleId, ScanResult, ScanStatus, Severity, SourceLocation, SourceSpan,
+        ToolErrorKind,
     };
-    use serde_json::{from_str, json, Value};
+    use serde_json::{from_str, Value};
 
-    use super::{Locale, ReportFormat, Reporter};
+    use super::{ReportFormat, Reporter};
 
-    fn located_rule(path: &str, line: u32) -> Diagnostic {
-        let start = SourceLocation::new(path, 0, line, 1).expect("诊断起点");
-        let end = SourceLocation::new(path, 1, line, 2).expect("诊断终点");
-        let span = SourceSpan::new(start, end).expect("诊断范围");
-        Diagnostic::rule(
-            RuleId::ItemSpacing,
-            Severity::Error,
-            LocalizedMessage::new(ITEM_SPACING)
-                .with_number("expected", 1)
-                .with_number("actual", 0),
+    fn located_rule(path: &str, line: u32) -> Result<Diagnostic, Box<dyn Error>> {
+        let start = SourceLocation::new(path, 0, line, 1)?;
+        let end = SourceLocation::new(path, 1, line, 2)?;
+        let span = SourceSpan::new(start, end)?;
+        let message = t!(
+            "rule.item_spacing",
+            locale = Locale::ZH_CN.as_tag().as_locale(),
+            { expected: 1, actual: PluralCount::new(0) }
+        )?;
+        Ok(
+            Diagnostic::rule(RuleId::ItemSpacing, Severity::Error, message)
+                .with_package("sample")
+                .with_package_manifest_path("/workspace/Cargo.toml")
+                .with_target("sample")
+                .with_target_kind(vec!["lib".to_owned()])
+                .with_span(span),
         )
-        .with_package("sample")
-        .with_package_manifest_path("/workspace/Cargo.toml")
-        .with_target("sample")
-        .with_target_kind(vec!["lib".to_owned()])
-        .with_span(span)
     }
 
     #[test]
-    fn sorts_json_diagnostics_by_relative_path_and_position() {
+    fn sorts_json_diagnostics_by_relative_path_and_position() -> Result<(), Box<dyn Error>> {
         let result = ScanResult::new(
             ScanStatus::Complete,
             vec![
-                located_rule("/workspace/src/z.rs", 1),
-                located_rule("/workspace/src/a.rs", 7),
-                located_rule("/workspace/src/a.rs", 1),
+                located_rule("/workspace/src/z.rs", 1)?,
+                located_rule("/workspace/src/a.rs", 7)?,
+                located_rule("/workspace/src/a.rs", 1)?,
             ],
             0,
         );
@@ -334,28 +294,34 @@ mod tests {
             Path::new("/workspace"),
             ReportFormat::Json,
             Locale::ZH_CN,
-        );
-        let report = from_str::<Value>(&rendered).expect("JSON 报告");
-        let diagnostics = report["diagnostics"].as_array().expect("诊断数组");
+        )?;
+        let report = from_str::<Value>(&rendered)?;
+        let diagnostics = report["diagnostics"]
+            .as_array()
+            .ok_or("JSON diagnostics must be an array")?;
 
-        assert_eq!(report["schema_version"], 3);
+        assert_eq!(report["schema_version"], 4);
         assert_eq!(report["locale"], "zh-CN");
         assert_eq!(diagnostics[0]["path"], "src/a.rs");
         assert_eq!(diagnostics[0]["start"]["line"], 1);
         assert_eq!(diagnostics[1]["start"]["line"], 7);
         assert_eq!(diagnostics[2]["path"], "src/z.rs");
         assert_eq!(diagnostics[0]["tool_error"], Value::Null);
+        assert!(diagnostics[0].get("message_id").is_none());
+        assert!(diagnostics[0].get("arguments").is_none());
+        Ok(())
     }
 
     #[test]
-    fn renders_human_namespace_and_cfg_context() {
-        let diagnostic = Diagnostic::rule(
-            RuleId::ModuleFileLayout,
-            Severity::Warning,
-            LocalizedMessage::new(MODULE_FILE_LAYOUT),
-        )
-        .with_namespace("crate::child")
-        .with_cfg_condition(r#"feature = "extra""#);
+    fn renders_human_namespace_and_cfg_context() -> Result<(), Box<dyn Error>> {
+        let message = t!(
+            "rule.module_file_layout",
+            locale = Locale::ZH_CN.as_tag().as_locale(),
+            {}
+        )?;
+        let diagnostic = Diagnostic::rule(RuleId::ModuleFileLayout, Severity::Warning, message)
+            .with_namespace("crate::child")
+            .with_cfg_condition(r#"feature = "extra""#);
         let result = ScanResult::new(ScanStatus::Complete, vec![diagnostic], 0);
 
         let rendered = Reporter::render(
@@ -363,15 +329,16 @@ mod tests {
             Path::new("/workspace"),
             ReportFormat::Human,
             Locale::ZH_CN,
-        );
+        )?;
 
         assert!(rendered.contains("warning[module_file_layout]"));
         assert!(rendered.contains("[命名空间: crate::child]"));
         assert!(rendered.contains(r#"[配置条件: feature = "extra"]"#));
+        Ok(())
     }
 
     #[test]
-    fn localizes_scan_status_in_human_summary() {
+    fn localizes_scan_status_in_human_summary() -> Result<(), Box<dyn Error>> {
         let result = ScanResult::new(ScanStatus::Partial, Vec::new(), 0);
 
         let chinese = Reporter::render(
@@ -379,28 +346,31 @@ mod tests {
             Path::new("/workspace"),
             ReportFormat::Human,
             Locale::ZH_CN,
-        )
+        )?
         .replace(['\u{2068}', '\u{2069}'], "");
         let english = Reporter::render(
             &result,
             Path::new("/workspace"),
             ReportFormat::Human,
             Locale::EN_US,
-        )
+        )?
         .replace(['\u{2068}', '\u{2069}'], "");
 
         assert!(chinese.contains("状态 部分完成"));
         assert!(english.contains("status partial"));
+        Ok(())
     }
 
     #[test]
-    fn keeps_opaque_details_out_of_the_localized_json_message() {
-        let diagnostic = Diagnostic::tool(
-            ToolErrorKind::Configuration,
-            LocalizedMessage::new(CONFIG_FILE_READ_ERROR)
-                .with_text("path", "cargo-cop.toml")
-                .with_opaque("detail", "permission denied"),
-        );
+    fn keeps_error_details_separate_from_the_localized_json_message() -> Result<(), Box<dyn Error>>
+    {
+        let message = t!(
+            "config.file_read_error",
+            locale = Locale::EN_US.as_tag().as_locale(),
+            { path: "cargo-cop.toml" }
+        )?;
+        let diagnostic = Diagnostic::tool(ToolErrorKind::Configuration, message)
+            .with_detail("permission denied");
         let result = ScanResult::new(ScanStatus::Incomplete, vec![diagnostic], 0);
 
         let rendered = Reporter::render(
@@ -408,20 +378,17 @@ mod tests {
             Path::new("/workspace"),
             ReportFormat::Json,
             Locale::EN_US,
-        );
-        let report = from_str::<Value>(&rendered).expect("JSON 报告");
+        )?;
+        let report = from_str::<Value>(&rendered)?;
         let diagnostic = &report["diagnostics"][0];
-
         let message = diagnostic["message"]
             .as_str()
-            .unwrap()
+            .ok_or("message must be a string")?
             .replace(['\u{2068}', '\u{2069}'], "");
-        assert_eq!(
-            message,
-            "Could not read configuration file cargo-cop.toml: see the detail field"
-        );
-        assert_eq!(diagnostic["arguments"], json!({"path": "cargo-cop.toml"}));
+
+        assert_eq!(message, "Could not read configuration file cargo-cop.toml");
         assert_eq!(diagnostic["detail"], "permission denied");
         assert!(!message.contains("permission denied"));
+        Ok(())
     }
 }

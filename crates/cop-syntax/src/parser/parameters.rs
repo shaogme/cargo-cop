@@ -1,6 +1,5 @@
+use cop_i18n::t;
 use std::ops::Range;
-
-use cop_model::{LocalizedMessage, SYNTAX_PARSE_ERROR_UNEXPECTED_TOKEN};
 
 use crate::{
     ast::{
@@ -125,7 +124,7 @@ impl ParameterParser {
                         issues.push(AstFactory::parse_issue(
                             ParseIssueKind::UnexpectedToken,
                             token.start()..token.end(),
-                            LocalizedMessage::new(SYNTAX_PARSE_ERROR_UNEXPECTED_TOKEN),
+                            t!("syntax.parse_error_unexpected_token"),
                         ));
                         return None;
                     }

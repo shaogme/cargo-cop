@@ -16,6 +16,7 @@ fn parse(source: &str, edition: &str) -> cop_syntax::ParseOutput {
         SourceFile::new("src/parser_regressions.rs", source),
         ParseOptions::new(edition),
     )
+    .expect("catalog messages render")
 }
 
 #[test]
