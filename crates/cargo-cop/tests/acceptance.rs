@@ -8,7 +8,8 @@ use std::{
 use serde_json::{from_str, Value};
 
 use cop_analysis::{
-    AnalysisRequest, CfgDecision, ConfiguredAstIssueKind, PathResolutionKind, ProjectAnalyzer,
+    AnalysisRequest, CfgDecision, ConfiguredAstIssueKind, PathResolutionKind, PathRootKind,
+    ProjectAnalyzer, ReferenceKind,
 };
 use cop_cargo::{
     CargoDiscoveryRequest, CargoProjectLoader, CargoSelection, FeatureSelection, TargetSelector,
@@ -2299,6 +2300,83 @@ fn reports_external_qualified_paths_in_nested_call_arguments() {
             expected.expected_path
         );
     }
+}
+
+#[test]
+fn reports_external_paths_when_the_crate_is_reexported_by_its_own_name() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "Cargo.toml",
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[workspace]\nmembers = [\"opeo\"]\nresolver = \"2\"\n\n[dependencies]\nopeo = { path = \"opeo\" }\n",
+    );
+    fixture.write(
+        "opeo/Cargo.toml",
+        "[package]\nname = \"opeo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    fixture.write(
+        "opeo/src/lib.rs",
+        "pub struct Out<'source, 'slot, T>(pub &'source &'slot T);\n",
+    );
+    let callback_module = "    use opeo::Out;\n\n    struct Error;\n\n    type ResultValue = ();\n\n    fn callback(\n        operation: impl for<'call> FnOnce(opeo::Out<'call, 'call, Error>) -> ResultValue,\n    ) {\n        let _ = operation;\n    }\n";
+    fixture.write(
+        "src/lib.rs",
+        &format!("mod callback {{\n{callback_module}}}\n"),
+    );
+
+    let direct = fixture.run(&["--all-features", "--all-targets", "--format", "json"]);
+
+    let direct_diagnostics = rule_diagnostics(&direct, "no_inline_qualified_path");
+    assert_eq!(direct_diagnostics.len(), 1, "{}", direct.stdout);
+    assert!(
+        diagnostic_message(&direct_diagnostics[0]).contains("opeo::Out"),
+        "{}",
+        direct.stdout
+    );
+
+    fixture.write(
+        "src/lib.rs",
+        &format!("pub use opeo;\n\nmod callback {{\n{callback_module}}}\n"),
+    );
+    let reexported = fixture.run(&["--all-features", "--all-targets", "--format", "json"]);
+
+    let reexported_diagnostics = rule_diagnostics(&reexported, "no_inline_qualified_path");
+    assert_eq!(reexported_diagnostics.len(), 1, "{}", reexported.stdout);
+    assert!(
+        diagnostic_message(&reexported_diagnostics[0]).contains("opeo::Out"),
+        "{}",
+        reexported.stdout
+    );
+
+    let discovery =
+        CargoProjectLoader::discover(CargoDiscoveryRequest::new(fixture.root.join("Cargo.toml")))
+            .expect("Cargo 元数据");
+    let project = TargetSelector::select(
+        discovery,
+        CargoSelection::new(FeatureSelection::new(Vec::new(), true, true))
+            .with_current_directory(fixture.root.clone()),
+    )
+    .expect("选择 package 与 target");
+    let package = project.packages().first().expect("选中的 package");
+    let snapshot =
+        ProjectAnalyzer::analyze(AnalysisRequest::new(package)).expect("catalog messages render");
+    let reference = snapshot
+        .facts()
+        .references()
+        .iter()
+        .find(|reference| {
+            reference.kind() != ReferenceKind::Use
+                && reference
+                    .segments()
+                    .iter()
+                    .map(String::as_str)
+                    .eq(["opeo", "Out"])
+        })
+        .expect("回调类型中的外部 crate 路径");
+    let resolution = reference.resolution();
+    assert_eq!(resolution.kind(), PathResolutionKind::ExternalCrate);
+    assert_eq!(resolution.root().kind(), PathRootKind::UseAlias);
+    assert_eq!(resolution.root().external_crate(), Some("opeo"));
+    assert!(resolution.is_external_crate_qualifier());
 }
 
 #[test]

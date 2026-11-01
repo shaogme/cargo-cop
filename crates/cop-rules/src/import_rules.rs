@@ -4,8 +4,7 @@ use cop_i18n::{t, PluralCount, RenderError};
 use std::{collections::BTreeSet, ops::Range};
 
 use cop_analysis::{
-    AnalysisReference, AnalysisSnapshot, ItemFact, ItemKindFact, ModuleNode, PathResolutionKind,
-    ReferenceKind,
+    AnalysisReference, AnalysisSnapshot, ItemFact, ItemKindFact, ModuleNode, ReferenceKind,
 };
 use cop_config::ResolvedConfig;
 use cop_model::{Diagnostic, RuleId};
@@ -84,8 +83,7 @@ impl ImportRuleSet {
             .is_some_and(|segment| matches!(segment.as_str(), "crate" | "self" | "super"));
         if !explicitly_scoped {
             let resolution = reference.resolution();
-            if resolution.kind() != PathResolutionKind::ExternalCrate
-                || resolution.external_crate().is_none()
+            if resolution.root().external_crate().is_none()
                 || !resolution.is_external_crate_qualifier()
             {
                 return Ok(());

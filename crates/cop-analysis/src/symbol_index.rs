@@ -19,7 +19,7 @@ use crate::{
     cfg_eval::{CfgDecision, CfgEvaluator},
     module_graph::ModuleNode,
 };
-pub use index::{PathResolution, SymbolIndex};
+pub use index::{PathResolution, PathRootIdentity, PathRootKind, SymbolIndex};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SymbolKind {

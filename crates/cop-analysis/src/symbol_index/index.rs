@@ -11,9 +11,25 @@ use cop_model::SourceSpan;
 
 use crate::ModuleNode;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PathRootKind {
+    ExternalCrate,
+    ExplicitScope,
+    LocalDefinition,
+    UseAlias,
+    Unresolved,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PathRootIdentity {
+    kind: PathRootKind,
+    external_crate: Option<String>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PathResolution {
     kind: PathResolutionKind,
+    root: PathRootIdentity,
     symbol: Option<SymbolRecord>,
     external_crate: Option<String>,
     external_path_depth: Option<usize>,
@@ -47,6 +63,10 @@ impl PathResolution {
         self.kind
     }
 
+    pub fn root(&self) -> &PathRootIdentity {
+        &self.root
+    }
+
     pub fn symbol(&self) -> Option<&SymbolRecord> {
         self.symbol.as_ref()
     }
@@ -69,6 +89,33 @@ impl PathResolution {
 
     pub fn is_external_crate_qualifier(&self) -> bool {
         self.external_crate_qualifier
+    }
+
+    fn with_root(mut self, kind: PathRootKind, external_crate: Option<String>) -> Self {
+        self.root = PathRootIdentity {
+            kind,
+            external_crate,
+        };
+        self
+    }
+
+    fn with_alias_root(mut self) -> Self {
+        let external_crate = self.root.external_crate.clone();
+        self.root = PathRootIdentity {
+            kind: PathRootKind::UseAlias,
+            external_crate,
+        };
+        self
+    }
+}
+
+impl PathRootIdentity {
+    pub fn kind(&self) -> PathRootKind {
+        self.kind
+    }
+
+    pub fn external_crate(&self) -> Option<&str> {
+        self.external_crate.as_deref()
     }
 }
 
@@ -164,7 +211,7 @@ impl SymbolIndex {
         } else {
             while rest.first().is_some_and(|segment| segment == "super") {
                 if base.pop().is_none() {
-                    return unresolved(PathResolutionKind::Unresolved, state);
+                    return unresolved_for_path(PathResolutionKind::Unresolved, state, path);
                 }
                 rest = &rest[1..];
             }
@@ -172,6 +219,7 @@ impl SymbolIndex {
         let Some(first) = rest.first() else {
             return PathResolution {
                 kind: PathResolutionKind::Local,
+                root: root_identity_for_explicit_scope(path),
                 symbol: None,
                 external_crate: None,
                 external_path_depth: None,
@@ -190,6 +238,7 @@ impl SymbolIndex {
         {
             return PathResolution {
                 kind: PathResolutionKind::ExternalCrate,
+                root: external_crate_root(identifier_name(first)),
                 symbol: None,
                 external_crate: Some(identifier_name(first).to_owned()),
                 external_path_depth: Some(rest.len().saturating_sub(1)),
@@ -213,7 +262,11 @@ impl SymbolIndex {
                     if let Some(target_path) = binding.target_path() {
                         let key = (binding.scope_start(), binding.name().to_owned());
                         if !state.seen_local_aliases.insert(key.clone()) {
-                            return unresolved(PathResolutionKind::AliasCycle, state);
+                            return unresolved_for_path(
+                                PathResolutionKind::AliasCycle,
+                                state,
+                                path,
+                            );
                         }
                         state.alias_chain.push(binding.name().to_owned());
                         let mut redirected = target_path.to_vec();
@@ -227,10 +280,14 @@ impl SymbolIndex {
                             resolution.external_crate_qualifier = false;
                         }
                         state.seen_local_aliases.remove(&key);
-                        return resolution;
+                        return resolution.with_alias_root();
                     }
                     return PathResolution {
                         kind: PathResolutionKind::Local,
+                        root: PathRootIdentity {
+                            kind: PathRootKind::LocalDefinition,
+                            external_crate: None,
+                        },
                         symbol: None,
                         external_crate: None,
                         external_path_depth: None,
@@ -249,7 +306,7 @@ impl SymbolIndex {
             state.query_condition.as_deref(),
         ) {
             Ok(Some(candidate)) => candidate,
-            Err(()) => return unresolved(PathResolutionKind::Ambiguous, state),
+            Err(()) => return unresolved_for_path(PathResolutionKind::Ambiguous, state, path),
             Ok(None) => {
                 if (rooted || base == base_namespace)
                     && self
@@ -259,6 +316,7 @@ impl SymbolIndex {
                 {
                     return PathResolution {
                         kind: PathResolutionKind::ExternalCrate,
+                        root: external_crate_root(identifier_name(first)),
                         symbol: None,
                         external_crate: Some(identifier_name(first).to_owned()),
                         external_path_depth: Some(rest.len().saturating_sub(1)),
@@ -268,7 +326,7 @@ impl SymbolIndex {
                         alias_symbols: state.alias_symbols.clone(),
                     };
                 }
-                return unresolved(PathResolutionKind::Unresolved, state);
+                return unresolved_for_path(PathResolutionKind::Unresolved, state, path);
             }
         };
         if candidate.kind() == SymbolKind::UseAlias {
@@ -276,6 +334,10 @@ impl SymbolIndex {
             if visibility == VisibilityResult::Private {
                 return PathResolution {
                     kind: PathResolutionKind::Local,
+                    root: PathRootIdentity {
+                        kind: PathRootKind::UseAlias,
+                        external_crate: None,
+                    },
                     symbol: Some(candidate.clone()),
                     external_crate: None,
                     external_path_depth: None,
@@ -287,7 +349,22 @@ impl SymbolIndex {
             }
             let key = (candidate.namespace().to_vec(), candidate.name().to_owned());
             if !state.seen_aliases.insert(key) {
-                return unresolved(PathResolutionKind::AliasCycle, state);
+                if let Some(external_crate) =
+                    self.self_reexported_external_crate(candidate, state.context_index)
+                {
+                    return PathResolution {
+                        kind: PathResolutionKind::ExternalCrate,
+                        root: external_crate_root(&external_crate),
+                        symbol: Some(candidate.clone()),
+                        external_crate: Some(external_crate),
+                        external_path_depth: Some(rest.len().saturating_sub(1)),
+                        external_crate_qualifier: true,
+                        visibility: candidate.is_visible_from(state.requester),
+                        alias_chain: state.alias_chain.clone(),
+                        alias_symbols: state.alias_symbols.clone(),
+                    };
+                }
+                return unresolved_for_path(PathResolutionKind::AliasCycle, state, path);
             }
             state.alias_chain.push(candidate.name().to_owned());
             state.alias_symbols.push(candidate.clone());
@@ -306,11 +383,12 @@ impl SymbolIndex {
                 .seen_aliases
                 .remove(&(candidate.namespace().to_vec(), candidate.name().to_owned()));
             state.alias_symbols.pop();
-            return resolution;
+            return resolution.with_alias_root();
         }
         if let Some(external) = candidate.external_crate() {
             return PathResolution {
                 kind: PathResolutionKind::ExternalCrate,
+                root: external_crate_root(external),
                 symbol: Some(candidate.clone()),
                 external_crate: Some(external.to_owned()),
                 external_path_depth: Some(rest.len().saturating_sub(1)),
@@ -324,6 +402,10 @@ impl SymbolIndex {
         if visibility == VisibilityResult::Private {
             return PathResolution {
                 kind: PathResolutionKind::Local,
+                root: PathRootIdentity {
+                    kind: PathRootKind::LocalDefinition,
+                    external_crate: None,
+                },
                 symbol: Some(candidate.clone()),
                 external_crate: None,
                 external_path_depth: None,
@@ -335,12 +417,17 @@ impl SymbolIndex {
         }
         if rest.len() > 1 {
             if let Some(next_namespace) = candidate.target_namespace() {
-                return self.resolve_inner(state, next_namespace, &rest[1..]);
+                let resolution = self.resolve_inner(state, next_namespace, &rest[1..]);
+                if has_explicit_scope {
+                    return resolution.with_root(PathRootKind::ExplicitScope, None);
+                }
+                return resolution.with_root(PathRootKind::LocalDefinition, None);
             }
-            return unresolved(PathResolutionKind::Unresolved, state);
+            return unresolved_for_path(PathResolutionKind::Unresolved, state, path);
         }
         PathResolution {
             kind: PathResolutionKind::Local,
+            root: root_identity_for_explicit_scope(path),
             symbol: Some(candidate.clone()),
             external_crate: None,
             external_path_depth: None,
@@ -384,6 +471,30 @@ impl SymbolIndex {
         }
         Ok(None)
     }
+
+    fn self_reexported_external_crate(
+        &self,
+        candidate: &SymbolRecord,
+        context_index: usize,
+    ) -> Option<String> {
+        if !candidate.namespace().is_empty() {
+            return None;
+        }
+        let name = identifier_name(candidate.name());
+        let target_path = candidate.target_path()?;
+        let target = if target_path.first().is_some_and(|segment| segment == "::") {
+            &target_path[1..]
+        } else {
+            target_path
+        };
+        if target.len() != 1 || identifier_name(&target[0]) != name {
+            return None;
+        }
+        self.external_crates
+            .get(&context_index)
+            .filter(|crates| crates.contains(name))
+            .map(|_| name.to_owned())
+    }
 }
 
 fn identifier_name(name: &str) -> &str {
@@ -393,6 +504,10 @@ fn identifier_name(name: &str) -> &str {
 fn unresolved(kind: PathResolutionKind, state: &ResolveState<'_>) -> PathResolution {
     PathResolution {
         kind,
+        root: PathRootIdentity {
+            kind: PathRootKind::Unresolved,
+            external_crate: None,
+        },
         symbol: None,
         external_crate: None,
         external_path_depth: None,
@@ -401,4 +516,43 @@ fn unresolved(kind: PathResolutionKind, state: &ResolveState<'_>) -> PathResolut
         alias_chain: state.alias_chain.clone(),
         alias_symbols: state.alias_symbols.clone(),
     }
+}
+
+fn unresolved_for_path(
+    kind: PathResolutionKind,
+    state: &ResolveState<'_>,
+    path: &[String],
+) -> PathResolution {
+    let mut resolution = unresolved(kind, state);
+    if is_explicit_scope(path) {
+        resolution.root = PathRootIdentity {
+            kind: PathRootKind::ExplicitScope,
+            external_crate: None,
+        };
+    }
+    resolution
+}
+
+fn external_crate_root(name: &str) -> PathRootIdentity {
+    PathRootIdentity {
+        kind: PathRootKind::ExternalCrate,
+        external_crate: Some(name.to_owned()),
+    }
+}
+
+fn root_identity_for_explicit_scope(path: &[String]) -> PathRootIdentity {
+    let kind = if is_explicit_scope(path) {
+        PathRootKind::ExplicitScope
+    } else {
+        PathRootKind::LocalDefinition
+    };
+    PathRootIdentity {
+        kind,
+        external_crate: None,
+    }
+}
+
+fn is_explicit_scope(path: &[String]) -> bool {
+    path.first()
+        .is_some_and(|segment| matches!(segment.as_str(), "crate" | "::" | "self" | "super"))
 }

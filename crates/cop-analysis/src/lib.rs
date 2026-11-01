@@ -22,8 +22,8 @@ pub use facts::{
 };
 pub use module_graph::{ConfiguredAttribute, ModuleNode};
 pub use symbol_index::{
-    DefinitionId, PathResolution, PathResolutionKind, SymbolIndex, SymbolKind, SymbolRecord,
-    SymbolVisibility, VisibilityResult,
+    DefinitionId, PathResolution, PathResolutionKind, PathRootIdentity, PathRootKind, SymbolIndex,
+    SymbolKind, SymbolRecord, SymbolVisibility, VisibilityResult,
 };
 pub use syntax_facts::{
     BlockItemFact, BlockScopeFact, FieldFact, ItemFact, ItemKindFact, ItemScopeFact,
