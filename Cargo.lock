@@ -54,7 +54,7 @@ dependencies = [
 
 [[package]]
 name = "cargo-cop"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "clap",
  "cop-analysis",
@@ -118,7 +118,7 @@ checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
 
 [[package]]
 name = "cop-analysis"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "cop-cargo",
  "cop-cfg",
@@ -130,7 +130,7 @@ dependencies = [
 
 [[package]]
 name = "cop-cargo"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "cop-cfg",
  "cop-i18n",
@@ -143,11 +143,11 @@ dependencies = [
 
 [[package]]
 name = "cop-cfg"
-version = "0.2.6"
+version = "0.2.7"
 
 [[package]]
 name = "cop-config"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "cop-cfg",
  "cop-i18n",
@@ -158,7 +158,7 @@ dependencies = [
 
 [[package]]
 name = "cop-i18n"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "language-tags",
  "u18n",
@@ -167,14 +167,14 @@ dependencies = [
 
 [[package]]
 name = "cop-model"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "cop-report"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "cop-i18n",
  "cop-model",
@@ -184,7 +184,7 @@ dependencies = [
 
 [[package]]
 name = "cop-rules"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "cop-analysis",
  "cop-config",
@@ -196,7 +196,7 @@ dependencies = [
 
 [[package]]
 name = "cop-syntax"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "cop-cfg",
  "cop-i18n",
@@ -409,9 +409,9 @@ checksum = "5d99f8c9a7727884afe522e9bd5edbfc91a3312b36a77b5fb8926e4c31a41801"
 
 [[package]]
 name = "u18n"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0608efd58e9bd5635ecb57086cb3fc3b443678172600ed79f360220faa92635f"
+checksum = "aa1dc45c9148121f75589815406eb90587edb8439c77b1a9a3addbec964f72d1"
 dependencies = [
  "u18n-locale-tag",
  "u18n-macros",
@@ -419,15 +419,15 @@ dependencies = [
 
 [[package]]
 name = "u18n-ast"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3936b7260e34007c379162ae298d701645842fcfd71b7fd2b461dfd397ef1437"
+checksum = "c1125a63e6c1140bea83cd51b569bfe83be4066c801887bd98ec2ac4a341f751"
 
 [[package]]
 name = "u18n-compiler"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3e7c19bf5248ed0bc383bc25b765c726c89ad045d91180d8dbc687061916e653"
+checksum = "795d02b2ec348a86338da59922e2ba1ebebbc4e5e1697d838f35eb733250bec1"
 dependencies = [
  "u18n-ast",
  "u18n-locale",
@@ -437,9 +437,9 @@ dependencies = [
 
 [[package]]
 name = "u18n-locale"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8679a139cca9d9b348fd10135c2effa5dfc4f3af1fe13250717ce26ffdc62d69"
+checksum = "5d5ca1e3506c000387db0a138a237c4d3af4621346f9478631e8b9cac662f8b1"
 dependencies = [
  "u18n-ast",
  "u18n-locale-tag",
@@ -447,15 +447,15 @@ dependencies = [
 
 [[package]]
 name = "u18n-locale-tag"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "48bbebd33a617bd3ebfb905e81ac7a42cc403a6f1bae52daf1d3ad199ed0b466"
+checksum = "4dd53289ea536626ee3c6c33b194915cd83733aeccef9cdf756d01ebcaeaf7c5"
 
 [[package]]
 name = "u18n-macros"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1f75cd78b27fb4b31beb69628358b210297b21c99aaa5d794fb3956639db7eb1"
+checksum = "33f80129c2a33c535b31dba686e007566bae86add41495a42be1195f9925d986"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -464,9 +464,9 @@ dependencies = [
 
 [[package]]
 name = "u18n-schema"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5aa953145e07d81ca7c9747aff28d2889730dedf1a6c6934e58259d19dea329f"
+checksum = "9979abcfa6b845afbe8e9d10b2395244c994b92579b5be28ff5c1871f9d1d511"
 dependencies = [
  "u18n-ast",
 ]

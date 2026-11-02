@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     collections::{BTreeSet, HashSet},
     env,
     error::Error,
@@ -110,7 +111,7 @@ struct CliOptions {
 #[derive(Debug)]
 pub(super) struct ApplicationError {
     kind: ToolErrorKind,
-    message: String,
+    message: Cow<'static, str>,
     detail: Option<String>,
     locale_override: Option<Locale>,
 }
@@ -169,10 +170,10 @@ impl OutputFormat {
 }
 
 impl ApplicationError {
-    fn new(kind: ToolErrorKind, message: String) -> Self {
+    fn new(kind: ToolErrorKind, message: impl Into<Cow<'static, str>>) -> Self {
         Self {
             kind,
-            message,
+            message: message.into(),
             detail: None,
             locale_override: None,
         }
@@ -190,7 +191,10 @@ impl ApplicationError {
 }
 
 impl ApplicationFailure {
-    fn localized(kind: ToolErrorKind, message: Result<String, RenderError>) -> Self {
+    fn localized(
+        kind: ToolErrorKind,
+        message: Result<impl Into<Cow<'static, str>>, RenderError>,
+    ) -> Self {
         match message {
             Ok(message) => Self::Domain(ApplicationError::new(kind, message)),
             Err(error) => Self::Render(error),
@@ -200,7 +204,7 @@ impl ApplicationFailure {
     fn from_cargo(failure: CargoFailure) -> Self {
         match failure {
             CargoFailure::Cargo(error) => {
-                let domain_error = ApplicationError::new(error.kind(), error.message().to_owned());
+                let domain_error = ApplicationError::new(error.kind(), error.message_cow());
                 let domain_error = match error.detail() {
                     Some(detail) => domain_error.with_detail(detail.to_owned()),
                     None => domain_error,
@@ -215,7 +219,7 @@ impl ApplicationFailure {
         match failure {
             ConfigFailure::Config(error) => {
                 let domain_error =
-                    ApplicationError::new(ToolErrorKind::Configuration, error.message().to_owned());
+                    ApplicationError::new(ToolErrorKind::Configuration, error.message_cow());
                 let domain_error = match error.detail() {
                     Some(detail) => domain_error.with_detail(detail.to_owned()),
                     None => domain_error,

@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     fs::canonicalize,
     path::{Path, PathBuf},
     sync::Arc,
@@ -45,7 +46,7 @@ pub(super) struct ModulePathRequest<'a> {
 pub(super) struct IssueRequest {
     pub(super) kind: AnalysisIssueKind,
     pub(super) severity: Severity,
-    pub(super) message: String,
+    pub(super) message: Cow<'static, str>,
     pub(super) span: Option<SourceSpan>,
     pub(super) namespace: Option<String>,
     pub(super) cfg_condition: Option<String>,

@@ -1,5 +1,6 @@
+use std::{borrow::Cow, ops::Range};
+
 use cop_i18n::RenderError;
-use std::ops::Range;
 
 use super::{
     AstNodeId, Attribute, AttributeInput, CoverageStatus, ExternBlockItem, ExternCrateItem,
@@ -99,7 +100,7 @@ impl AstFactory {
     pub(crate) fn parse_issue(
         kind: ParseIssueKind,
         bounds: Range<usize>,
-        message: Result<String, RenderError>,
+        message: Result<impl Into<Cow<'static, str>>, RenderError>,
     ) -> ParseIssue {
         let code = Self::issue_code(kind, &bounds);
         let boundary_unknown = kind == ParseIssueKind::UnclosedDelimiter;
@@ -110,7 +111,7 @@ impl AstFactory {
         kind: ParseIssueKind,
         code: ParseIssueCode,
         bounds: Range<usize>,
-        message: Result<String, RenderError>,
+        message: Result<impl Into<Cow<'static, str>>, RenderError>,
         boundary_unknown: bool,
     ) -> ParseIssue {
         ParseIssue::new(kind, code, bounds, boundary_unknown, message)
@@ -119,7 +120,7 @@ impl AstFactory {
     pub(crate) fn parse_issue_with_boundary(
         kind: ParseIssueKind,
         bounds: Range<usize>,
-        message: Result<String, RenderError>,
+        message: Result<impl Into<Cow<'static, str>>, RenderError>,
         boundary_unknown: bool,
     ) -> ParseIssue {
         let code = Self::issue_code(kind, &bounds);
@@ -129,7 +130,7 @@ impl AstFactory {
     pub(crate) fn unsupported_issue(
         construct: UnsupportedConstructKind,
         bounds: Range<usize>,
-        message: Result<String, RenderError>,
+        message: Result<impl Into<Cow<'static, str>>, RenderError>,
     ) -> ParseIssue {
         let code = ParseIssueCode::UnsupportedSyntax(construct);
         ParseIssue::new(
@@ -143,7 +144,7 @@ impl AstFactory {
 
     pub(crate) fn opaque_macro_issue(
         bounds: Range<usize>,
-        message: Result<String, RenderError>,
+        message: Result<impl Into<Cow<'static, str>>, RenderError>,
     ) -> ParseIssue {
         ParseIssue::new(
             ParseIssueKind::UnsupportedSyntax,

@@ -1,5 +1,5 @@
-use cop_i18n::{t, RenderError};
 use std::{
+    borrow::Cow,
     collections::BTreeMap,
     env,
     error::Error,
@@ -8,6 +8,7 @@ use std::{
     process::Command,
 };
 
+use cop_i18n::{t, RenderError};
 use cop_model::ToolErrorKind;
 use serde::Deserialize;
 use serde_json::from_slice;
@@ -52,7 +53,7 @@ pub struct CargoDiscovery {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CargoError {
     kind: ToolErrorKind,
-    message: String,
+    message: Cow<'static, str>,
     detail: Option<String>,
 }
 
@@ -211,10 +212,13 @@ impl CargoTarget {
 }
 
 impl CargoError {
-    pub(crate) fn from_localized(kind: ToolErrorKind, message: String) -> CargoFailure {
+    pub(crate) fn from_localized(
+        kind: ToolErrorKind,
+        message: impl Into<Cow<'static, str>>,
+    ) -> CargoFailure {
         CargoFailure::Cargo(Self {
             kind,
-            message,
+            message: message.into(),
             detail: None,
         })
     }
@@ -230,6 +234,10 @@ impl CargoError {
 
     pub fn message(&self) -> &str {
         &self.message
+    }
+
+    pub fn message_cow(&self) -> Cow<'static, str> {
+        self.message.clone()
     }
 
     pub fn detail(&self) -> Option<&str> {
@@ -261,7 +269,10 @@ impl fmt::Display for CargoFailure {
 impl Error for CargoFailure {}
 
 impl CargoFailure {
-    pub(crate) fn from_message(kind: ToolErrorKind, message: Result<String, RenderError>) -> Self {
+    pub(crate) fn from_message(
+        kind: ToolErrorKind,
+        message: Result<impl Into<Cow<'static, str>>, RenderError>,
+    ) -> Self {
         match message {
             Ok(message) => CargoError::from_localized(kind, message),
             Err(error) => Self::Render(error),

@@ -2,9 +2,8 @@ mod lint_attributes;
 mod macro_scan;
 mod scope;
 
-use cop_i18n::{t, RenderError};
-
 use std::{
+    borrow::Cow,
     collections::{BTreeMap, BTreeSet},
     fs,
     io::ErrorKind,
@@ -14,6 +13,7 @@ use std::{
 };
 
 use cop_cargo::{SelectedPackage, TargetContext};
+use cop_i18n::{t, RenderError};
 use cop_model::{AnalysisIssueKind, Diagnostic, Severity, SourceSpan, ToolErrorKind};
 use cop_syntax::{
     AstNodeId, Attribute, CoverageStatus, ItemSyntaxKind, ParseIssueCode, ParseOptions,
@@ -81,7 +81,7 @@ struct MalformedIssueKey {
 struct ConfiguredIssueDetails {
     kind: AnalysisIssueKind,
     severity: Severity,
-    message: String,
+    message: Cow<'static, str>,
 }
 
 struct GraphBuilder<'a> {
@@ -342,7 +342,7 @@ impl GraphBuilder<'_> {
                 self.report(IssueRequest {
                     kind: AnalysisIssueKind::DynamicInput,
                     severity: Severity::Warning,
-                    message: t!("analysis.include_dynamic_input")?,
+                    message: t!("analysis.include_dynamic_input")?.into(),
                     span: source
                         .source()
                         .span(invocation.start(), invocation.end())
@@ -375,7 +375,7 @@ impl GraphBuilder<'_> {
                 self.report(IssueRequest {
                     kind: issue_kind,
                     severity: Severity::Warning,
-                    message: t!("analysis.macro_generated_module", { name: macro_name })?,
+                    message: t!("analysis.macro_generated_module", { name: macro_name })?.into(),
                     span: source
                         .source()
                         .span(invocation.start(), invocation.end())
@@ -473,7 +473,7 @@ impl GraphBuilder<'_> {
             self.report(IssueRequest {
                 kind: AnalysisIssueKind::ModuleCycle,
                 severity: Severity::Error,
-                message: t!("analysis.module_cycle", { name: name })?,
+                message: t!("analysis.module_cycle", { name: name })?.into(),
                 span: declared_at,
                 namespace: Some(ScopeSupport::module_namespace(&namespace)),
                 cfg_condition,
@@ -530,7 +530,7 @@ impl GraphBuilder<'_> {
             self.report(IssueRequest {
                 kind: AnalysisIssueKind::MissingModule,
                 severity: Severity::Error,
-                message: t!("analysis.path_module_missing")?,
+                message: t!("analysis.path_module_missing")?.into(),
                 span: request.declaration_span,
                 namespace: Some(ScopeSupport::module_namespace(&scope.namespace)),
                 cfg_condition: request.cfg_condition.clone(),
@@ -550,7 +550,7 @@ impl GraphBuilder<'_> {
                 self.report(IssueRequest {
                     kind: AnalysisIssueKind::AmbiguousModule,
                     severity: Severity::Error,
-                    message: t!("analysis.module_layout_ambiguous", { name: request.name })?,
+                    message: t!("analysis.module_layout_ambiguous", { name: request.name })?.into(),
                     span: request.declaration_span,
                     namespace: Some(ScopeSupport::module_namespace(&scope.namespace)),
                     cfg_condition: request.cfg_condition,
@@ -563,7 +563,7 @@ impl GraphBuilder<'_> {
                 self.report(IssueRequest {
                     kind: AnalysisIssueKind::MissingModule,
                     severity: Severity::Error,
-                    message: t!("analysis.module_missing", { name: request.name })?,
+                    message: t!("analysis.module_missing", { name: request.name })?.into(),
                     span: request.declaration_span,
                     namespace: Some(ScopeSupport::module_namespace(&scope.namespace)),
                     cfg_condition: request.cfg_condition,
@@ -677,7 +677,7 @@ impl GraphBuilder<'_> {
                     | ParseIssueCode::InvalidAttribute
                     | ParseIssueCode::UnsupportedEdition => Severity::Error,
                 },
-                message: issue.message()?.to_owned(),
+                message: issue.message_cow()?,
                 span: output.source().span(issue.start(), issue.end()).ok(),
                 namespace: None,
                 cfg_condition: None,
@@ -709,7 +709,7 @@ impl GraphBuilder<'_> {
                     ConfiguredIssueDetails {
                         kind: AnalysisIssueKind::UnknownCfg,
                         severity: Severity::Warning,
-                        message: t!("analysis.unknown_cfg", { condition: condition })?,
+                        message: t!("analysis.unknown_cfg", { condition: condition })?.into(),
                     }
                 }
                 ConfiguredAstIssueKind::MalformedAttribute => {
@@ -723,7 +723,7 @@ impl GraphBuilder<'_> {
                     ConfiguredIssueDetails {
                         kind: AnalysisIssueKind::ParserCoverage,
                         severity: Severity::Error,
-                        message: t!("analysis.malformed_cfg_attribute")?,
+                        message: t!("analysis.malformed_cfg_attribute")?.into(),
                     }
                 }
                 ConfiguredAstIssueKind::MalformedCfgExpression => {
@@ -737,7 +737,7 @@ impl GraphBuilder<'_> {
                     ConfiguredIssueDetails {
                         kind: AnalysisIssueKind::ParserCoverage,
                         severity: Severity::Error,
-                        message: t!("analysis.malformed_cfg_expression")?,
+                        message: t!("analysis.malformed_cfg_expression")?.into(),
                     }
                 }
                 ConfiguredAstIssueKind::OpaqueCfgMacro => {
@@ -751,7 +751,7 @@ impl GraphBuilder<'_> {
                     ConfiguredIssueDetails {
                         kind: AnalysisIssueKind::ParserCoverage,
                         severity: Severity::Warning,
-                        message: t!("analysis.cfg_macro_identity_unknown")?,
+                        message: t!("analysis.cfg_macro_identity_unknown")?.into(),
                     }
                 }
             };

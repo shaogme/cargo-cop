@@ -1,4 +1,7 @@
-use std::ops::{Range, RangeInclusive};
+use std::{
+    borrow::Cow,
+    ops::{Range, RangeInclusive},
+};
 
 use cop_analysis::{AnalysisFacts, CfgCondition, CfgDecision, ItemFact, ItemKindFact, ModuleNode};
 use cop_config::ResolvedConfig;
@@ -7,7 +10,7 @@ use cop_syntax::{ParseOutput, TriviaKind};
 
 pub(super) struct RuleReport {
     rule_id: RuleId,
-    message: String,
+    message: Cow<'static, str>,
     bounds: Option<Range<usize>>,
     span: Option<SourceSpan>,
     cfg_condition: Option<String>,
@@ -86,20 +89,28 @@ impl SyntaxSupport {
 }
 
 impl RuleReport {
-    pub(super) fn new(rule_id: RuleId, message: String, bounds: Option<Range<usize>>) -> Self {
+    pub(super) fn new(
+        rule_id: RuleId,
+        message: impl Into<Cow<'static, str>>,
+        bounds: Option<Range<usize>>,
+    ) -> Self {
         Self {
             rule_id,
-            message,
+            message: message.into(),
             bounds,
             span: None,
             cfg_condition: None,
         }
     }
 
-    pub(super) fn at_span(rule_id: RuleId, message: String, span: SourceSpan) -> Self {
+    pub(super) fn at_span(
+        rule_id: RuleId,
+        message: impl Into<Cow<'static, str>>,
+        span: SourceSpan,
+    ) -> Self {
         Self {
             rule_id,
-            message,
+            message: message.into(),
             bounds: None,
             span: Some(span),
             cfg_condition: None,
@@ -292,5 +303,33 @@ fn namespace_name(namespace: &[String]) -> String {
         "crate".to_owned()
     } else {
         format!("crate::{}", namespace.join("::"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::borrow::Cow;
+
+    use cop_i18n::{t, PluralCount, RenderError};
+    use cop_model::RuleId;
+
+    use super::RuleReport;
+
+    #[test]
+    fn retains_borrowed_and_owned_translations_in_rule_reports() -> Result<(), RenderError> {
+        let borrowed = RuleReport::new(
+            RuleId::ModuleFileLayout,
+            t!("rule.module_file_layout")?,
+            None,
+        );
+        let owned = RuleReport::new(
+            RuleId::ItemSpacing,
+            t!("rule.item_spacing", { expected: 1, actual: PluralCount::new(2) })?,
+            None,
+        );
+
+        assert!(matches!(borrowed.message, Cow::Borrowed(_)));
+        assert!(matches!(owned.message, Cow::Owned(_)));
+        Ok(())
     }
 }

@@ -120,22 +120,18 @@ fn render_human(
             heading.push_str(&format!(": {detail}"));
         }
         if let Some(namespace) = diagnostic.namespace() {
-            let label = t!(
-                "report.namespace_label",
-                locale = locale.as_tag().as_locale(),
-                {}
-            )?;
+            let label = t!("report.namespace_label", locale = locale, {})?;
             heading.push_str(&format!(" [{label}: {namespace}]"));
         }
         if let Some(condition) = diagnostic.cfg_condition() {
-            let label = t!("report.cfg_label", locale = locale.as_tag().as_locale(), {})?;
+            let label = t!("report.cfg_label", locale = locale, {})?;
             heading.push_str(&format!(" [{label}: {condition}]"));
         }
         lines.push(heading);
     }
     let summary = t!(
         "report.summary",
-        locale = locale.as_tag().as_locale(),
+        locale = locale,
         {
             status: result.status().as_str(),
             errors: PluralCount::new(result.error_count() as u64),
@@ -264,7 +260,7 @@ mod tests {
         let span = SourceSpan::new(start, end)?;
         let message = t!(
             "rule.item_spacing",
-            locale = Locale::ZH_CN.as_tag().as_locale(),
+            locale = Locale::ZH_CN,
             { expected: 1, actual: PluralCount::new(0) }
         )?;
         Ok(
@@ -314,11 +310,7 @@ mod tests {
 
     #[test]
     fn renders_human_namespace_and_cfg_context() -> Result<(), Box<dyn Error>> {
-        let message = t!(
-            "rule.module_file_layout",
-            locale = Locale::ZH_CN.as_tag().as_locale(),
-            {}
-        )?;
+        let message = t!("rule.module_file_layout", locale = Locale::ZH_CN, {})?;
         let diagnostic = Diagnostic::rule(RuleId::ModuleFileLayout, Severity::Warning, message)
             .with_namespace("crate::child")
             .with_cfg_condition(r#"feature = "extra""#);
@@ -334,6 +326,46 @@ mod tests {
         assert!(rendered.contains("warning[module_file_layout]"));
         assert!(rendered.contains("[命名空间: crate::child]"));
         assert!(rendered.contains(r#"[配置条件: feature = "extra"]"#));
+        Ok(())
+    }
+
+    #[test]
+    fn keeps_borrowed_and_parameterized_messages_consistent_in_both_formats(
+    ) -> Result<(), Box<dyn Error>> {
+        for locale in [Locale::EN_US, Locale::ZH_CN] {
+            let borrowed: &'static str = t!("rule.module_file_layout", locale = locale, {})?;
+            let owned: String = t!(
+                "rule.item_spacing",
+                locale = locale,
+                { expected: 1, actual: PluralCount::new(2) }
+            )?;
+            let diagnostics = vec![
+                Diagnostic::rule(RuleId::ModuleFileLayout, Severity::Warning, borrowed),
+                Diagnostic::rule(RuleId::ItemSpacing, Severity::Error, owned),
+            ];
+            let result = ScanResult::new(ScanStatus::Partial, diagnostics, 0);
+            let json =
+                Reporter::render(&result, Path::new("/workspace"), ReportFormat::Json, locale)?;
+            let json = from_str::<Value>(&json)?;
+            let human = Reporter::render(
+                &result,
+                Path::new("/workspace"),
+                ReportFormat::Human,
+                locale,
+            )?;
+            let messages = json["diagnostics"]
+                .as_array()
+                .ok_or("JSON diagnostics must be an array")?;
+
+            assert_eq!(json["locale"], locale.as_str());
+            assert_eq!(messages.len(), 2);
+            for diagnostic in messages {
+                let message = diagnostic["message"]
+                    .as_str()
+                    .ok_or("diagnostic message must be a string")?;
+                assert!(human.contains(message));
+            }
+        }
         Ok(())
     }
 
@@ -366,7 +398,7 @@ mod tests {
     {
         let message = t!(
             "config.file_read_error",
-            locale = Locale::EN_US.as_tag().as_locale(),
+            locale = Locale::EN_US,
             { path: "cargo-cop.toml" }
         )?;
         let diagnostic = Diagnostic::tool(ToolErrorKind::Configuration, message)

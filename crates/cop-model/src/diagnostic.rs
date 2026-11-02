@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     error::Error,
     fmt,
     path::{Path, PathBuf},
@@ -80,7 +81,7 @@ pub struct Diagnostic {
     target: Option<String>,
     target_kind: Vec<String>,
     span: Option<SourceSpan>,
-    message: String,
+    message: Cow<'static, str>,
     detail: Option<String>,
     namespace: Option<String>,
     cfg_condition: Option<String>,
@@ -235,15 +236,23 @@ impl DiagnosticKind {
 }
 
 impl Diagnostic {
-    pub fn rule(rule_id: RuleId, severity: Severity, message: String) -> Self {
+    pub fn rule(
+        rule_id: RuleId,
+        severity: Severity,
+        message: impl Into<Cow<'static, str>>,
+    ) -> Self {
         Self::new(DiagnosticKind::Rule(rule_id), severity, message)
     }
 
-    pub fn tool(error_kind: ToolErrorKind, message: String) -> Self {
+    pub fn tool(error_kind: ToolErrorKind, message: impl Into<Cow<'static, str>>) -> Self {
         Self::new(DiagnosticKind::Tool(error_kind), Severity::Error, message)
     }
 
-    pub fn analysis(issue_kind: AnalysisIssueKind, severity: Severity, message: String) -> Self {
+    pub fn analysis(
+        issue_kind: AnalysisIssueKind,
+        severity: Severity,
+        message: impl Into<Cow<'static, str>>,
+    ) -> Self {
         Self::new(DiagnosticKind::Analysis(issue_kind), severity, message)
     }
 
@@ -333,7 +342,11 @@ impl Diagnostic {
         self.cfg_condition.as_deref()
     }
 
-    fn new(kind: DiagnosticKind, severity: Severity, message: String) -> Self {
+    fn new(
+        kind: DiagnosticKind,
+        severity: Severity,
+        message: impl Into<Cow<'static, str>>,
+    ) -> Self {
         Self {
             kind,
             severity,
@@ -342,10 +355,30 @@ impl Diagnostic {
             target: None,
             target_kind: Vec::new(),
             span: None,
-            message,
+            message: message.into(),
             detail: None,
             namespace: None,
             cfg_condition: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::borrow::Cow;
+
+    use super::{Diagnostic, RuleId, Severity};
+
+    #[test]
+    fn retains_static_messages_as_borrowed_and_owned_messages_as_owned() {
+        let borrowed = Diagnostic::rule(RuleId::ModuleFileLayout, Severity::Warning, "static");
+        let owned = Diagnostic::rule(
+            RuleId::ModuleFileLayout,
+            Severity::Warning,
+            String::from("formatted"),
+        );
+
+        assert!(matches!(borrowed.message, Cow::Borrowed("static")));
+        assert!(matches!(owned.message, Cow::Owned(message) if message == "formatted"));
     }
 }

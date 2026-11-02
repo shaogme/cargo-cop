@@ -56,7 +56,7 @@ steps:
   - uses: actions/checkout@main
   - uses: shaogme/cargo-cop@main
     with:
-      version: 0.2.6
+      version: 0.2.7
   - run: cargo cop --workspace
 ```
 
@@ -67,7 +67,7 @@ steps:
   - uses: actions/checkout@main
   - uses: shaogme/cargo-cop@main
     with:
-      version: 0.2.6
+      version: 0.2.7
       from-source: true
   - run: cargo cop --workspace
 ```
@@ -133,7 +133,7 @@ cargo cop --list-rules --locale zh-CN --format json
 | `--no-default-features` | 为所选根 package 禁用 default features。 |
 | `--all-targets` | 纳入所选 package 声明的所有 Cargo targets。 |
 | `--config <PATH>` | 读取指定 TOML 配置文件，替代自动发现的配置。相对路径以当前目录为基准。 |
-| `--locale <TAG>` | 选择诊断语言，常用值为 `zh-CN` 或 `en-US`。 |
+| `--locale <TAG>` | 选择诊断语言。有效的英语和中文 locale tag（包括地区变体）会解析到已编译的 `en-US` 或 `zh-CN` catalog。 |
 | `--format human\|json` | 选择人类可读或 JSON 输出，默认 `human`。 |
 | `--list-rules` | 列出全部规则 ID、简述和内置默认值，不扫描项目。 |
 | `--explain-rule <ID>` | 查看单条规则的完整说明和配置方式，不扫描项目。 |
@@ -203,7 +203,7 @@ fn run() {}
 
 分析 warning 会将状态标记为 `partial`，但单独出现时不会导致非零退出码。分析 error 或工具错误会使扫描不完整。规则可以降为 `warning`；只有配置 `allow_warnings = true` 时，warning 诊断才会从输出中隐藏，隐藏数量记入 `summary.suppressed_warnings`。
 
-默认诊断语言按 `LC_ALL`、`LC_MESSAGES`、`LANG` 的顺序选择。仅当选中的 locale 明确标识 `zh` 语言时使用简体中文；其他 locale（包括 `C` 和 `POSIX`）使用英文。若无法识别任何环境 locale，也回退到英文。`--locale` 优先级高于环境和配置；`[i18n].locale` 优先于环境变量。
+默认诊断语言按 `LC_ALL`、`LC_MESSAGES`、`LANG` 的顺序选择。仅当选中的 locale 明确标识 `zh` 语言时使用简体中文；其他 locale（包括 `C` 和 `POSIX`）使用英文。若无法识别任何环境 locale，也回退到英文。`--locale` 优先级高于环境和配置；`[i18n].locale` 优先于环境变量。运行时 locale-tag fallback 接受受支持的英语和中文地区变体，并映射到本 workspace 编译的 catalog：`en-US` 和简体中文 `zh-CN`。其他语言的显式输入仍会报不支持。
 
 ## 配置
 

@@ -6,7 +6,7 @@ mod kind;
 mod macro_input;
 mod syntax;
 
-use std::ops::Range;
+use std::{borrow::Cow, ops::Range};
 
 use cop_i18n::RenderError;
 
@@ -91,7 +91,7 @@ pub struct ParseIssue {
     end: usize,
     source_node_id: Option<AstNodeId>,
     boundary_unknown: bool,
-    message: Result<String, RenderError>,
+    message: Result<Cow<'static, str>, RenderError>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -252,7 +252,7 @@ impl From<&LexIssue> for ParseIssue {
         let mut parsed = AstFactory::parse_issue(
             ParseIssueKind::Lexical,
             issue.start()..issue.end(),
-            Ok(issue.message().to_owned()),
+            Ok(issue.message_cow()),
         );
         parsed.boundary_unknown = issue.boundary_unknown();
         parsed
@@ -265,7 +265,7 @@ impl ParseIssue {
         code: ParseIssueCode,
         bounds: Range<usize>,
         boundary_unknown: bool,
-        message: Result<String, RenderError>,
+        message: Result<impl Into<Cow<'static, str>>, RenderError>,
     ) -> Self {
         Self {
             kind,
@@ -274,7 +274,7 @@ impl ParseIssue {
             end: bounds.end,
             source_node_id: None,
             boundary_unknown,
-            message,
+            message: message.map(Into::into),
         }
     }
 
@@ -327,6 +327,10 @@ impl ParseIssue {
 
     pub fn message(&self) -> Result<&str, RenderError> {
         self.message.as_deref().map_err(|error| *error)
+    }
+
+    pub fn message_cow(&self) -> Result<Cow<'static, str>, RenderError> {
+        self.message.clone()
     }
 }
 
@@ -739,5 +743,35 @@ fn ranges_overlap(
         left_start <= right_end && right_start <= left_end
     } else {
         left_start < right_end && right_start < left_end
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{borrow::Cow, ops::Range};
+
+    use cop_i18n::RenderError;
+
+    use super::{ParseIssue, ParseIssueCode, ParseIssueKind};
+
+    fn parse_issue(message: Result<impl Into<Cow<'static, str>>, RenderError>) -> ParseIssue {
+        ParseIssue::new(
+            ParseIssueKind::UnexpectedToken,
+            ParseIssueCode::UnexpectedToken,
+            Range { start: 0, end: 1 },
+            false,
+            message,
+        )
+    }
+
+    #[test]
+    fn retains_borrowed_and_owned_messages_and_propagates_render_errors() {
+        let borrowed = parse_issue(Ok("borrowed"));
+        let owned = parse_issue(Ok(String::from("owned")));
+        let failed = parse_issue(Err::<&'static str, _>(RenderError::ArgumentCountMismatch));
+
+        assert!(matches!(borrowed.message, Ok(Cow::Borrowed("borrowed"))));
+        assert!(matches!(owned.message, Ok(Cow::Owned(message)) if message == "owned"));
+        assert_eq!(failed.message(), Err(RenderError::ArgumentCountMismatch));
     }
 }

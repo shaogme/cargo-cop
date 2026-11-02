@@ -1,5 +1,6 @@
+use std::{borrow::Cow, mem};
+
 use cop_i18n::{t, RenderError};
-use std::mem;
 
 use crate::SourceFile;
 
@@ -111,7 +112,7 @@ pub struct Token {
 pub struct LexIssue {
     start: usize,
     end: usize,
-    message: String,
+    message: Cow<'static, str>,
     boundary_unknown: bool,
 }
 
@@ -196,6 +197,10 @@ impl LexIssue {
 
     pub fn message(&self) -> &str {
         &self.message
+    }
+
+    pub(crate) fn message_cow(&self) -> Cow<'static, str> {
+        self.message.clone()
     }
 
     pub(crate) fn boundary_unknown(&self) -> bool {
@@ -313,7 +318,7 @@ impl Scanner<'_> {
             self.issues.push(LexIssue {
                 start,
                 end: self.cursor,
-                message: t!("syntax.unclosed_block_comment")?,
+                message: t!("syntax.unclosed_block_comment")?.into(),
                 boundary_unknown: true,
             });
         }
@@ -352,7 +357,7 @@ impl Scanner<'_> {
             self.issues.push(LexIssue {
                 start,
                 end: self.cursor,
-                message: t!("syntax.unknown_character", { character: character.as_str() })?,
+                message: t!("syntax.unknown_character", { character: character.as_str() })?.into(),
                 boundary_unknown: false,
             });
         }
@@ -424,7 +429,7 @@ impl Scanner<'_> {
             self.issues.push(LexIssue {
                 start,
                 end: self.cursor,
-                message: t!("syntax.unclosed_raw_string")?,
+                message: t!("syntax.unclosed_raw_string")?.into(),
                 boundary_unknown: true,
             });
         }
@@ -460,7 +465,7 @@ impl Scanner<'_> {
             self.issues.push(LexIssue {
                 start,
                 end: self.cursor,
-                message: t!("syntax.unclosed_literal")?,
+                message: t!("syntax.unclosed_literal")?.into(),
                 boundary_unknown: true,
             });
         }
@@ -482,7 +487,7 @@ impl Scanner<'_> {
             self.issues.push(LexIssue {
                 start,
                 end: self.cursor,
-                message: t!("syntax.expect_literal_or_lifetime")?,
+                message: t!("syntax.expect_literal_or_lifetime")?.into(),
                 boundary_unknown: false,
             });
         }
@@ -499,7 +504,7 @@ impl Scanner<'_> {
             self.issues.push(LexIssue {
                 start,
                 end: self.cursor,
-                message: t!("syntax.invalid_byte_character")?,
+                message: t!("syntax.invalid_byte_character")?.into(),
                 boundary_unknown: false,
             });
         }
@@ -605,7 +610,7 @@ impl Scanner<'_> {
                 self.issues.push(LexIssue {
                     start,
                     end: self.cursor,
-                    message: t!("syntax.expect_radix_digit")?,
+                    message: t!("syntax.expect_radix_digit")?.into(),
                     boundary_unknown: false,
                 });
             }
@@ -613,7 +618,7 @@ impl Scanner<'_> {
                 self.issues.push(LexIssue {
                     start: digits_start,
                     end: self.cursor,
-                    message: t!("syntax.invalid_radix_digit", { radix: radix as i64 })?,
+                    message: t!("syntax.invalid_radix_digit", { radix: radix as i64 })?.into(),
                     boundary_unknown: false,
                 });
             }

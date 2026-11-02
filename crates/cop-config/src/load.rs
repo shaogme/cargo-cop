@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     collections::BTreeMap,
     error::Error,
     fmt, fs,
@@ -31,7 +32,7 @@ pub struct LoadedConfig {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ConfigError {
     path: PathBuf,
-    message: String,
+    message: Cow<'static, str>,
     detail: Option<String>,
 }
 
@@ -84,17 +85,20 @@ impl LoadedConfig {
 }
 
 impl ConfigError {
-    pub(super) fn from_localized(path: PathBuf, message: String) -> ConfigFailure {
+    pub(super) fn from_localized(
+        path: PathBuf,
+        message: impl Into<Cow<'static, str>>,
+    ) -> ConfigFailure {
         ConfigFailure::Config(Self {
             path,
-            message,
+            message: message.into(),
             detail: None,
         })
     }
 
     pub(super) fn from_message(
         path: PathBuf,
-        message: Result<String, RenderError>,
+        message: Result<impl Into<Cow<'static, str>>, RenderError>,
     ) -> ConfigFailure {
         match message {
             Ok(message) => Self::from_localized(path, message),
@@ -108,6 +112,10 @@ impl ConfigError {
 
     pub fn message(&self) -> &str {
         &self.message
+    }
+
+    pub fn message_cow(&self) -> Cow<'static, str> {
+        self.message.clone()
     }
 
     pub fn detail(&self) -> Option<&str> {

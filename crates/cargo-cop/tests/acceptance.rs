@@ -671,7 +671,7 @@ fn uses_one_resolved_locale_for_help_and_json_messages() {
     fixture.write("member/Cargo.toml", &package_manifest("sample"));
     fixture.write(
         "member/src/lib.rs",
-        "pub struct First;\npub struct Second;\n",
+        "#[allow(dead_code)]\nfn hidden() {}\n\npub struct First;\npub struct Second;\n",
     );
     fixture.write(
         "cargo-cop.toml",
@@ -688,12 +688,40 @@ fn uses_one_resolved_locale_for_help_and_json_messages() {
         "--locale",
         "zh-CN",
     ]);
+    let english_human = fixture.run(&[
+        "--manifest-path",
+        "member/Cargo.toml",
+        "--format",
+        "human",
+        "--locale",
+        "en-US",
+    ]);
+    let chinese_human = fixture.run(&[
+        "--manifest-path",
+        "member/Cargo.toml",
+        "--format",
+        "human",
+        "--locale",
+        "zh-CN",
+    ]);
+    let regional_fallback = fixture.run(&[
+        "--manifest-path",
+        "member/Cargo.toml",
+        "--format",
+        "json",
+        "--locale",
+        "en-150",
+    ]);
     let invalid_arguments = fixture.run(&["--format", "json", "--locale", "en-US", "--unknown"]);
     let english = from_str::<Value>(&configured.stdout).expect("英文 JSON 报告");
     let chinese = from_str::<Value>(&overridden.stdout).expect("中文 JSON 报告");
     let argument_error = from_str::<Value>(&invalid_arguments.stdout).expect("参数错误 JSON 报告");
-    let english_diagnostic = &english["diagnostics"][0];
-    let chinese_diagnostic = &chinese["diagnostics"][0];
+    let english_spacing_diagnostics = rule_diagnostics(&configured, "item_spacing");
+    let chinese_spacing_diagnostics = rule_diagnostics(&overridden, "item_spacing");
+    let english_diagnostic = &english_spacing_diagnostics[0];
+    let chinese_diagnostic = &chinese_spacing_diagnostics[0];
+    let english_diagnostics = english["diagnostics"].as_array().expect("英文诊断数组");
+    let chinese_diagnostics = chinese["diagnostics"].as_array().expect("中文诊断数组");
 
     assert!(help.stdout.contains("Usage: cargo-cop"));
     assert_eq!(configured.status, 1, "{}", configured.stderr);
@@ -705,6 +733,24 @@ fn uses_one_resolved_locale_for_help_and_json_messages() {
     assert_eq!(english_diagnostic["rule_id"], "item_spacing");
     assert_eq!(english_diagnostic["rule_id"], chinese_diagnostic["rule_id"]);
     assert_ne!(english_diagnostic["message"], chinese_diagnostic["message"]);
+    assert_eq!(english["diagnostics"].as_array().map(Vec::len), Some(2));
+    assert_eq!(english_human.status, configured.status);
+    assert_eq!(chinese_human.status, configured.status);
+    assert_eq!(regional_fallback.status, configured.status);
+    assert_eq!(
+        from_str::<Value>(&regional_fallback.stdout).expect("regional locale JSON")["locale"],
+        "en-US"
+    );
+    for diagnostic in english_diagnostics {
+        assert!(english_human
+            .stdout
+            .contains(diagnostic_message(diagnostic)));
+    }
+    for diagnostic in chinese_diagnostics {
+        assert!(chinese_human
+            .stdout
+            .contains(diagnostic_message(diagnostic)));
+    }
     assert_eq!(invalid_arguments.status, 2);
     assert_eq!(argument_error["locale"], "en-US");
     assert_eq!(argument_error["diagnostics"][0]["tool_error"], "arguments");

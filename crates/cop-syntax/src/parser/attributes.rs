@@ -1,5 +1,6 @@
+use std::{borrow::Cow, ops::Range};
+
 use cop_i18n::{t, RenderError};
-use std::ops::Range;
 
 use crate::{
     ast::{
@@ -364,7 +365,7 @@ impl AttributeParser {
         issues: &mut Vec<ParseIssue>,
         kind: ParseIssueKind,
         bounds: Range<usize>,
-        message: Result<String, RenderError>,
+        message: Result<impl Into<Cow<'static, str>>, RenderError>,
     ) {
         issues.push(AstFactory::parse_issue(kind, bounds, message));
     }

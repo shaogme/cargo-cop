@@ -19,6 +19,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let generated = Compiler::new(
         CompilerOptions::default()
             .with_atomic_locale(true)
+            .with_locale_tag_fallback(true)
             .with_final_fallback_locale("en-US"),
     )
     .compile(input)?;

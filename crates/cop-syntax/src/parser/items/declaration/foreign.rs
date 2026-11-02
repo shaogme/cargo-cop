@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use cop_i18n::{t, RenderError};
 
 use crate::{
@@ -609,7 +611,7 @@ impl ForeignItemParser {
     fn push_current_issue(
         context: &mut ParserContext<'_, '_>,
         kind: ParseIssueKind,
-        message: Result<String, RenderError>,
+        message: Result<impl Into<Cow<'static, str>>, RenderError>,
     ) {
         let bounds = Self::current_start(context)..Self::current_end(context);
         context

@@ -1,8 +1,8 @@
-pub use u18n::{PluralCount, RenderError};
-
 use std::{error::Error, fmt};
 
 use language_tags::LanguageTag;
+
+pub use u18n::{Locale as RuntimeLocale, LocaleProvider, PluralCount, RenderError};
 
 include!(concat!(env!("OUT_DIR"), "/u18n_messages.rs"));
 
@@ -55,6 +55,12 @@ impl Locale {
     }
 }
 
+impl LocaleProvider for Locale {
+    fn provide_locale(&self) -> &RuntimeLocale {
+        self.as_tag().as_locale()
+    }
+}
+
 impl LocaleError {
     pub fn value(&self) -> &str {
         &self.value
@@ -72,12 +78,22 @@ impl Error for LocaleError {}
 fn resolve_tag(value: &str) -> Option<Locale> {
     let tag = LanguageTag::parse(value.trim()).ok()?;
     tag.validate().ok()?;
-    if tag.primary_language().eq_ignore_ascii_case("zh") {
-        Some(Locale::ZH_CN)
-    } else if tag.primary_language().eq_ignore_ascii_case("en") {
-        Some(Locale::EN_US)
-    } else {
-        None
+    let base_tag = tag
+        .as_str()
+        .split('-')
+        .take_while(|subtag| subtag.len() > 1)
+        .collect::<Vec<_>>()
+        .join("-");
+    let catalog = LocaleTag::fallback(value.trim())
+        .or_else(|_| LocaleTag::fallback(&base_tag))
+        .ok()?;
+    match (
+        tag.primary_language().to_ascii_lowercase().as_str(),
+        catalog,
+    ) {
+        ("zh", LocaleTag::EnUs | LocaleTag::ZhCn) => Some(Locale::ZH_CN),
+        ("en", LocaleTag::EnUs) => Some(Locale::EN_US),
+        _ => None,
     }
 }
 
@@ -103,7 +119,7 @@ fn resolve_environment_value(value: &str) -> Option<Locale> {
 
 #[cfg(test)]
 mod tests {
-    use super::Locale;
+    use super::{Locale, LocaleProvider};
 
     #[test]
     fn resolves_posix_environment_values_before_lower_priority_values() {
@@ -143,5 +159,18 @@ mod tests {
             Locale::resolve(None, None, &[Some("en_us.UTF-8")]),
             Ok(Locale::EN_US)
         );
+    }
+
+    #[test]
+    fn resolves_supported_regional_tags_through_catalog_fallback() {
+        assert_eq!(Locale::parse_explicit("en-150"), Ok(Locale::EN_US));
+        assert_eq!(Locale::parse_explicit("zh-Hant-HK"), Ok(Locale::ZH_CN));
+        assert!(Locale::parse_explicit("fr-CA").is_err());
+    }
+
+    #[test]
+    fn locale_provider_returns_the_compiled_catalog_for_each_application_locale() {
+        assert_eq!(Locale::EN_US.provide_locale().as_str(), "en-US");
+        assert_eq!(Locale::ZH_CN.provide_locale().as_str(), "zh-CN");
     }
 }

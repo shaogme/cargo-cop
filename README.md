@@ -56,7 +56,7 @@ steps:
   - uses: actions/checkout@main
   - uses: shaogme/cargo-cop@main
     with:
-      version: 0.2.6
+      version: 0.2.7
   - run: cargo cop --workspace
 ```
 
@@ -67,7 +67,7 @@ steps:
   - uses: actions/checkout@main
   - uses: shaogme/cargo-cop@main
     with:
-      version: 0.2.6
+      version: 0.2.7
       from-source: true
   - run: cargo cop --workspace
 ```
@@ -133,7 +133,7 @@ By default the tool scans `lib`, `bin`, and `proc-macro` targets. `--all-targets
 | `--no-default-features` | Disable default features for selected root packages. |
 | `--all-targets` | Include every Cargo target declared by selected packages. |
 | `--config <PATH>` | Read this TOML configuration instead of automatically discovered configuration. Relative paths are based on the current directory. |
-| `--locale <TAG>` | Select diagnostic language, usually `en-US` or `zh-CN`. |
+| `--locale <TAG>` | Select diagnostic language. Valid English and Chinese language tags, including regional variants, resolve to the compiled `en-US` or `zh-CN` catalog. |
 | `--format human\|json` | Choose human-readable or JSON output. Defaults to `human`. |
 | `--list-rules` | List all rule IDs, summaries, and built-in defaults without scanning a project. |
 | `--explain-rule <ID>` | Show the full description and configuration options for one rule without scanning a project. |
@@ -203,7 +203,7 @@ Human output contains one diagnostic per line followed by a summary. JSON output
 
 An analysis warning can mark the scan `partial`; this alone does not make the exit code nonzero. An analysis error or tool error marks the scan incomplete. A rule's severity can be lowered to `warning`, but warnings are only hidden when `allow_warnings = true` is set in the configuration; hidden warnings are counted in `summary.suppressed_warnings`.
 
-The default diagnostic language is selected from `LC_ALL`, `LC_MESSAGES`, and `LANG` in that order. Chinese is selected only when the selected locale identifies the `zh` language; other locales, including `C` and `POSIX`, use English. If no environment locale can be identified, English is used. `--locale` overrides the environment and configured locale; `[i18n].locale` overrides the environment.
+The default diagnostic language is selected from `LC_ALL`, `LC_MESSAGES`, and `LANG` in that order. Chinese is selected only when the selected locale identifies the `zh` language; other locales, including `C` and `POSIX`, use English. If no environment locale can be identified, English is used. `--locale` overrides the environment and configured locale; `[i18n].locale` overrides the environment. Runtime locale-tag fallback accepts supported English and Chinese regional tags and resolves them to the catalogs compiled into this workspace: `en-US` and Simplified Chinese `zh-CN`. Explicit tags for other languages remain unsupported.
 
 ## Configuration
 

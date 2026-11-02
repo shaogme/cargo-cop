@@ -1,7 +1,8 @@
 mod declaration;
 
+use std::{borrow::Cow, mem, ops::Range};
+
 use cop_i18n::{t, RenderError};
-use std::{mem, ops::Range};
 
 use self::declaration::{ItemSyntaxParser, ParserContext};
 use super::{
@@ -633,7 +634,11 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn push_current_issue(&mut self, kind: ParseIssueKind, message: Result<String, RenderError>) {
+    fn push_current_issue(
+        &mut self,
+        kind: ParseIssueKind,
+        message: Result<impl Into<Cow<'static, str>>, RenderError>,
+    ) {
         self.push_issue(kind, self.current_start()..self.current_end(), message);
     }
 
@@ -641,7 +646,7 @@ impl<'a> Parser<'a> {
         &mut self,
         kind: ParseIssueKind,
         bounds: Range<usize>,
-        message: Result<String, RenderError>,
+        message: Result<impl Into<Cow<'static, str>>, RenderError>,
     ) {
         self.issues
             .push(AstFactory::parse_issue(kind, bounds, message));
