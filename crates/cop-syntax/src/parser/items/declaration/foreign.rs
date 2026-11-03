@@ -611,7 +611,7 @@ impl ForeignItemParser {
     fn push_current_issue(
         context: &mut ParserContext<'_, '_>,
         kind: ParseIssueKind,
-        message: Result<impl Into<Cow<'static, str>>, RenderError>,
+        message: Result<Cow<'static, str>, RenderError>,
     ) {
         let bounds = Self::current_start(context)..Self::current_end(context);
         context

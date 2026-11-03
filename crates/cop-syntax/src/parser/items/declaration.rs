@@ -435,7 +435,7 @@ impl ItemSyntaxParser {
     fn push_current_issue(
         context: &mut ParserContext<'_, '_>,
         kind: ParseIssueKind,
-        message: Result<impl Into<Cow<'static, str>>, RenderError>,
+        message: Result<Cow<'static, str>, RenderError>,
     ) {
         let bounds = Self::current_start(context)..Self::current_end(context);
         Self::push_issue(context, kind, bounds, message);
@@ -445,7 +445,7 @@ impl ItemSyntaxParser {
         context: &mut ParserContext<'_, '_>,
         kind: ParseIssueKind,
         bounds: Range<usize>,
-        message: Result<impl Into<Cow<'static, str>>, RenderError>,
+        message: Result<Cow<'static, str>, RenderError>,
     ) {
         context
             .issues

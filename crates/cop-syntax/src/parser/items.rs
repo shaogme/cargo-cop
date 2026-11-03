@@ -637,7 +637,7 @@ impl<'a> Parser<'a> {
     fn push_current_issue(
         &mut self,
         kind: ParseIssueKind,
-        message: Result<impl Into<Cow<'static, str>>, RenderError>,
+        message: Result<Cow<'static, str>, RenderError>,
     ) {
         self.push_issue(kind, self.current_start()..self.current_end(), message);
     }
@@ -646,7 +646,7 @@ impl<'a> Parser<'a> {
         &mut self,
         kind: ParseIssueKind,
         bounds: Range<usize>,
-        message: Result<impl Into<Cow<'static, str>>, RenderError>,
+        message: Result<Cow<'static, str>, RenderError>,
     ) {
         self.issues
             .push(AstFactory::parse_issue(kind, bounds, message));

@@ -318,7 +318,7 @@ impl Scanner<'_> {
             self.issues.push(LexIssue {
                 start,
                 end: self.cursor,
-                message: t!("syntax.unclosed_block_comment")?.into(),
+                message: t!("syntax.unclosed_block_comment")?,
                 boundary_unknown: true,
             });
         }
@@ -357,7 +357,7 @@ impl Scanner<'_> {
             self.issues.push(LexIssue {
                 start,
                 end: self.cursor,
-                message: t!("syntax.unknown_character", { character: character.as_str() })?.into(),
+                message: t!("syntax.unknown_character", { character: character.as_str() })?,
                 boundary_unknown: false,
             });
         }
@@ -429,7 +429,7 @@ impl Scanner<'_> {
             self.issues.push(LexIssue {
                 start,
                 end: self.cursor,
-                message: t!("syntax.unclosed_raw_string")?.into(),
+                message: t!("syntax.unclosed_raw_string")?,
                 boundary_unknown: true,
             });
         }
@@ -465,7 +465,7 @@ impl Scanner<'_> {
             self.issues.push(LexIssue {
                 start,
                 end: self.cursor,
-                message: t!("syntax.unclosed_literal")?.into(),
+                message: t!("syntax.unclosed_literal")?,
                 boundary_unknown: true,
             });
         }
@@ -487,7 +487,7 @@ impl Scanner<'_> {
             self.issues.push(LexIssue {
                 start,
                 end: self.cursor,
-                message: t!("syntax.expect_literal_or_lifetime")?.into(),
+                message: t!("syntax.expect_literal_or_lifetime")?,
                 boundary_unknown: false,
             });
         }
@@ -504,7 +504,7 @@ impl Scanner<'_> {
             self.issues.push(LexIssue {
                 start,
                 end: self.cursor,
-                message: t!("syntax.invalid_byte_character")?.into(),
+                message: t!("syntax.invalid_byte_character")?,
                 boundary_unknown: false,
             });
         }
@@ -610,7 +610,7 @@ impl Scanner<'_> {
                 self.issues.push(LexIssue {
                     start,
                     end: self.cursor,
-                    message: t!("syntax.expect_radix_digit")?.into(),
+                    message: t!("syntax.expect_radix_digit")?,
                     boundary_unknown: false,
                 });
             }
@@ -618,7 +618,7 @@ impl Scanner<'_> {
                 self.issues.push(LexIssue {
                     start: digits_start,
                     end: self.cursor,
-                    message: t!("syntax.invalid_radix_digit", { radix: radix as i64 })?.into(),
+                    message: t!("syntax.invalid_radix_digit", { radix: radix as i64 })?,
                     boundary_unknown: false,
                 });
             }

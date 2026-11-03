@@ -212,13 +212,10 @@ impl CargoTarget {
 }
 
 impl CargoError {
-    pub(crate) fn from_localized(
-        kind: ToolErrorKind,
-        message: impl Into<Cow<'static, str>>,
-    ) -> CargoFailure {
+    pub(crate) fn from_localized(kind: ToolErrorKind, message: Cow<'static, str>) -> CargoFailure {
         CargoFailure::Cargo(Self {
             kind,
-            message: message.into(),
+            message,
             detail: None,
         })
     }
@@ -271,7 +268,7 @@ impl Error for CargoFailure {}
 impl CargoFailure {
     pub(crate) fn from_message(
         kind: ToolErrorKind,
-        message: Result<impl Into<Cow<'static, str>>, RenderError>,
+        message: Result<Cow<'static, str>, RenderError>,
     ) -> Self {
         match message {
             Ok(message) => CargoError::from_localized(kind, message),

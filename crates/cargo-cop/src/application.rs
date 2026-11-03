@@ -170,10 +170,10 @@ impl OutputFormat {
 }
 
 impl ApplicationError {
-    fn new(kind: ToolErrorKind, message: impl Into<Cow<'static, str>>) -> Self {
+    fn new(kind: ToolErrorKind, message: Cow<'static, str>) -> Self {
         Self {
             kind,
-            message: message.into(),
+            message,
             detail: None,
             locale_override: None,
         }
@@ -191,10 +191,7 @@ impl ApplicationError {
 }
 
 impl ApplicationFailure {
-    fn localized(
-        kind: ToolErrorKind,
-        message: Result<impl Into<Cow<'static, str>>, RenderError>,
-    ) -> Self {
+    fn localized(kind: ToolErrorKind, message: Result<Cow<'static, str>, RenderError>) -> Self {
         match message {
             Ok(message) => Self::Domain(ApplicationError::new(kind, message)),
             Err(error) => Self::Render(error),

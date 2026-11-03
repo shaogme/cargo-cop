@@ -48,8 +48,8 @@ impl RuleEntry {
     fn new(rule_id: RuleId, locale: Locale) -> Result<Self, RenderError> {
         Ok(Self {
             rule_id,
-            summary: RuleCatalog::summary(rule_id, locale)?.into(),
-            description: RuleCatalog::description(rule_id, locale)?.into(),
+            summary: RuleCatalog::summary(rule_id, locale)?,
+            description: RuleCatalog::description(rule_id, locale)?,
             default_enabled: true,
             default_severity: DEFAULT_SEVERITY,
         })
@@ -69,7 +69,7 @@ impl RuleCatalog {
         RuleEntry::new(rule_id, locale)
     }
 
-    fn summary(rule_id: RuleId, locale: Locale) -> Result<&'static str, RenderError> {
+    fn summary(rule_id: RuleId, locale: Locale) -> Result<Cow<'static, str>, RenderError> {
         match rule_id {
             RuleId::ModuleFileLayout => t!(
                 "rule_catalog.module_file_layout.summary",
@@ -179,7 +179,7 @@ impl RuleCatalog {
         }
     }
 
-    fn description(rule_id: RuleId, locale: Locale) -> Result<&'static str, RenderError> {
+    fn description(rule_id: RuleId, locale: Locale) -> Result<Cow<'static, str>, RenderError> {
         match rule_id {
             RuleId::ModuleFileLayout => t!(
                 "rule_catalog.module_file_layout.description",
@@ -350,7 +350,7 @@ impl RuleQuery {
         let entry = entries.first().expect("single-rule query has one entry");
         output.push_str(entry.rule_id().as_str());
         output.push('\n');
-        output.push_str(t!(
+        output.push_str(&t!(
             "rule_catalog.summary_label",
             locale = locale.as_tag().as_locale(),
             {}
@@ -358,7 +358,7 @@ impl RuleQuery {
         output.push_str(": ");
         output.push_str(entry.summary());
         output.push('\n');
-        output.push_str(t!(
+        output.push_str(&t!(
             "rule_catalog.description_label",
             locale = locale.as_tag().as_locale(),
             {}
@@ -366,19 +366,19 @@ impl RuleQuery {
         output.push_str(": ");
         output.push_str(entry.description());
         output.push('\n');
-        output.push_str(t!(
+        output.push_str(&t!(
             "rule_catalog.default_enabled_label",
             locale = locale.as_tag().as_locale(),
             {}
         )?);
         output.push_str(": ");
-        output.push_str(t!(
+        output.push_str(&t!(
             "rule_catalog.enabled",
             locale = locale.as_tag().as_locale(),
             {}
         )?);
         output.push('\n');
-        output.push_str(t!(
+        output.push_str(&t!(
             "rule_catalog.default_severity_label",
             locale = locale.as_tag().as_locale(),
             {}
@@ -386,14 +386,14 @@ impl RuleQuery {
         output.push_str(": ");
         output.push_str(entry.default_severity());
         output.push('\n');
-        output.push_str(t!(
+        output.push_str(&t!(
             "rule_catalog.configuration_label",
             locale = locale.as_tag().as_locale(),
             {}
         )?);
         output.push_str(&format!(": [rules.{}]", entry.rule_id().as_str()));
         output.push('\n');
-        output.push_str(t!(
+        output.push_str(&t!(
             "rule_catalog.overrides_label",
             locale = locale.as_tag().as_locale(),
             {}

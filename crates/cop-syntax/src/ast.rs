@@ -265,7 +265,7 @@ impl ParseIssue {
         code: ParseIssueCode,
         bounds: Range<usize>,
         boundary_unknown: bool,
-        message: Result<impl Into<Cow<'static, str>>, RenderError>,
+        message: Result<Cow<'static, str>, RenderError>,
     ) -> Self {
         Self {
             kind,
@@ -274,7 +274,7 @@ impl ParseIssue {
             end: bounds.end,
             source_node_id: None,
             boundary_unknown,
-            message: message.map(Into::into),
+            message,
         }
     }
 
@@ -754,7 +754,7 @@ mod tests {
 
     use super::{ParseIssue, ParseIssueCode, ParseIssueKind};
 
-    fn parse_issue(message: Result<impl Into<Cow<'static, str>>, RenderError>) -> ParseIssue {
+    fn parse_issue(message: Result<Cow<'static, str>, RenderError>) -> ParseIssue {
         ParseIssue::new(
             ParseIssueKind::UnexpectedToken,
             ParseIssueCode::UnexpectedToken,
@@ -766,9 +766,11 @@ mod tests {
 
     #[test]
     fn retains_borrowed_and_owned_messages_and_propagates_render_errors() {
-        let borrowed = parse_issue(Ok("borrowed"));
-        let owned = parse_issue(Ok(String::from("owned")));
-        let failed = parse_issue(Err::<&'static str, _>(RenderError::ArgumentCountMismatch));
+        let borrowed = parse_issue(Ok(Cow::Borrowed("borrowed")));
+        let owned = parse_issue(Ok(Cow::Owned(String::from("owned"))));
+        let failed = parse_issue(Err::<Cow<'static, str>, _>(
+            RenderError::ArgumentCountMismatch,
+        ));
 
         assert!(matches!(borrowed.message, Ok(Cow::Borrowed("borrowed"))));
         assert!(matches!(owned.message, Ok(Cow::Owned(message)) if message == "owned"));

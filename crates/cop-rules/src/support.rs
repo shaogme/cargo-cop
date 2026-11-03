@@ -91,26 +91,22 @@ impl SyntaxSupport {
 impl RuleReport {
     pub(super) fn new(
         rule_id: RuleId,
-        message: impl Into<Cow<'static, str>>,
+        message: Cow<'static, str>,
         bounds: Option<Range<usize>>,
     ) -> Self {
         Self {
             rule_id,
-            message: message.into(),
+            message,
             bounds,
             span: None,
             cfg_condition: None,
         }
     }
 
-    pub(super) fn at_span(
-        rule_id: RuleId,
-        message: impl Into<Cow<'static, str>>,
-        span: SourceSpan,
-    ) -> Self {
+    pub(super) fn at_span(rule_id: RuleId, message: Cow<'static, str>, span: SourceSpan) -> Self {
         Self {
             rule_id,
-            message: message.into(),
+            message,
             bounds: None,
             span: Some(span),
             cfg_condition: None,

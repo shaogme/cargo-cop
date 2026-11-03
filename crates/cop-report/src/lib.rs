@@ -140,7 +140,7 @@ fn render_human(
             diagnostics: PluralCount::new(result.diagnostic_count() as u64),
         }
     )?;
-    lines.push(summary);
+    lines.push(summary.into_owned());
     Ok(lines.join("\n"))
 }
 
@@ -243,9 +243,9 @@ fn display_path(path: Option<&Path>, workspace_root: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::{error::Error, path::Path};
+    use std::{borrow::Cow, error::Error, path::Path};
 
-    use cop_i18n::{t, Locale, PluralCount};
+    use cop_i18n::{t, Locale, PluralCount, RenderedMessage};
     use cop_model::{
         Diagnostic, RuleId, ScanResult, ScanStatus, Severity, SourceLocation, SourceSpan,
         ToolErrorKind,
@@ -333,12 +333,14 @@ mod tests {
     fn keeps_borrowed_and_parameterized_messages_consistent_in_both_formats(
     ) -> Result<(), Box<dyn Error>> {
         for locale in [Locale::EN_US, Locale::ZH_CN] {
-            let borrowed: &'static str = t!("rule.module_file_layout", locale = locale, {})?;
-            let owned: String = t!(
+            let borrowed: RenderedMessage = t!("rule.module_file_layout", locale = locale, {})?;
+            let owned: RenderedMessage = t!(
                 "rule.item_spacing",
                 locale = locale,
                 { expected: 1, actual: PluralCount::new(2) }
             )?;
+            assert!(matches!(&borrowed, Cow::Borrowed(_)));
+            assert!(matches!(&owned, Cow::Owned(_)));
             let diagnostics = vec![
                 Diagnostic::rule(RuleId::ModuleFileLayout, Severity::Warning, borrowed),
                 Diagnostic::rule(RuleId::ItemSpacing, Severity::Error, owned),

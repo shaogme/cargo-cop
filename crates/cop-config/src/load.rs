@@ -85,20 +85,17 @@ impl LoadedConfig {
 }
 
 impl ConfigError {
-    pub(super) fn from_localized(
-        path: PathBuf,
-        message: impl Into<Cow<'static, str>>,
-    ) -> ConfigFailure {
+    pub(super) fn from_localized(path: PathBuf, message: Cow<'static, str>) -> ConfigFailure {
         ConfigFailure::Config(Self {
             path,
-            message: message.into(),
+            message,
             detail: None,
         })
     }
 
     pub(super) fn from_message(
         path: PathBuf,
-        message: Result<impl Into<Cow<'static, str>>, RenderError>,
+        message: Result<Cow<'static, str>, RenderError>,
     ) -> ConfigFailure {
         match message {
             Ok(message) => Self::from_localized(path, message),

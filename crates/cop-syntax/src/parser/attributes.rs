@@ -365,7 +365,7 @@ impl AttributeParser {
         issues: &mut Vec<ParseIssue>,
         kind: ParseIssueKind,
         bounds: Range<usize>,
-        message: Result<impl Into<Cow<'static, str>>, RenderError>,
+        message: Result<Cow<'static, str>, RenderError>,
     ) {
         issues.push(AstFactory::parse_issue(kind, bounds, message));
     }

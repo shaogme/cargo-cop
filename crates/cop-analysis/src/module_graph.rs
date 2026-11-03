@@ -342,7 +342,7 @@ impl GraphBuilder<'_> {
                 self.report(IssueRequest {
                     kind: AnalysisIssueKind::DynamicInput,
                     severity: Severity::Warning,
-                    message: t!("analysis.include_dynamic_input")?.into(),
+                    message: t!("analysis.include_dynamic_input")?,
                     span: source
                         .source()
                         .span(invocation.start(), invocation.end())
@@ -375,7 +375,7 @@ impl GraphBuilder<'_> {
                 self.report(IssueRequest {
                     kind: issue_kind,
                     severity: Severity::Warning,
-                    message: t!("analysis.macro_generated_module", { name: macro_name })?.into(),
+                    message: t!("analysis.macro_generated_module", { name: macro_name })?,
                     span: source
                         .source()
                         .span(invocation.start(), invocation.end())
@@ -473,7 +473,7 @@ impl GraphBuilder<'_> {
             self.report(IssueRequest {
                 kind: AnalysisIssueKind::ModuleCycle,
                 severity: Severity::Error,
-                message: t!("analysis.module_cycle", { name: name })?.into(),
+                message: t!("analysis.module_cycle", { name: name })?,
                 span: declared_at,
                 namespace: Some(ScopeSupport::module_namespace(&namespace)),
                 cfg_condition,
@@ -530,7 +530,7 @@ impl GraphBuilder<'_> {
             self.report(IssueRequest {
                 kind: AnalysisIssueKind::MissingModule,
                 severity: Severity::Error,
-                message: t!("analysis.path_module_missing")?.into(),
+                message: t!("analysis.path_module_missing")?,
                 span: request.declaration_span,
                 namespace: Some(ScopeSupport::module_namespace(&scope.namespace)),
                 cfg_condition: request.cfg_condition.clone(),
@@ -550,7 +550,7 @@ impl GraphBuilder<'_> {
                 self.report(IssueRequest {
                     kind: AnalysisIssueKind::AmbiguousModule,
                     severity: Severity::Error,
-                    message: t!("analysis.module_layout_ambiguous", { name: request.name })?.into(),
+                    message: t!("analysis.module_layout_ambiguous", { name: request.name })?,
                     span: request.declaration_span,
                     namespace: Some(ScopeSupport::module_namespace(&scope.namespace)),
                     cfg_condition: request.cfg_condition,
@@ -563,7 +563,7 @@ impl GraphBuilder<'_> {
                 self.report(IssueRequest {
                     kind: AnalysisIssueKind::MissingModule,
                     severity: Severity::Error,
-                    message: t!("analysis.module_missing", { name: request.name })?.into(),
+                    message: t!("analysis.module_missing", { name: request.name })?,
                     span: request.declaration_span,
                     namespace: Some(ScopeSupport::module_namespace(&scope.namespace)),
                     cfg_condition: request.cfg_condition,
@@ -709,7 +709,7 @@ impl GraphBuilder<'_> {
                     ConfiguredIssueDetails {
                         kind: AnalysisIssueKind::UnknownCfg,
                         severity: Severity::Warning,
-                        message: t!("analysis.unknown_cfg", { condition: condition })?.into(),
+                        message: t!("analysis.unknown_cfg", { condition: condition })?,
                     }
                 }
                 ConfiguredAstIssueKind::MalformedAttribute => {
@@ -723,7 +723,7 @@ impl GraphBuilder<'_> {
                     ConfiguredIssueDetails {
                         kind: AnalysisIssueKind::ParserCoverage,
                         severity: Severity::Error,
-                        message: t!("analysis.malformed_cfg_attribute")?.into(),
+                        message: t!("analysis.malformed_cfg_attribute")?,
                     }
                 }
                 ConfiguredAstIssueKind::MalformedCfgExpression => {
@@ -737,7 +737,7 @@ impl GraphBuilder<'_> {
                     ConfiguredIssueDetails {
                         kind: AnalysisIssueKind::ParserCoverage,
                         severity: Severity::Error,
-                        message: t!("analysis.malformed_cfg_expression")?.into(),
+                        message: t!("analysis.malformed_cfg_expression")?,
                     }
                 }
                 ConfiguredAstIssueKind::OpaqueCfgMacro => {
@@ -751,7 +751,7 @@ impl GraphBuilder<'_> {
                     ConfiguredIssueDetails {
                         kind: AnalysisIssueKind::ParserCoverage,
                         severity: Severity::Warning,
-                        message: t!("analysis.cfg_macro_identity_unknown")?.into(),
+                        message: t!("analysis.cfg_macro_identity_unknown")?,
                     }
                 }
             };
