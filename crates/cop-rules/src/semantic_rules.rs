@@ -163,50 +163,39 @@ impl SemanticRuleSet {
             return Ok(());
         };
         let trait_resolution = trait_reference.resolution();
-        if trait_resolution.kind() == PathResolutionKind::ExternalCrate {
-            return Ok(());
-        }
-        let Some(trait_symbol) = trait_resolution
-            .symbol()
-            .filter(|symbol| symbol.kind() == SymbolKind::Trait)
-        else {
-            if cfg_exclusive_declaration_exists(
-                snapshot,
-                module,
-                trait_path,
-                implementation.condition(),
-                true,
-            ) {
+        let local_trait = if trait_resolution.kind() == PathResolutionKind::ExternalCrate {
+            None
+        } else {
+            let Some(trait_symbol) = trait_resolution
+                .symbol()
+                .filter(|symbol| symbol.kind() == SymbolKind::Trait)
+            else {
+                if cfg_exclusive_declaration_exists(
+                    snapshot,
+                    module,
+                    trait_path,
+                    implementation.condition(),
+                    true,
+                ) {
+                    return Ok(());
+                }
+                let path =
+                    trait_path.map_or_else(|| "<unknown>".to_owned(), |path| path.join("::"));
+                push_impl_analysis_issue(
+                    module,
+                    diagnostics,
+                    trait_bounds,
+                    t!("rule.impl_trait_unresolved", { trait_path: path.as_str() })?,
+                );
+                return Ok(());
+            };
+            let mut trait_conditions = Vec::new();
+            resolution_conditions(trait_resolution, &mut trait_conditions);
+            if !conditions_may_coexist_with_impl(implementation.condition(), &trait_conditions) {
                 return Ok(());
             }
-            let path = trait_path.map_or_else(|| "<unknown>".to_owned(), |path| path.join("::"));
-            push_impl_analysis_issue(
-                module,
-                diagnostics,
-                trait_bounds,
-                t!("rule.impl_trait_unresolved", { trait_path: path.as_str() })?,
-            );
-            return Ok(());
+            Some(trait_symbol)
         };
-        let mut trait_conditions = Vec::new();
-        resolution_conditions(trait_resolution, &mut trait_conditions);
-        if !conditions_may_coexist_with_impl(implementation.condition(), &trait_conditions) {
-            return Ok(());
-        }
-        if !symbol_is_in_module(trait_symbol, module) {
-            let trait_name =
-                trait_path.map_or_else(|| trait_symbol.name().to_owned(), |path| path.join("::"));
-            adapter.push(
-                module,
-                diagnostics,
-                RuleReport::new(
-                    RuleId::TraitImplLocality,
-                    t!("rule.impl_trait_outside_scope", { trait_path: trait_name.as_str() })?,
-                    Some(trait_bounds),
-                ),
-            );
-            return Ok(());
-        }
         if !implementation.is_target_enabled() {
             return Ok(());
         }
@@ -258,21 +247,50 @@ impl SemanticRuleSet {
                 );
             }
             Some(TypeOrigin::External) => {
-                let target = implementation
-                    .target_path()
-                    .map(|path| path.join("::"))
-                    .unwrap_or_else(|| "<unknown>".to_owned());
-                adapter.push(
-                    module,
-                    diagnostics,
-                    RuleReport::new(
-                        RuleId::TraitImplLocality,
-                        t!("rule.impl_target_outside_scope", { target: target.as_str() })?,
-                        Some(target_bounds),
-                    ),
-                );
+                if let Some(trait_symbol) = local_trait {
+                    if !symbol_is_in_module(trait_symbol, module) {
+                        let target =
+                            implementation_target_name(module, implementation, &target_bounds);
+                        adapter.push(
+                            module,
+                            diagnostics,
+                            RuleReport::new(
+                                RuleId::TraitImplLocality,
+                                t!("rule.impl_target_outside_scope", { target: target.as_str() })?,
+                                Some(target_bounds),
+                            ),
+                        );
+                    }
+                } else {
+                    let target = implementation_target_name(module, implementation, &target_bounds);
+                    adapter.push(
+                        module,
+                        diagnostics,
+                        RuleReport::new(
+                            RuleId::TraitImplLocality,
+                            t!("rule.impl_target_outside_scope", { target: target.as_str() })?,
+                            Some(target_bounds),
+                        ),
+                    );
+                }
             }
-            Some(TypeOrigin::Local(_)) | Some(TypeOrigin::Primitive) => {}
+            Some(TypeOrigin::Primitive) => {
+                if local_trait
+                    .is_some_and(|trait_symbol| !symbol_is_in_module(trait_symbol, module))
+                {
+                    let target = implementation_target_name(module, implementation, &target_bounds);
+                    adapter.push(
+                        module,
+                        diagnostics,
+                        RuleReport::new(
+                            RuleId::TraitImplLocality,
+                            t!("rule.impl_target_outside_scope", { target: target.as_str() })?,
+                            Some(target_bounds),
+                        ),
+                    );
+                }
+            }
+            Some(TypeOrigin::Local(_)) => {}
             None => {
                 if cfg_exclusive_declaration_exists(
                     snapshot,
@@ -579,6 +597,22 @@ fn conditions_may_coexist_with_impl(
     conditions.push(implementation_condition);
     conditions.extend(symbol_conditions.iter().map(Option::as_deref));
     SyntaxSupport::conditions_may_coexist_all(&conditions)
+}
+
+fn implementation_target_name(
+    module: &ModuleNode,
+    implementation: &ImplOwnerRecord,
+    bounds: &Range<usize>,
+) -> String {
+    module
+        .parse_output()
+        .source()
+        .slice(bounds.start, bounds.end)
+        .map(str::trim)
+        .filter(|target| !target.is_empty())
+        .map(str::to_owned)
+        .or_else(|| implementation.target_path().map(|path| path.join("::")))
+        .unwrap_or_else(|| "<unknown>".to_owned())
 }
 
 fn symbol_is_in_module(symbol: &SymbolRecord, module: &ModuleNode) -> bool {

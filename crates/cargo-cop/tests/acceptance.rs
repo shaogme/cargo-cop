@@ -821,8 +821,9 @@ fn queries_the_localized_rule_catalog_without_project_discovery() {
         .find(|rule| rule["rule_id"] == "trait_impl_locality")
         .expect("trait impl 规则");
     let trait_description = trait_rule["description"].as_str().expect("trait impl 说明");
-    assert!(trait_description.contains("Rust primitive type"));
-    assert!(trait_description.contains("external"));
+    assert!(trait_description.contains("module namespace"));
+    assert!(trait_description.contains("primitive"));
+    assert!(trait_description.contains("external trait"));
 
     for rule_id in ["impl_locality", "trait_impl_locality"] {
         let explanation = fixture.run(&[
@@ -4052,7 +4053,7 @@ fn classifies_trait_impl_locality_by_resolved_trait_and_target_ownership() {
     );
     fixture.write(
         "src/lib.rs",
-        "pub trait Local {}\npub struct LocalType;\nimpl Local for LocalType {}\nimpl Clone for LocalType {}\nimpl std::fmt::Debug for LocalType {}\n\npub mod sibling {\n    pub trait Shared {}\n    pub struct Remote;\n}\n\npub mod child {\n    use crate::sibling::Shared as SharedAlias;\n    use vendor::External as ExternalTraitAlias;\n    pub struct LocalChild;\n    impl SharedAlias for LocalChild {}\n    impl crate::Local for LocalChild {}\n    impl ExternalTraitAlias for LocalChild {}\n}\n\nmod inline { pub struct InlineType; }\nimpl Local for inline::InlineType {}\nimpl Local for sibling::Remote {}\n\ntype ExternalVec = std::vec::Vec<u8>;\nimpl Local for ExternalVec {}\ntype LocalAlias = LocalType;\nimpl Local for LocalAlias {}\ntype RemoteAlias = sibling::Remote;\nimpl Local for RemoteAlias {}\n\nimpl vendor::External for LocalType {}\nimpl Local for vendor::Thing {}\nimpl missing::Trait for LocalType {}\nimpl Local for missing::Target {}\n\npub mod prelude_types {\n    pub trait Local {}\n    impl Local for Vec<u8> {}\n    impl Local for String {}\n    impl Local for u32 {}\n    impl Local for () {}\n    impl Local for [u8; 4] {}\n}\n\n#[cfg(feature = \"enabled\")]\npub trait Conditional {}\n#[cfg(not(feature = \"enabled\"))]\nimpl Conditional for LocalType {}\n#[cfg(feature = \"enabled\")]\npub struct GatedType;\n#[cfg(not(feature = \"enabled\"))]\nimpl Local for GatedType {}\n",
+        "pub trait Local {}\npub struct LocalType;\nimpl Local for LocalType {}\nimpl Clone for LocalType {}\nimpl std::fmt::Debug for LocalType {}\n\npub mod sibling {\n    pub trait Shared {}\n    pub struct Remote;\n}\n\npub mod child {\n    use crate::sibling::Shared as SharedAlias;\n    use vendor::External as ExternalTraitAlias;\n    pub struct LocalChild;\n    impl SharedAlias for LocalChild {}\n    impl crate::Local for LocalChild {}\n    impl ExternalTraitAlias for LocalChild {}\n}\n\nmod inline { pub struct InlineType; }\nimpl Local for inline::InlineType {}\nimpl Local for sibling::Remote {}\n\ntype ExternalVec = std::vec::Vec<u8>;\nimpl Local for ExternalVec {}\ntype LocalAlias = LocalType;\nimpl Local for LocalAlias {}\ntype RemoteAliasLayer = sibling::Remote;\ntype RemoteAlias = RemoteAliasLayer;\nimpl Local for RemoteAlias {}\n\nimpl vendor::External for LocalType {}\nimpl Local for vendor::Thing {}\nimpl missing::Trait for LocalType {}\nimpl Local for missing::Target {}\n\npub mod prelude_types {\n    pub trait Local {}\n    impl Local for Vec<u8> {}\n    impl Local for String {}\n    impl Local for u32 {}\n    impl Local for () {}\n    impl Local for [u8; 4] {}\n}\n\n#[cfg(feature = \"enabled\")]\npub trait Conditional {}\n#[cfg(not(feature = \"enabled\"))]\nimpl Conditional for LocalType {}\n#[cfg(feature = \"enabled\")]\npub struct GatedType;\n#[cfg(not(feature = \"enabled\"))]\nimpl Local for GatedType {}\n",
     );
     fixture.write(
         "vendor/Cargo.toml",
@@ -4066,14 +4067,8 @@ fn classifies_trait_impl_locality_by_resolved_trait_and_target_ownership() {
     let output = fixture.run(&["--format", "json", "--package", "app"]);
     assert_eq!(output.status, 1, "{}", output.stderr);
     let locality = rule_diagnostics(&output, "trait_impl_locality");
-    assert_eq!(locality.len(), 9, "{}", output.stdout);
+    assert_eq!(locality.len(), 3, "{}", output.stdout);
     assert!(rule_diagnostics(&output, "impl_locality").is_empty());
-    assert!(locality
-        .iter()
-        .any(|diagnostic| diagnostic_message(diagnostic).contains("trait SharedAlias")));
-    assert!(locality
-        .iter()
-        .any(|diagnostic| diagnostic_message(diagnostic).contains("trait crate::Local")));
     assert_eq!(
         locality
             .iter()
@@ -4081,20 +4076,11 @@ fn classifies_trait_impl_locality_by_resolved_trait_and_target_ownership() {
                 diagnostic_message(diagnostic).contains("outside the current module scope")
             })
             .count(),
-        7
+        3
     );
     assert!(locality
         .iter()
-        .any(|diagnostic| diagnostic_message(diagnostic).contains("vendor::Thing")));
-    assert!(locality
-        .iter()
-        .any(|diagnostic| diagnostic_message(diagnostic).contains("ExternalVec")));
-    assert!(locality
-        .iter()
-        .any(|diagnostic| diagnostic_message(diagnostic).contains("Vec")));
-    assert!(locality
-        .iter()
-        .any(|diagnostic| diagnostic_message(diagnostic).contains("String")));
+        .all(|diagnostic| diagnostic_message(diagnostic).contains("target")));
     assert!(output
         .stdout
         .contains("Could not resolve the trait ownership"));
@@ -4107,16 +4093,114 @@ fn classifies_trait_impl_locality_by_resolved_trait_and_target_ownership() {
 }
 
 #[test]
+fn checks_trait_impl_locality_by_repository_target_ownership() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "src/lib.rs",
+        "pub trait Local {}\npub mod child {\n    pub struct Target;\n    impl crate::Local for Target {}\n}\nimpl Local for child::Target {}\npub mod other {\n    pub struct Other;\n}\nimpl std::fmt::Debug for child::Target {}\nimpl std::fmt::Debug for other::Other {}\nimpl std::fmt::Debug for String {}\nimpl std::fmt::Debug for u8 {}\n",
+    );
+
+    let output = fixture.run(&["--format", "json"]);
+
+    assert_eq!(output.status, 1, "{}", output.stdout);
+    let locality = rule_diagnostics(&output, "trait_impl_locality");
+    assert_eq!(locality.len(), 4, "{}", output.stdout);
+    assert!(locality.iter().any(|diagnostic| {
+        diagnostic_message(diagnostic).contains("Target")
+            && diagnostic_message(diagnostic).contains("outside the current module scope")
+    }));
+    assert!(locality.iter().any(|diagnostic| {
+        diagnostic_message(diagnostic).contains("Other")
+            && diagnostic_message(diagnostic).contains("outside the current module scope")
+    }));
+    assert!(locality.iter().any(|diagnostic| {
+        diagnostic_message(diagnostic).contains("String")
+            && diagnostic_message(diagnostic).contains("outside the current module scope")
+    }));
+    assert!(locality
+        .iter()
+        .any(|diagnostic| diagnostic["start"]["line"] == 6 && diagnostic["start"]["column"] == 16));
+    assert!(
+        locality
+            .iter()
+            .any(|diagnostic| diagnostic["start"]["line"] == 10
+                && diagnostic["start"]["column"] == 26)
+    );
+    assert!(
+        locality
+            .iter()
+            .any(|diagnostic| diagnostic["start"]["line"] == 11
+                && diagnostic["start"]["column"] == 26)
+    );
+    assert!(
+        locality
+            .iter()
+            .any(|diagnostic| diagnostic["start"]["line"] == 12
+                && diagnostic["start"]["column"] == 26)
+    );
+}
+
+#[test]
+fn skips_structural_targets_and_uses_local_trait_fallback_for_other_targets() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "Cargo.toml",
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[workspace]\nmembers = [\"vendor\"]\nresolver = \"2\"\n\n[dependencies]\nvendor = { path = \"vendor\" }\n",
+    );
+    fixture.write(
+        "src/lib.rs",
+        "type ExternalLayer = std::vec::Vec<u8>;\ntype ExternalAlias = ExternalLayer;\ntype PrimitiveLayer = u32;\ntype PrimitiveAlias = PrimitiveLayer;\npub mod traits {\n    pub trait Local {}\n    impl Local for vendor::Thing {}\n    impl Local for Vec<u8> {}\n    impl Local for String {}\n    impl Local for u32 {}\n    impl Local for &u8 {}\n    impl Local for *const u8 {}\n    impl Local for (u8, u8) {}\n    impl Local for [u8] {}\n    impl Local for [u8; 4] {}\n    impl Local for fn() {}\n    impl Local for ! {}\n}\npub mod elsewhere {\n    impl crate::traits::Local for vendor::Thing {}\n    impl crate::traits::Local for Vec<u8> {}\n    impl crate::traits::Local for String {}\n    impl crate::traits::Local for u32 {}\n    impl crate::traits::Local for &u8 {}\n    impl crate::traits::Local for *const u8 {}\n    impl crate::traits::Local for (u8, u8) {}\n    impl crate::traits::Local for [u8] {}\n    impl crate::traits::Local for [u8; 4] {}\n    impl crate::traits::Local for fn() {}\n    impl crate::traits::Local for ! {}\n    impl crate::traits::Local for crate::ExternalAlias {}\n    impl crate::traits::Local for crate::PrimitiveAlias {}\n}\n",
+    );
+    fixture.write(
+        "vendor/Cargo.toml",
+        "[package]\nname = \"vendor\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    fixture.write("vendor/src/lib.rs", "pub struct Thing;\n");
+
+    let output = fixture.run(&["--format", "json", "--package", "app"]);
+
+    assert_eq!(output.status, 1, "{}", output.stderr);
+    let locality = rule_diagnostics(&output, "trait_impl_locality");
+    assert_eq!(locality.len(), 6, "{}", output.stdout);
+    for target in [
+        "vendor::Thing",
+        "Vec<u8>",
+        "String",
+        "u32",
+        "crate::ExternalAlias",
+        "crate::PrimitiveAlias",
+    ] {
+        assert!(locality
+            .iter()
+            .any(|diagnostic| diagnostic_message(diagnostic).contains(target)));
+    }
+    for target in [
+        "&u8",
+        "*const u8",
+        "(u8, u8)",
+        "[u8]",
+        "[u8; 4]",
+        "fn()",
+        "!",
+    ] {
+        assert!(!locality
+            .iter()
+            .any(|diagnostic| diagnostic_message(diagnostic).contains(target)));
+    }
+}
+
+#[test]
 fn configures_inherent_and_trait_impl_locality_independently() {
     let fixture = Fixture::new();
     fixture.write("Cargo.toml", &package_manifest("sample"));
     fixture.write(
         "src/lib.rs",
-        "mod child;\nmod types;\n\npub trait Local {}\n\nimpl types::Remote {}\n",
+        "mod child;\nmod types;\n\npub trait Local {}\n\npub struct RootType;\n\nimpl types::Remote {}\n",
     );
     fixture.write(
         "src/child.rs",
-        "use crate::Local;\npub struct Child;\n\nimpl Local for Child {}\n",
+        "use crate::Local;\npub struct Child;\n\nimpl Local for Child {}\n\nimpl Local for crate::RootType {}\n",
     );
     fixture.write("src/types.rs", "pub struct Remote;\n");
     fixture.write(
