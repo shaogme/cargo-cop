@@ -132,7 +132,7 @@ impl TypeParser {
     pub(super) fn parse(cursor: &mut TokenCursor<'_>) -> Result<TypeSyntax, SyntaxError> {
         let start = cursor.index();
         let start_offset = cursor.offset();
-        let kind = if cursor.consume_punctuation("&") {
+        let kind = if cursor.consume_punctuation_prefix("&") {
             Self::parse_reference(cursor)?
         } else if cursor.consume_punctuation("*") {
             Self::parse_pointer(cursor)?

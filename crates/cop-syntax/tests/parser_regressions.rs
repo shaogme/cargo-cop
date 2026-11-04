@@ -893,6 +893,107 @@ fn read_schema(kind: Kind) {
 }
 
 #[test]
+fn parses_repeated_reference_types_without_changing_logical_and_or_patterns() {
+    let source = r#"
+fn pass(value: &&str) -> &&str { let local: &&str = value; local }
+fn f(left: bool, right: bool) {
+    let _ = |value: &str| value;
+    let _ = |value: &&str| value;
+    let _ = |value: &&&str| value;
+    let _ = |&single| single;
+    let _ = |&&&triple| triple;
+    let _ = left && right;
+}
+"#;
+    let parsed = parse(source, "2021");
+    let double_reference_start = source
+        .find("value: &&str|")
+        .map(|start| start + "value: ".len())
+        .expect("闭包中的双重引用类型位置");
+    let mut closures = parsed
+        .syntax_nodes()
+        .iter()
+        .filter_map(|node| node.expression_syntax())
+        .filter_map(|expression| match expression.kind() {
+            ExpressionSyntaxKind::Closure { parameters, .. } => Some(parameters),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    closures.sort_by_key(|parameters| {
+        parameters
+            .first()
+            .map(|parameter| parameter.bounds().start)
+            .unwrap_or(usize::MAX)
+    });
+    let mut closure_types = closures
+        .iter()
+        .filter_map(|parameters| parameters.first()?.ty())
+        .collect::<Vec<_>>();
+    closure_types.sort_by_key(|ty| ty.bounds().start);
+
+    assert_eq!(
+        parsed.coverage(),
+        CoverageStatus::Complete,
+        "{:?}",
+        parsed.issues()
+    );
+    assert!(parsed.issues().is_empty(), "{:?}", parsed.issues());
+    assert!(!parsed.issues().iter().any(|issue| {
+        issue.code() == ParseIssueCode::UnexpectedToken
+            && issue.start() < double_reference_start + 2
+            && double_reference_start < issue.end()
+    }));
+    assert_eq!(closure_types.len(), 3);
+
+    for (ty, (expected, expected_depth)) in
+        closure_types
+            .iter()
+            .zip([("&str", 1), ("&&str", 2), ("&&&str", 3)])
+    {
+        let bounds = ty.bounds();
+        assert_eq!(source.get(bounds.clone()), Some(expected));
+        let mut current = *ty;
+        let mut depth = 0;
+        while let TypeSyntaxKind::Reference { target, .. } = current.kind() {
+            assert_eq!(source.get(current.bounds()), Some(&expected[depth..]));
+            current = target;
+            depth += 1;
+        }
+        assert_eq!(depth, expected_depth);
+        assert_eq!(source.get(current.bounds()), Some("str"));
+    }
+
+    assert_eq!(closures.len(), 5);
+    assert_eq!(
+        source.get(closures[3][0].pattern().bounds()),
+        Some("&single")
+    );
+    assert_eq!(
+        source.get(closures[4][0].pattern().bounds()),
+        Some("&&&triple")
+    );
+    let mut triple_pattern = closures[4][0].pattern();
+    for _ in 0..3 {
+        let PatternSyntaxKind::Reference { pattern, .. } = triple_pattern.kind() else {
+            panic!("连续的 & 应分别解析为嵌套引用模式");
+        };
+        triple_pattern = pattern;
+    }
+    assert!(matches!(
+        triple_pattern.kind(),
+        PatternSyntaxKind::Binding { name, .. } if name == "triple"
+    ));
+    assert!(parsed.syntax_nodes().iter().any(|node| {
+        node.expression_syntax().is_some_and(|expression| {
+            matches!(
+                expression.kind(),
+                ExpressionSyntaxKind::Binary { operator, .. } if operator == "&&"
+            )
+        })
+    }));
+}
+
+#[test]
 fn splits_closure_parameters_after_nested_generic_closers() {
     let source = "fn inspect() { let _ = |value: Outer<Inner<Left, Right>>, tail: u8| (); }";
     let parsed = parse(source, "2021");
