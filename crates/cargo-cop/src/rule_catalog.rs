@@ -111,6 +111,11 @@ impl RuleCatalog {
                 locale = locale.as_tag().as_locale(),
                 {}
             ),
+            RuleId::TraitImplLocality => t!(
+                "rule_catalog.trait_impl_locality.summary",
+                locale = locale.as_tag().as_locale(),
+                {}
+            ),
             RuleId::PrivateFieldsForBehaviorTypes => t!(
                 "rule_catalog.private_fields_for_behavior_types.summary",
                 locale = locale.as_tag().as_locale(),
@@ -218,6 +223,11 @@ impl RuleCatalog {
             ),
             RuleId::ImplLocality => t!(
                 "rule_catalog.impl_locality.description",
+                locale = locale.as_tag().as_locale(),
+                {}
+            ),
+            RuleId::TraitImplLocality => t!(
+                "rule_catalog.trait_impl_locality.description",
                 locale = locale.as_tag().as_locale(),
                 {}
             ),

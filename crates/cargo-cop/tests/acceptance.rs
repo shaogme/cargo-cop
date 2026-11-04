@@ -783,6 +783,7 @@ fn queries_the_localized_rule_catalog_without_project_discovery() {
             "no_parent_private_dependency",
             "child_module_line_count",
             "impl_locality",
+            "trait_impl_locality",
             "private_fields_for_behavior_types",
             "child_public_free_functions",
             "declaration_before_use",
@@ -806,6 +807,39 @@ fn queries_the_localized_rule_catalog_without_project_discovery() {
             .is_empty());
         assert_eq!(rule["default_enabled"], true);
         assert_eq!(rule["default_severity"], "error");
+    }
+    let inherent_rule = listed_rules
+        .iter()
+        .find(|rule| rule["rule_id"] == "impl_locality")
+        .expect("固有 impl 规则");
+    assert!(inherent_rule["description"]
+        .as_str()
+        .expect("固有 impl 说明")
+        .contains("same source file"));
+    let trait_rule = listed_rules
+        .iter()
+        .find(|rule| rule["rule_id"] == "trait_impl_locality")
+        .expect("trait impl 规则");
+    let trait_description = trait_rule["description"].as_str().expect("trait impl 说明");
+    assert!(trait_description.contains("Rust primitive type"));
+    assert!(trait_description.contains("external"));
+
+    for rule_id in ["impl_locality", "trait_impl_locality"] {
+        let explanation = fixture.run(&[
+            "--explain-rule",
+            rule_id,
+            "--format",
+            "json",
+            "--locale",
+            "en-US",
+        ]);
+        let report = from_str::<Value>(&explanation.stdout).expect("规则说明 JSON");
+        assert_eq!(explanation.status, 0, "{}", explanation.stderr);
+        assert_eq!(report["rule"]["rule_id"], rule_id);
+        assert!(!report["rule"]["description"]
+            .as_str()
+            .expect("完整规则说明")
+            .is_empty());
     }
 
     let cargo_list =
@@ -874,7 +908,7 @@ fn queries_the_localized_rule_catalog_without_project_discovery() {
 
     let human_list = fixture.run(&["--list-rules"]);
     assert_eq!(human_list.status, 0, "{}", human_list.stderr);
-    assert!(human_list.stdout.contains("Rule catalog (21 rules):"));
+    assert!(human_list.stdout.contains("Rule catalog (22 rules):"));
     assert!(human_list
         .stdout
         .contains("parameter_limit [enabled, error]"));
@@ -4010,7 +4044,7 @@ fn resolves_keyword_named_dependency_aliases_with_raw_identifiers() {
 }
 
 #[test]
-fn restricts_trait_impl_exceptions_to_builtin_and_standard_library_types() {
+fn classifies_trait_impl_locality_by_resolved_trait_and_target_ownership() {
     let fixture = Fixture::new();
     fixture.write(
         "Cargo.toml",
@@ -4018,24 +4052,153 @@ fn restricts_trait_impl_exceptions_to_builtin_and_standard_library_types() {
     );
     fixture.write(
         "src/lib.rs",
-        "pub trait Local {}\nuse std::vec::Vec;\nimpl Local for Vec<u8> {}\nimpl Local for vendor::Thing {}\n",
+        "pub trait Local {}\npub struct LocalType;\nimpl Local for LocalType {}\nimpl Clone for LocalType {}\nimpl std::fmt::Debug for LocalType {}\n\npub mod sibling {\n    pub trait Shared {}\n    pub struct Remote;\n}\n\npub mod child {\n    use crate::sibling::Shared as SharedAlias;\n    use vendor::External as ExternalTraitAlias;\n    pub struct LocalChild;\n    impl SharedAlias for LocalChild {}\n    impl crate::Local for LocalChild {}\n    impl ExternalTraitAlias for LocalChild {}\n}\n\nmod inline { pub struct InlineType; }\nimpl Local for inline::InlineType {}\nimpl Local for sibling::Remote {}\n\ntype ExternalVec = std::vec::Vec<u8>;\nimpl Local for ExternalVec {}\ntype LocalAlias = LocalType;\nimpl Local for LocalAlias {}\ntype RemoteAlias = sibling::Remote;\nimpl Local for RemoteAlias {}\n\nimpl vendor::External for LocalType {}\nimpl Local for vendor::Thing {}\nimpl missing::Trait for LocalType {}\nimpl Local for missing::Target {}\n\npub mod prelude_types {\n    pub trait Local {}\n    impl Local for Vec<u8> {}\n    impl Local for String {}\n    impl Local for u32 {}\n    impl Local for () {}\n    impl Local for [u8; 4] {}\n}\n\n#[cfg(feature = \"enabled\")]\npub trait Conditional {}\n#[cfg(not(feature = \"enabled\"))]\nimpl Conditional for LocalType {}\n#[cfg(feature = \"enabled\")]\npub struct GatedType;\n#[cfg(not(feature = \"enabled\"))]\nimpl Local for GatedType {}\n",
     );
     fixture.write(
         "vendor/Cargo.toml",
         "[package]\nname = \"vendor\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
     );
-    fixture.write("vendor/src/lib.rs", "pub struct Thing;\n");
+    fixture.write(
+        "vendor/src/lib.rs",
+        "pub trait External {}\npub struct Thing;\n",
+    );
 
-    let output = fixture.run(&["--format", "json", "--package", "app", "--locale", "zh-CN"]);
+    let output = fixture.run(&["--format", "json", "--package", "app"]);
     assert_eq!(output.status, 1, "{}", output.stderr);
+    let locality = rule_diagnostics(&output, "trait_impl_locality");
+    assert_eq!(locality.len(), 9, "{}", output.stdout);
+    assert!(rule_diagnostics(&output, "impl_locality").is_empty());
+    assert!(locality
+        .iter()
+        .any(|diagnostic| diagnostic_message(diagnostic).contains("trait SharedAlias")));
+    assert!(locality
+        .iter()
+        .any(|diagnostic| diagnostic_message(diagnostic).contains("trait crate::Local")));
     assert_eq!(
-        output
-            .stdout
-            .matches("\"rule_id\":\"impl_locality\"")
+        locality
+            .iter()
+            .filter(|diagnostic| {
+                diagnostic_message(diagnostic).contains("outside the current module scope")
+            })
             .count(),
+        7
+    );
+    assert!(locality
+        .iter()
+        .any(|diagnostic| diagnostic_message(diagnostic).contains("vendor::Thing")));
+    assert!(locality
+        .iter()
+        .any(|diagnostic| diagnostic_message(diagnostic).contains("ExternalVec")));
+    assert!(locality
+        .iter()
+        .any(|diagnostic| diagnostic_message(diagnostic).contains("Vec")));
+    assert!(locality
+        .iter()
+        .any(|diagnostic| diagnostic_message(diagnostic).contains("String")));
+    assert!(output
+        .stdout
+        .contains("Could not resolve the trait ownership"));
+    assert!(output
+        .stdout
+        .contains("Could not resolve the type ownership"));
+    assert!(output.stdout.contains("\"status\":\"partial\""));
+    assert!(!output.stdout.contains("impl trait Conditional"));
+    assert!(!output.stdout.contains("impl target GatedType"));
+}
+
+#[test]
+fn configures_inherent_and_trait_impl_locality_independently() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "src/lib.rs",
+        "mod child;\nmod types;\n\npub trait Local {}\n\nimpl types::Remote {}\n",
+    );
+    fixture.write(
+        "src/child.rs",
+        "use crate::Local;\npub struct Child;\n\nimpl Local for Child {}\n",
+    );
+    fixture.write("src/types.rs", "pub struct Remote;\n");
+    fixture.write(
+        "cargo-cop.toml",
+        "version = 3\n\n[rules.child_module_line_count]\nenabled = false\n\n[rules.no_inline_qualified_path]\nenabled = false\n",
+    );
+
+    let default = fixture.run(&["--format", "json"]);
+    let inherent_disabled = fixture.run(&["--format", "json", "--disable-rule", "impl_locality"]);
+    let trait_disabled =
+        fixture.run(&["--format", "json", "--disable-rule", "trait_impl_locality"]);
+    let inherent_warning =
+        fixture.run(&["--format", "json", "--severity", "impl_locality=warning"]);
+    let trait_warning = fixture.run(&[
+        "--format",
+        "json",
+        "--severity",
+        "trait_impl_locality=warning",
+    ]);
+    fixture.write(
+        "cargo-cop.toml",
+        "version = 3\n\n[rules.child_module_line_count]\nenabled = false\n\n[rules.no_inline_qualified_path]\nenabled = false\n\n[rules.impl_locality]\nenabled = false\n\n[rules.trait_impl_locality]\nseverity = \"warning\"\n",
+    );
+    let configured = fixture.run(&["--format", "json"]);
+
+    assert_eq!(default.status, 1, "{}", default.stdout);
+    assert_eq!(rule_diagnostics(&default, "impl_locality").len(), 1);
+    assert_eq!(rule_diagnostics(&default, "trait_impl_locality").len(), 1);
+
+    assert_eq!(inherent_disabled.status, 1, "{}", inherent_disabled.stdout);
+    assert!(rule_diagnostics(&inherent_disabled, "impl_locality").is_empty());
+    assert_eq!(
+        rule_diagnostics(&inherent_disabled, "trait_impl_locality").len(),
         1
     );
-    assert!(output.stdout.contains("不属于允许的标准库类型"));
+    assert_eq!(trait_disabled.status, 1, "{}", trait_disabled.stdout);
+    assert_eq!(rule_diagnostics(&trait_disabled, "impl_locality").len(), 1);
+    assert!(rule_diagnostics(&trait_disabled, "trait_impl_locality").is_empty());
+
+    assert_eq!(inherent_warning.status, 1, "{}", inherent_warning.stdout);
+    assert_eq!(
+        rule_diagnostics(&inherent_warning, "impl_locality")[0]["severity"],
+        "warning"
+    );
+    assert_eq!(
+        rule_diagnostics(&inherent_warning, "trait_impl_locality")[0]["severity"],
+        "error"
+    );
+    assert_eq!(trait_warning.status, 1, "{}", trait_warning.stdout);
+    assert_eq!(
+        rule_diagnostics(&trait_warning, "impl_locality")[0]["severity"],
+        "error"
+    );
+    assert_eq!(
+        rule_diagnostics(&trait_warning, "trait_impl_locality")[0]["severity"],
+        "warning"
+    );
+    assert_eq!(configured.status, 0, "{}", configured.stdout);
+    assert!(rule_diagnostics(&configured, "impl_locality").is_empty());
+    assert_eq!(
+        rule_diagnostics(&configured, "trait_impl_locality")[0]["severity"],
+        "warning"
+    );
+}
+
+#[test]
+fn resolves_local_types_named_like_prelude_types_before_the_prelude() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "src/lib.rs",
+        "trait Local {}\nstruct Vec<T>(T);\nstruct String;\nimpl Local for Vec<u8> {}\nimpl Local for String {}\n",
+    );
+
+    let output = fixture.run(&["--format", "json"]);
+
+    assert!(
+        rule_diagnostics(&output, "impl_locality").is_empty(),
+        "{}",
+        output.stdout
+    );
+    assert!(rule_diagnostics(&output, "trait_impl_locality").is_empty());
 }
 
 #[test]

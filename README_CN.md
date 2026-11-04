@@ -6,7 +6,7 @@
 
 `cargo-cop` 是一个 Rust 源码静态检查工具。它会按照仓库规范检查选定的 Cargo package 和 target，覆盖模块布局、可见性、声明顺序、导入组织及源码结构等方面。
 
-项目提供 21 条可配置规则、人类可读和 JSON 报告，以及英文和简体中文规则说明与诊断信息。既可以直接运行 `cargo-cop`，也可以使用 Cargo 子命令 `cargo cop`。
+项目提供 22 条可配置规则、人类可读和 JSON 报告，以及英文和简体中文规则说明与诊断信息。既可以直接运行 `cargo-cop`，也可以使用 Cargo 子命令 `cargo cop`。
 
 ## 检查内容
 
@@ -56,7 +56,7 @@ steps:
   - uses: actions/checkout@main
   - uses: shaogme/cargo-cop@main
     with:
-      version: 0.2.8
+      version: 0.2.9
   - run: cargo cop --workspace
 ```
 
@@ -67,7 +67,7 @@ steps:
   - uses: actions/checkout@main
   - uses: shaogme/cargo-cop@main
     with:
-      version: 0.2.8
+      version: 0.2.9
       from-source: true
   - run: cargo cop --workspace
 ```
@@ -161,7 +161,8 @@ Feature 选择根据所选 package 的 Cargo feature 定义计算，处理 defau
 | `no_parent_path_attribute` | 外部模块的 `#[path]` 属性不能包含 `..` 路径分量，包括嵌套在 `cfg_attr` 中的路径属性。 |
 | `no_parent_private_dependency` | 子模块不能使用 `super::*`，也不能通过 `super::` 或 `crate::` 路径访问祖先模块的私有 item。 |
 | `child_module_line_count` | 每个外部子模块文件须有 70–800 行有效代码；空行、注释和 `#[cfg(test)]` 代码不计入。 |
-| `impl_locality` | 固有 impl 应与仓库类型定义放在同一文件；外部 trait impl 的目标仅限允许的内置类型和标准库根路径。 |
+| `impl_locality` | 固有 impl 只能面向同一源文件中定义的仓库类型；其他文件中的类型、外部类型和基本类型都会报告诊断。 |
+| `trait_impl_locality` | 本地 trait 必须在其定义模块中实现，目标类型也须定义在该模块，Rust 基本类型除外；外部 trait 豁免。无法解析 trait 或目标归属时会报告分析 warning。 |
 | `private_fields_for_behavior_types` | 有 impl 块的 struct、enum 或 union，其字段必须保持私有。 |
 | `unnecessary_pub_crate` | 只有当私有模块范围之外的引用或仍保留的 crate 可见 API 的可见类型接口需要时，item 或关联 item 才保留 `pub(crate)`。依赖会沿函数签名、约束、别名、可见字段、枚举 payload 和受支持的 foreign item 传递；函数体和私有字段不计入。遇到无法解析的语法或宏调用时会保守处理。 |
 | `child_public_free_functions` | 子模块中的独立函数必须保持私有。 |
@@ -223,7 +224,7 @@ Workspace 将命令行应用与分析流程分层：
 | `cop-cfg` | 共享 `cfg` 表达式解析、规范化和三态求值。 |
 | `cop-syntax` | 自有 Rust 词法分析器、语法树、解析器和解析覆盖状态。 |
 | `cop-analysis` | `cfg` 求值、模块图发现、不可变定义/引用事实、路径解析、API 依赖和 impl 所有者索引、分析状态。 |
-| `cop-rules` | 21 条源码规范检查规则。 |
+| `cop-rules` | 22 条源码规范检查规则。 |
 | `cop-model` | 共享规则 ID、诊断、源码位置和扫描状态类型。 |
 | `cop-report` | 诊断稳定排序、人类可读和 JSON 渲染。 |
 | `cop-i18n` | 英文和简体中文消息。 |

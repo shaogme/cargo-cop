@@ -18,6 +18,7 @@ pub enum RuleId {
     NoParentPrivateDependency,
     ChildModuleLineCount,
     ImplLocality,
+    TraitImplLocality,
     PrivateFieldsForBehaviorTypes,
     ChildPublicFreeFunctions,
     DeclarationBeforeUse,
@@ -88,7 +89,7 @@ pub struct Diagnostic {
 }
 
 impl RuleId {
-    pub const ALL: [Self; 21] = [
+    pub const ALL: [Self; 22] = [
         Self::ModuleFileLayout,
         Self::NoLintRelaxation,
         Self::ItemSpacing,
@@ -97,6 +98,7 @@ impl RuleId {
         Self::NoParentPrivateDependency,
         Self::ChildModuleLineCount,
         Self::ImplLocality,
+        Self::TraitImplLocality,
         Self::PrivateFieldsForBehaviorTypes,
         Self::ChildPublicFreeFunctions,
         Self::DeclarationBeforeUse,
@@ -122,6 +124,7 @@ impl RuleId {
             Self::NoParentPrivateDependency => "no_parent_private_dependency",
             Self::ChildModuleLineCount => "child_module_line_count",
             Self::ImplLocality => "impl_locality",
+            Self::TraitImplLocality => "trait_impl_locality",
             Self::PrivateFieldsForBehaviorTypes => "private_fields_for_behavior_types",
             Self::ChildPublicFreeFunctions => "child_public_free_functions",
             Self::DeclarationBeforeUse => "declaration_before_use",

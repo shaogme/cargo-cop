@@ -6,7 +6,7 @@
 
 `cargo-cop` is a static checker for Rust source code. It checks selected Cargo packages and targets against repository conventions, including module layout, visibility, declaration order, imports, and source structure.
 
-The project provides 21 configurable rules, human-readable and JSON reports, and English and Simplified Chinese rule descriptions and diagnostic messages. It can run as the `cargo-cop` executable or as the `cargo cop` Cargo subcommand.
+The project provides 22 configurable rules, human-readable and JSON reports, and English and Simplified Chinese rule descriptions and diagnostic messages. It can run as the `cargo-cop` executable or as the `cargo cop` Cargo subcommand.
 
 ## What it checks
 
@@ -56,7 +56,7 @@ steps:
   - uses: actions/checkout@main
   - uses: shaogme/cargo-cop@main
     with:
-      version: 0.2.8
+      version: 0.2.9
   - run: cargo cop --workspace
 ```
 
@@ -67,7 +67,7 @@ steps:
   - uses: actions/checkout@main
   - uses: shaogme/cargo-cop@main
     with:
-      version: 0.2.8
+      version: 0.2.9
       from-source: true
   - run: cargo cop --workspace
 ```
@@ -161,7 +161,8 @@ All rules are enabled by default and use `error` severity unless configured othe
 | `no_parent_path_attribute` | An external module's `#[path]` attribute must not contain a `..` path component, including paths nested in `cfg_attr`. |
 | `no_parent_private_dependency` | A child module must not import `super::*` or resolve a `super::`/`crate::` path to a private ancestor item. |
 | `child_module_line_count` | Each out-of-line child-module file must contain 70–800 effective code lines. Blank lines, comments, and `#[cfg(test)]` code are excluded. |
-| `impl_locality` | Keep inherent impls with the repository type's definition; restrict external trait impl targets to the permitted built-in and standard-library roots. |
+| `impl_locality` | An inherent impl may target only a repository type defined in the same source file. Targets defined in another file, external types, and primitive types are reported. |
+| `trait_impl_locality` | Implement a locally defined trait in its defining module, and target types defined in that module unless they are Rust primitives. External traits are exempt; unresolved ownership is reported as an analysis warning. |
 | `private_fields_for_behavior_types` | Fields of a struct, enum, or union with an impl block must be private. |
 | `unnecessary_pub_crate` | A `pub(crate)` item or associated item is retained when an outside reference or a retained crate-visible API's visible type interface requires it. Dependencies propagate through signatures, constraints, aliases, visible fields, enum payloads, and supported foreign items; function bodies and private fields do not count. Unresolved syntax and macro invocations are handled conservatively. |
 | `child_public_free_functions` | Free functions in child modules must be private. |
@@ -223,7 +224,7 @@ The workspace separates the command-line application from the analysis pipeline:
 | `cop-cfg` | Shared `cfg` expression parsing, normalization, and three-valued evaluation. |
 | `cop-syntax` | Project-owned Rust lexer, syntax tree, parser, and parser coverage status. |
 | `cop-analysis` | `cfg` evaluation, module graph discovery, immutable definition/reference facts, path resolution, API dependency and impl-owner indexes, analysis status. |
-| `cop-rules` | The 21 source convention rules. |
+| `cop-rules` | The 22 source convention rules. |
 | `cop-model` | Shared rule IDs, diagnostics, source locations, and scan-status types. |
 | `cop-report` | Stable diagnostic ordering and human/JSON rendering. |
 | `cop-i18n` | English and Simplified Chinese messages. |

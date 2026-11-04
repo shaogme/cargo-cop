@@ -424,6 +424,15 @@ impl SymbolIndexBuilder {
                 if let Some((name, symbol_kind)) = SymbolIndexSupport::named_item(kind) {
                     let target_namespace =
                         SymbolIndexSupport::associated_namespace(kind, module.namespace(), &name);
+                    let target_path = if matches!(kind, ItemSyntaxKind::TypeAlias(_)) {
+                        node.children()
+                            .iter()
+                            .filter_map(|child| module.parse_output().node(*child))
+                            .filter_map(SyntaxNode::type_syntax)
+                            .find_map(SymbolIndexSupport::type_path)
+                    } else {
+                        None
+                    };
                     self.push_node_symbol(
                         module,
                         node,
@@ -432,7 +441,7 @@ impl SymbolIndexBuilder {
                             kind: symbol_kind,
                             visibility: SymbolIndexSupport::visibility(item.visibility().kind()),
                             target_namespace,
-                            target_path: None,
+                            target_path,
                             external_crate: None,
                             cfg_condition: item_cfg,
                         },
@@ -697,11 +706,25 @@ impl SymbolIndexBuilder {
                         attribute.path().last().is_some_and(|name| name == "no_std")
                     })
             });
+            let no_implicit_prelude = modules.iter().any(|module| {
+                module.context_index() == context_index
+                    && module.is_crate_root()
+                    && module.scope_inner_attributes().iter().any(|attribute| {
+                        attribute
+                            .path()
+                            .last()
+                            .is_some_and(|name| name == "no_implicit_prelude")
+                    })
+            });
             if !no_std {
                 crates.insert("std".to_owned());
             }
             if target.crate_types().iter().any(|kind| kind == "proc-macro") {
                 crates.insert("proc_macro".to_owned());
+            }
+            if !no_implicit_prelude {
+                let names = SymbolIndex::prelude_names(target.edition(), !no_std);
+                self.index.prelude_names_mut().insert(context_index, names);
             }
         }
     }

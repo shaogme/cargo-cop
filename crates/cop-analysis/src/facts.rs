@@ -1,19 +1,20 @@
 mod api_surface;
 mod collector;
+mod records;
 
 use std::{collections::BTreeMap, mem, ops::Range, path::PathBuf};
 
 use cop_cargo::SelectedPackage;
-use cop_cfg::CfgExpression;
-use cop_syntax::{AstNodeId, CoverageStatus, SyntaxNode, SyntaxNodeKind};
+use cop_syntax::{AstNodeId, CoverageStatus, SyntaxNode, SyntaxNodeKind, TypeSyntaxKind};
 
 pub use collector::ReferenceKind;
+pub use records::{CfgMacroFact, CoverageRegion, CoverageRegionKind, ImplOwnerRecord};
 
 use api_surface::{ApiSurfaceCollector, ApiSurfaceRange, PendingDeclaration};
 use collector::SyntaxFactCollector;
+use records::ImplOwnerRecordData;
 
 use crate::{
-    cfg_eval::CfgDecision,
     module_graph::ModuleNode,
     symbol_index::{
         DefinitionId, PathResolution, SymbolIndex, SymbolIndexBuilder, SymbolIndexSupport,
@@ -55,33 +56,6 @@ pub struct AnalysisReference {
     prefix_resolutions: Vec<PathResolution>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CoverageRegionKind {
-    ParserIssue,
-    OpaqueSyntax,
-    MacroInvocation,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CoverageRegion {
-    module_id: ModuleId,
-    bounds: Range<usize>,
-    condition: Option<String>,
-    kind: CoverageRegionKind,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ImplOwnerRecord {
-    module_id: ModuleId,
-    bounds: Range<usize>,
-    condition: Option<String>,
-    owner: Option<DefinitionId>,
-    target_bounds: Option<Range<usize>>,
-    target_path: Option<Vec<String>>,
-    target_supported: bool,
-    trait_impl: bool,
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ApiDependency {
     source: DefinitionId,
@@ -97,15 +71,6 @@ pub struct DeclarationFact {
     node_id: AstNodeId,
     visibility_bounds: Range<usize>,
     visibility: SymbolVisibility,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CfgMacroFact {
-    module_id: ModuleId,
-    ast_node_id: AstNodeId,
-    predicate: CfgExpression,
-    predicate_bounds: Range<usize>,
-    decision: CfgDecision,
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -134,6 +99,7 @@ pub struct AnalysisFacts {
     impl_owners: Vec<ImplOwnerRecord>,
     impls_by_definition: BTreeMap<DefinitionId, Vec<usize>>,
     api_dependencies: BTreeMap<DefinitionId, Vec<ApiDependency>>,
+    type_alias_targets: BTreeMap<DefinitionId, PathResolution>,
     syntax_by_module: Vec<ModuleSyntaxFacts>,
     definitions_by_location: BTreeMap<DefinitionLocation, DefinitionId>,
     declarations_by_definition: BTreeMap<DefinitionId, DeclarationFact>,
@@ -188,58 +154,6 @@ impl AnalysisReference {
     }
 }
 
-impl CoverageRegion {
-    pub fn module_id(&self) -> ModuleId {
-        self.module_id
-    }
-
-    pub fn bounds(&self) -> Range<usize> {
-        self.bounds.clone()
-    }
-
-    pub fn condition(&self) -> Option<&str> {
-        self.condition.as_deref()
-    }
-
-    pub fn kind(&self) -> CoverageRegionKind {
-        self.kind
-    }
-}
-
-impl ImplOwnerRecord {
-    pub fn module_id(&self) -> ModuleId {
-        self.module_id
-    }
-
-    pub fn bounds(&self) -> Range<usize> {
-        self.bounds.clone()
-    }
-
-    pub fn condition(&self) -> Option<&str> {
-        self.condition.as_deref()
-    }
-
-    pub fn owner(&self) -> Option<DefinitionId> {
-        self.owner
-    }
-
-    pub fn target_bounds(&self) -> Option<Range<usize>> {
-        self.target_bounds.clone()
-    }
-
-    pub fn target_path(&self) -> Option<&[String]> {
-        self.target_path.as_deref()
-    }
-
-    pub fn is_target_supported(&self) -> bool {
-        self.target_supported
-    }
-
-    pub fn is_trait_impl(&self) -> bool {
-        self.trait_impl
-    }
-}
-
 impl ApiDependency {
     pub fn source(&self) -> DefinitionId {
         self.source
@@ -280,28 +194,6 @@ impl DeclarationFact {
     }
 }
 
-impl CfgMacroFact {
-    pub fn module_id(&self) -> ModuleId {
-        self.module_id
-    }
-
-    pub fn ast_node_id(&self) -> AstNodeId {
-        self.ast_node_id
-    }
-
-    pub fn predicate(&self) -> &CfgExpression {
-        &self.predicate
-    }
-
-    pub fn predicate_bounds(&self) -> Range<usize> {
-        self.predicate_bounds.clone()
-    }
-
-    pub fn decision(&self) -> CfgDecision {
-        self.decision
-    }
-}
-
 impl AnalysisFacts {
     pub(crate) fn build(package: &SelectedPackage, modules: &[ModuleNode]) -> Self {
         let mut facts = Self {
@@ -321,12 +213,14 @@ impl AnalysisFacts {
                     .configured_ast()
                     .cfg_macros()
                     .iter()
-                    .map(|cfg_macro| CfgMacroFact {
-                        module_id,
-                        ast_node_id: cfg_macro.ast_node_id(),
-                        predicate: cfg_macro.predicate().clone(),
-                        predicate_bounds: cfg_macro.predicate_bounds(),
-                        decision: cfg_macro.decision(),
+                    .map(|cfg_macro| {
+                        CfgMacroFact::new(
+                            module_id,
+                            cfg_macro.ast_node_id(),
+                            cfg_macro.predicate().clone(),
+                            cfg_macro.predicate_bounds(),
+                            cfg_macro.decision(),
+                        )
                     }),
             );
             let mut syntax_collector = SyntaxFactsCollector::new(module);
@@ -388,6 +282,7 @@ impl AnalysisFacts {
             }
             facts.resolve_impl_owners(module, module_id);
         }
+        facts.resolve_type_alias_targets(modules);
         for symbol in facts.symbols.symbols() {
             let Some(module) = declaration_module_for(modules, symbol) else {
                 continue;
@@ -410,15 +305,19 @@ impl AnalysisFacts {
         facts.finish_declarations(modules);
         facts.collect_api_dependencies(modules);
         facts.cfg_macros.sort_by(|left, right| {
-            left.module_id
-                .cmp(&right.module_id)
+            left.module_id()
+                .cmp(&right.module_id())
                 .then_with(|| {
-                    left.predicate_bounds
+                    left.predicate_bounds()
                         .start
-                        .cmp(&right.predicate_bounds.start)
+                        .cmp(&right.predicate_bounds().start)
                 })
-                .then_with(|| left.predicate_bounds.end.cmp(&right.predicate_bounds.end))
-                .then_with(|| left.ast_node_id.cmp(&right.ast_node_id))
+                .then_with(|| {
+                    left.predicate_bounds()
+                        .end
+                        .cmp(&right.predicate_bounds().end)
+                })
+                .then_with(|| left.ast_node_id().cmp(&right.ast_node_id()))
         });
         facts
     }
@@ -497,7 +396,7 @@ impl AnalysisFacts {
         self.module_id(module).into_iter().flat_map(|module_id| {
             self.impl_owners
                 .iter()
-                .filter(move |item| item.module_id == module_id)
+                .filter(move |item| item.module_id() == module_id)
         })
     }
 
@@ -526,6 +425,10 @@ impl AnalysisFacts {
             end: bounds.end,
         })?;
         self.definition(*definition_id)
+    }
+
+    pub fn type_alias_target(&self, definition: DefinitionId) -> Option<&PathResolution> {
+        self.type_alias_targets.get(&definition)
     }
 
     pub fn declaration_for_definition(&self, definition: DefinitionId) -> Option<&DeclarationFact> {
@@ -572,19 +475,19 @@ impl AnalysisFacts {
             && !SyntaxFactCollector::is_disabled(module, node.start(), node.end())
             && SyntaxFactCollector::is_in_module_scope(module, node)
         {
-            self.coverage_regions.push(CoverageRegion {
+            self.coverage_regions.push(CoverageRegion::new(
                 module_id,
-                bounds: node.start()..node.end(),
-                condition: module
+                node.start()..node.end(),
+                module
                     .configured_ast()
                     .condition_for_span(node.start(), node.end())
                     .map(str::to_owned),
-                kind: if node.kind() == SyntaxNodeKind::Opaque {
+                if node.kind() == SyntaxNodeKind::Opaque {
                     CoverageRegionKind::OpaqueSyntax
                 } else {
                     CoverageRegionKind::MacroInvocation
                 },
-            });
+            ));
         }
     }
 
@@ -594,15 +497,15 @@ impl AnalysisFacts {
                 if SyntaxFactCollector::is_disabled(module, issue.start(), issue.end()) {
                     continue;
                 }
-                self.coverage_regions.push(CoverageRegion {
-                    module_id: ModuleId(index),
-                    bounds: issue.start()..issue.end(),
-                    condition: module
+                self.coverage_regions.push(CoverageRegion::new(
+                    ModuleId(index),
+                    issue.start()..issue.end(),
+                    module
                         .configured_ast()
                         .condition_for_span(issue.start(), issue.end())
                         .map(str::to_owned),
-                    kind: CoverageRegionKind::ParserIssue,
-                });
+                    CoverageRegionKind::ParserIssue,
+                ));
             }
         }
     }
@@ -622,29 +525,91 @@ impl AnalysisFacts {
         let target = syntax.self_type();
         let target_bounds = target.map(|target| target.bounds());
         let target_path = target.and_then(SymbolIndexSupport::type_path);
-        let target_supported = target_bounds.as_ref().is_some_and(|bounds| {
-            module
-                .configured_ast()
-                .is_enabled_range(bounds.start, bounds.end)
-                && module.configured_ast().is_supported_range(
-                    module.parse_output(),
-                    bounds.start,
-                    bounds.end,
-                )
-        });
-        self.impl_owners.push(ImplOwnerRecord {
-            module_id,
-            bounds: item.start()..item.end(),
-            condition: module
-                .configured_ast()
-                .condition_for_span(item.start(), item.end())
-                .map(str::to_owned),
-            owner: None,
-            target_bounds,
-            target_path,
-            target_supported,
-            trait_impl: syntax.is_trait_impl(),
-        });
+        let trait_path = syntax.trait_path();
+        let trait_bounds = trait_path.map(|path| path.bounds());
+        self.impl_owners
+            .push(ImplOwnerRecord::new(ImplOwnerRecordData {
+                module_id,
+                bounds: item.start()..item.end(),
+                condition: module
+                    .configured_ast()
+                    .condition_for_span(item.start(), item.end())
+                    .map(str::to_owned),
+                owner: None,
+                target_bounds,
+                target_path,
+                trait_bounds: trait_bounds.clone(),
+                trait_path: trait_path.map(SymbolIndexSupport::path_segments),
+                target_enabled: module
+                    .configured_ast()
+                    .is_enabled_range(item.start(), item.end()),
+                target_supported: target.is_some_and(|target| {
+                    module.configured_ast().is_supported_range(
+                        module.parse_output(),
+                        target.bounds().start,
+                        target.bounds().end,
+                    )
+                }),
+                target_is_structural: target.is_some_and(|target| {
+                    matches!(
+                        target.kind(),
+                        TypeSyntaxKind::Reference { .. }
+                            | TypeSyntaxKind::Pointer { .. }
+                            | TypeSyntaxKind::Tuple(_)
+                            | TypeSyntaxKind::Slice(_)
+                            | TypeSyntaxKind::Array { .. }
+                            | TypeSyntaxKind::FunctionPointer { .. }
+                            | TypeSyntaxKind::Never
+                    )
+                }),
+                trait_enabled: syntax.is_trait_impl()
+                    && module
+                        .configured_ast()
+                        .is_enabled_range(item.start(), item.end()),
+                trait_supported: trait_bounds.as_ref().is_some_and(|bounds| {
+                    module.configured_ast().is_supported_range(
+                        module.parse_output(),
+                        bounds.start,
+                        bounds.end,
+                    )
+                }),
+                trait_impl: syntax.is_trait_impl(),
+            }));
+    }
+
+    fn resolve_type_alias_targets(&mut self, modules: &[ModuleNode]) {
+        let aliases = self
+            .symbols
+            .symbols()
+            .iter()
+            .filter(|symbol| symbol.kind() == SymbolKind::TypeAlias)
+            .cloned()
+            .collect::<Vec<_>>();
+        for alias in aliases {
+            let (Some(target_path), Some(bounds)) = (
+                alias.target_path(),
+                alias.span().map(|span| span.byte_range()),
+            ) else {
+                continue;
+            };
+            let Some(module) = declaration_module_for(modules, &alias) else {
+                continue;
+            };
+            let resolution = self
+                .references_for_module(module)
+                .filter(|reference| {
+                    reference.kind != ReferenceKind::Use
+                        && reference.segments == target_path
+                        && bounds.start <= reference.bounds.start
+                        && reference.bounds.end <= bounds.end
+                })
+                .min_by_key(|reference| reference.bounds.end - reference.bounds.start)
+                .map(|reference| reference.resolution.clone());
+            if let Some(resolution) = resolution {
+                self.type_alias_targets
+                    .insert(alias.definition_id(), resolution);
+            }
+        }
     }
 
     fn resolve_impl_owners(&mut self, module: &ModuleNode, module_id: ModuleId) {
@@ -652,17 +617,15 @@ impl AnalysisFacts {
             let Some(implementation) = self.impl_owners.get(record_index) else {
                 continue;
             };
-            if implementation.module_id != module_id {
+            if implementation.module_id() != module_id {
                 continue;
             }
-            let (Some(target_path), Some(target_bounds)) = (
-                implementation.target_path.as_ref(),
-                implementation.target_bounds.as_ref(),
-            ) else {
+            let (Some(target_path), Some(target_bounds)) =
+                (implementation.target_path(), implementation.target_bounds())
+            else {
                 continue;
             };
-            let target_path = target_path.clone();
-            let target_bounds = target_bounds.clone();
+            let target_path = target_path.to_vec();
             let owner = self
                 .references_for_module(module)
                 .filter(|reference| {
@@ -675,7 +638,7 @@ impl AnalysisFacts {
                 .and_then(|reference| reference.resolution.symbol())
                 .map(SymbolRecord::definition_id);
             if let Some(implementation) = self.impl_owners.get_mut(record_index) {
-                implementation.owner = owner;
+                implementation.set_owner(owner);
             }
             if let Some(owner) = owner {
                 self.impls_by_definition

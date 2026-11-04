@@ -16,6 +16,7 @@ pub enum PathRootKind {
     ExternalCrate,
     ExplicitScope,
     LocalDefinition,
+    Primitive,
     UseAlias,
     Unresolved,
 }
@@ -43,6 +44,7 @@ pub struct PathResolution {
 pub struct SymbolIndex {
     symbols: Vec<SymbolRecord>,
     external_crates: BTreeMap<usize, BTreeSet<String>>,
+    prelude_names: BTreeMap<usize, BTreeSet<String>>,
     local_bindings: LocalBindings,
 }
 
@@ -138,6 +140,68 @@ impl SymbolIndex {
 
     pub(super) fn external_crates_mut(&mut self) -> &mut BTreeMap<usize, BTreeSet<String>> {
         &mut self.external_crates
+    }
+
+    pub(super) fn prelude_names_mut(&mut self) -> &mut BTreeMap<usize, BTreeSet<String>> {
+        &mut self.prelude_names
+    }
+
+    pub(super) fn prelude_names(edition: &str, standard_library: bool) -> BTreeSet<String> {
+        let mut names = [
+            "AsMut",
+            "AsRef",
+            "AsyncFn",
+            "AsyncFnMut",
+            "AsyncFnOnce",
+            "Clone",
+            "Copy",
+            "Default",
+            "Drop",
+            "Eq",
+            "Err",
+            "ExactSizeIterator",
+            "Extend",
+            "Fn",
+            "FnMut",
+            "FnOnce",
+            "From",
+            "Into",
+            "IntoIterator",
+            "Iterator",
+            "None",
+            "Ok",
+            "Option",
+            "Ord",
+            "PartialEq",
+            "PartialOrd",
+            "Result",
+            "Send",
+            "Sized",
+            "Some",
+            "Sync",
+            "Unpin",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<BTreeSet<_>>();
+        if edition == "2021" || edition == "2024" {
+            names.extend(
+                ["FromIterator", "TryFrom", "TryInto"]
+                    .into_iter()
+                    .map(str::to_owned),
+            );
+        }
+        if edition == "2024" {
+            names.extend(["Future", "IntoFuture"].into_iter().map(str::to_owned));
+        }
+        if standard_library {
+            names.extend(
+                ["Box", "String", "ToOwned", "ToString", "Vec"]
+                    .into_iter()
+                    .map(str::to_owned),
+            );
+        }
+        names
     }
 
     pub(super) fn sort_and_assign_definition_ids(&mut self) {
@@ -308,6 +372,37 @@ impl SymbolIndex {
             Ok(Some(candidate)) => candidate,
             Err(()) => return unresolved_for_path(PathResolutionKind::Ambiguous, state, path),
             Ok(None) => {
+                if !has_explicit_scope && rest.len() == 1 && is_primitive_type(first) {
+                    return primitive_resolution(state);
+                }
+                if !has_explicit_scope
+                    && rest.len() == 1
+                    && self
+                        .prelude_names
+                        .get(&state.context_index)
+                        .is_some_and(|names| names.contains(identifier_name(first)))
+                {
+                    let prelude_crate = if self
+                        .external_crates
+                        .get(&state.context_index)
+                        .is_some_and(|crates| crates.contains("std"))
+                    {
+                        "std"
+                    } else {
+                        "core"
+                    };
+                    return PathResolution {
+                        kind: PathResolutionKind::ExternalCrate,
+                        root: external_crate_root(prelude_crate),
+                        symbol: None,
+                        external_crate: Some(prelude_crate.to_owned()),
+                        external_path_depth: Some(0),
+                        external_crate_qualifier: false,
+                        visibility: VisibilityResult::Public,
+                        alias_chain: state.alias_chain.clone(),
+                        alias_symbols: state.alias_symbols.clone(),
+                    };
+                }
                 if (rooted || base == base_namespace)
                     && self
                         .external_crates
@@ -538,6 +633,46 @@ fn external_crate_root(name: &str) -> PathRootIdentity {
         kind: PathRootKind::ExternalCrate,
         external_crate: Some(name.to_owned()),
     }
+}
+
+fn primitive_resolution(state: &ResolveState<'_>) -> PathResolution {
+    PathResolution {
+        kind: PathResolutionKind::Local,
+        root: PathRootIdentity {
+            kind: PathRootKind::Primitive,
+            external_crate: None,
+        },
+        symbol: None,
+        external_crate: None,
+        external_path_depth: None,
+        external_crate_qualifier: false,
+        visibility: VisibilityResult::Reachable,
+        alias_chain: state.alias_chain.clone(),
+        alias_symbols: state.alias_symbols.clone(),
+    }
+}
+
+fn is_primitive_type(name: &str) -> bool {
+    matches!(
+        name,
+        "bool"
+            | "char"
+            | "str"
+            | "i8"
+            | "i16"
+            | "i32"
+            | "i64"
+            | "i128"
+            | "isize"
+            | "u8"
+            | "u16"
+            | "u32"
+            | "u64"
+            | "u128"
+            | "usize"
+            | "f32"
+            | "f64"
+    )
 }
 
 fn root_identity_for_explicit_scope(path: &[String]) -> PathRootIdentity {
