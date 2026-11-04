@@ -50,6 +50,62 @@ fn inspect<'a>(value: &'a str) {
 }
 
 #[test]
+fn keeps_member_names_separate_from_tuple_index_literals() {
+    let source = SourceFile::new(
+        "src/lib.rs",
+        "tuple.0.extend(); tuple.0.example(); tuple.0.f64(); tuple.0.Example();",
+    );
+    let lexed = RustLexer::lex(&source).expect("catalog messages render");
+    let token_texts = lexed
+        .tokens()
+        .iter()
+        .map(|token| token.text(&source))
+        .collect::<Vec<_>>();
+
+    assert!(lexed.issues().is_empty());
+    assert_eq!(
+        token_texts,
+        vec![
+            "tuple", ".", "0", ".", "extend", "(", ")", ";", "tuple", ".", "0", ".", "example",
+            "(", ")", ";", "tuple", ".", "0", ".", "f64", "(", ")", ";", "tuple", ".", "0", ".",
+            "Example", "(", ")", ";",
+        ]
+    );
+}
+
+#[test]
+fn keeps_decimal_float_forms_and_trailing_dot_member_boundaries() {
+    let source = SourceFile::new(
+        "src/lib.rs",
+        "1. 1.25 1.25e-3 1.0f64 12E+99_f64 1e_3 1e+_3 1e-_3 1.e3",
+    );
+    let lexed = RustLexer::lex(&source).expect("catalog messages render");
+    let token_texts = lexed
+        .tokens()
+        .iter()
+        .map(|token| token.text(&source))
+        .collect::<Vec<_>>();
+
+    assert!(lexed.issues().is_empty());
+    assert_eq!(
+        token_texts,
+        vec![
+            "1.",
+            "1.25",
+            "1.25e-3",
+            "1.0f64",
+            "12E+99_f64",
+            "1e_3",
+            "1e+_3",
+            "1e-_3",
+            "1",
+            ".",
+            "e3",
+        ]
+    );
+}
+
+#[test]
 fn reports_unicode_columns_and_unclosed_lexical_constructs() {
     let source = SourceFile::new("src/lib.rs", "// 🧭\nfn ready() {}\n");
     let function_offset = source.text().find("fn ready").expect("函数位置");

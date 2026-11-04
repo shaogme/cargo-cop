@@ -627,36 +627,48 @@ impl Scanner<'_> {
         }
 
         self.consume_decimal_digits();
-        if self.current_character() == Some('.') && self.peek_character(1) != Some('.') {
-            let next = self.peek_character(1);
-            let has_float_suffix = self.has_float_suffix_after_dot();
-            if next.is_some_and(|character| {
-                character.is_ascii_digit() || character == 'e' || character == 'E'
-            }) || next.is_none()
-                || next.is_some_and(|character| !is_identifier_start(character))
-                || has_float_suffix
-            {
-                self.advance_character();
-                self.consume_decimal_digits();
-            }
-        }
-        if matches!(self.current_character(), Some('e' | 'E')) {
-            let exponent_start = self.cursor;
+        if self.period_starts_float() {
             self.advance_character();
-            if matches!(self.current_character(), Some('+' | '-')) {
-                self.advance_character();
-            }
-            if self
-                .current_character()
-                .is_some_and(|character| character.is_ascii_digit())
-            {
-                self.consume_decimal_digits();
-            } else {
-                self.cursor = exponent_start;
-            }
+            self.consume_decimal_digits();
         }
-        self.consume_numeric_suffix();
+        let has_exponent = self.consume_decimal_exponent();
+        if has_exponent || !matches!(self.current_character(), Some('e' | 'E')) {
+            self.consume_numeric_suffix();
+        }
         Ok(TokenKind::Literal(LiteralKind::Number))
+    }
+
+    fn period_starts_float(&self) -> bool {
+        if self.current_character() != Some('.') || self.peek_character(1) == Some('.') {
+            return false;
+        }
+        match self.peek_character(1) {
+            Some(character) => !is_identifier_start(character),
+            None => true,
+        }
+    }
+
+    fn consume_decimal_exponent(&mut self) -> bool {
+        if !matches!(self.current_character(), Some('e' | 'E')) {
+            return false;
+        }
+        let exponent_start = self.cursor;
+        self.advance_character();
+        if matches!(self.current_character(), Some('+' | '-')) {
+            self.advance_character();
+        }
+        while self.current_character() == Some('_') {
+            self.advance_character();
+        }
+        if !self
+            .current_character()
+            .is_some_and(|character| character.is_ascii_digit())
+        {
+            self.cursor = exponent_start;
+            return false;
+        }
+        self.consume_decimal_digits();
+        true
     }
 
     fn consume_decimal_digits(&mut self) {
@@ -675,17 +687,6 @@ impl Scanner<'_> {
         {
             self.advance_character();
         }
-    }
-
-    fn has_float_suffix_after_dot(&self) -> bool {
-        let remaining = &self.source.text()[self.cursor + 1..];
-        ["f32", "f64"].iter().any(|suffix| {
-            remaining.strip_prefix(suffix).is_some_and(|rest| {
-                rest.chars()
-                    .next()
-                    .is_none_or(|character| !is_identifier_continue(character))
-            })
-        })
     }
 
     fn scan_identifier(&mut self, start: usize) -> TokenKind {

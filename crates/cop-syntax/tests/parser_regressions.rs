@@ -20,6 +20,45 @@ fn parse(source: &str, edition: &str) -> cop_syntax::ParseOutput {
 }
 
 #[test]
+fn parses_method_calls_after_tuple_field_access() {
+    let source = "fn f() { tuple.0.extend_from_slice(bytes); }";
+    let parsed = parse(source, "2021");
+
+    assert_eq!(
+        parsed.coverage(),
+        CoverageStatus::Complete,
+        "{:?}",
+        parsed.issues()
+    );
+    assert!(parsed.issues().is_empty(), "{:?}", parsed.issues());
+}
+
+#[test]
+fn parses_tuple_field_methods_starting_with_float_suffix_letters() {
+    let source =
+        "fn f() { tuple.0.extend(); tuple.0.example(); tuple.0.f64(); tuple.0.Example(); }";
+    let parsed = parse(source, "2021");
+    let methods = parsed
+        .syntax_nodes()
+        .iter()
+        .filter_map(|node| node.expression_syntax())
+        .filter_map(|expression| match expression.kind() {
+            ExpressionSyntaxKind::MethodCall { method, .. } => Some(method.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        parsed.coverage(),
+        CoverageStatus::Complete,
+        "{:?}",
+        parsed.issues()
+    );
+    assert!(parsed.issues().is_empty(), "{:?}", parsed.issues());
+    assert_eq!(methods, vec!["extend", "example", "f64", "Example"]);
+}
+
+#[test]
 fn parses_borrow_of_identifier_raw_in_generated_test_body() {
     let source = r#"
 #[test]
