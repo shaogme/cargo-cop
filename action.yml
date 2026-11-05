@@ -11,6 +11,10 @@ inputs:
     description: Build the selected release from source with Cargo instead of downloading a release binary.
     required: false
     default: "false"
+  download-retries:
+    description: Number of times to retry failed download requests after the initial attempt.
+    required: false
+    default: "3"
 
 outputs:
   version:
@@ -26,11 +30,33 @@ runs:
       shell: bash
       env:
         INPUT_VERSION: ${{ inputs.version }}
+        INPUT_DOWNLOAD_RETRIES: ${{ inputs.download-retries }}
       run: |
         set -euo pipefail
+        if [[ ! "$INPUT_DOWNLOAD_RETRIES" =~ ^[0-9]+$ ]]; then
+          echo "Invalid download-retries value: $INPUT_DOWNLOAD_RETRIES" >&2
+          exit 1
+        fi
+        download_retries=$((10#$INPUT_DOWNLOAD_RETRIES))
+        retry_command() {
+          local max_retries="$1"
+          shift
+          local attempt=0
+          while true; do
+            if "$@"; then
+              return 0
+            fi
+            if (( attempt >= max_retries )); then
+              return 1
+            fi
+            attempt=$((attempt + 1))
+            echo "Request failed; retrying ($attempt/$max_retries)..." >&2
+            sleep "$attempt"
+          done
+        }
         version="$INPUT_VERSION"
         if [[ "$version" == "latest" ]]; then
-          tag="$(curl -fsSL -H 'Accept: application/vnd.github+json' https://api.github.com/repos/shaogme/cargo-cop/releases/latest | jq -er '.tag_name')"
+          tag="$(retry_command "$download_retries" curl -fsSL -H 'Accept: application/vnd.github+json' https://api.github.com/repos/shaogme/cargo-cop/releases/latest | jq -er '.tag_name')"
           version="${tag#cargo-cop-v}"
         else
           version="${version#cargo-cop-v}"
@@ -48,10 +74,28 @@ runs:
       shell: pwsh
       env:
         INPUT_VERSION: ${{ inputs.version }}
+        INPUT_DOWNLOAD_RETRIES: ${{ inputs.download-retries }}
       run: |
+        if ($env:INPUT_DOWNLOAD_RETRIES -notmatch '^[0-9]+$') {
+          throw "Invalid download-retries value: $env:INPUT_DOWNLOAD_RETRIES"
+        }
+        $retryCount = [int]$env:INPUT_DOWNLOAD_RETRIES
         $version = $env:INPUT_VERSION
         if ($version -eq 'latest') {
-          $release = Invoke-RestMethod -Uri 'https://api.github.com/repos/shaogme/cargo-cop/releases/latest' -Headers @{ Accept = 'application/vnd.github+json' }
+          $release = $null
+          for ($attempt = 0; $attempt -le $retryCount; $attempt++) {
+            try {
+              $release = Invoke-RestMethod -Uri 'https://api.github.com/repos/shaogme/cargo-cop/releases/latest' -Headers @{ Accept = 'application/vnd.github+json' } -ErrorAction Stop
+              break
+            } catch {
+              if ($attempt -ge $retryCount) {
+                throw
+              }
+              $retryNumber = $attempt + 1
+              Write-Host "Release lookup failed; retrying ($retryNumber/$retryCount)..."
+              Start-Sleep -Seconds $retryNumber
+            }
+          }
           $version = $release.tag_name -replace '^cargo-cop-v', ''
         } else {
           $version = $version -replace '^cargo-cop-v', ''
@@ -71,8 +115,30 @@ runs:
       shell: bash
       env:
         CARGO_COP_VERSION: ${{ steps.resolve_unix.outputs.version }}
+        INPUT_DOWNLOAD_RETRIES: ${{ inputs.download-retries }}
       run: |
         set -euo pipefail
+        if [[ ! "$INPUT_DOWNLOAD_RETRIES" =~ ^[0-9]+$ ]]; then
+          echo "Invalid download-retries value: $INPUT_DOWNLOAD_RETRIES" >&2
+          exit 1
+        fi
+        download_retries=$((10#$INPUT_DOWNLOAD_RETRIES))
+        retry_command() {
+          local max_retries="$1"
+          shift
+          local attempt=0
+          while true; do
+            if "$@"; then
+              return 0
+            fi
+            if (( attempt >= max_retries )); then
+              return 1
+            fi
+            attempt=$((attempt + 1))
+            echo "Download failed; retrying ($attempt/$max_retries)..." >&2
+            sleep "$attempt"
+          done
+        }
         case "$RUNNER_OS/$RUNNER_ARCH" in
           Linux/X64) target="x86_64-unknown-linux-gnu" ;;
           Linux/ARM64) target="aarch64-unknown-linux-gnu" ;;
@@ -84,7 +150,7 @@ runs:
         temp_dir="$(mktemp -d)"
         trap 'rm -rf "$temp_dir"' EXIT
         release_tag="cargo-cop-v${CARGO_COP_VERSION}"
-        curl -fsSL "https://github.com/shaogme/cargo-cop/releases/download/${release_tag}/${package}.tar.gz" -o "$temp_dir/package.tar.gz"
+        retry_command "$download_retries" curl -fsSL "https://github.com/shaogme/cargo-cop/releases/download/${release_tag}/${package}.tar.gz" -o "$temp_dir/package.tar.gz"
         tar -xzf "$temp_dir/package.tar.gz" -C "$temp_dir"
         install_root="$RUNNER_TEMP/cargo-cop"
         mkdir -p "$install_root/bin"
@@ -97,7 +163,12 @@ runs:
       shell: pwsh
       env:
         CARGO_COP_VERSION: ${{ steps.resolve_windows.outputs.version }}
+        INPUT_DOWNLOAD_RETRIES: ${{ inputs.download-retries }}
       run: |
+        if ($env:INPUT_DOWNLOAD_RETRIES -notmatch '^[0-9]+$') {
+          throw "Invalid download-retries value: $env:INPUT_DOWNLOAD_RETRIES"
+        }
+        $retryCount = [int]$env:INPUT_DOWNLOAD_RETRIES
         if ($env:RUNNER_ARCH -eq 'X64') {
           $target = 'x86_64-pc-windows-msvc'
         } elseif ($env:RUNNER_ARCH -eq 'ARM64') {
@@ -112,7 +183,19 @@ runs:
           $archive = Join-Path $tempDir 'package.zip'
           $releaseTag = "cargo-cop-v$env:CARGO_COP_VERSION"
           $url = "https://github.com/shaogme/cargo-cop/releases/download/$releaseTag/$package.zip"
-          Invoke-WebRequest -Uri $url -OutFile $archive
+          for ($attempt = 0; $attempt -le $retryCount; $attempt++) {
+            try {
+              Invoke-WebRequest -Uri $url -OutFile $archive -ErrorAction Stop
+              break
+            } catch {
+              if ($attempt -ge $retryCount) {
+                throw
+              }
+              $retryNumber = $attempt + 1
+              Write-Host "Download failed; retrying ($retryNumber/$retryCount)..."
+              Start-Sleep -Seconds $retryNumber
+            }
+          }
           Expand-Archive -Path $archive -DestinationPath $tempDir
           $installRoot = Join-Path $env:RUNNER_TEMP 'cargo-cop'
           $binPath = Join-Path $installRoot 'bin'
