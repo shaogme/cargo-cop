@@ -288,7 +288,7 @@ impl SymbolIndexBuilder {
                 module.cfg_condition().map(str::to_owned),
             );
         }
-        builder.add_external_crates(package, modules);
+        builder.add_extern_prelude_crates(package, modules);
         builder
     }
 
@@ -666,13 +666,13 @@ impl SymbolIndexBuilder {
         }));
     }
 
-    fn add_external_crates(&mut self, package: &SelectedPackage, modules: &[ModuleNode]) {
+    fn add_extern_prelude_crates(&mut self, package: &SelectedPackage, modules: &[ModuleNode]) {
         for (context_index, target) in package.targets().iter().enumerate() {
             let evaluator = CfgEvaluator::new(target);
             let build_script = target.kind().iter().any(|kind| kind == "custom-build");
             let crates = self
                 .index
-                .external_crates_mut()
+                .extern_prelude_crates_mut()
                 .entry(context_index)
                 .or_default();
             for dependency in package.dependencies().dependencies() {
@@ -697,6 +697,15 @@ impl SymbolIndexBuilder {
                     continue;
                 }
                 crates.insert(dependency.rust_name().to_owned());
+            }
+            let package_library_is_linked = target
+                .kind()
+                .iter()
+                .any(|kind| matches!(kind.as_str(), "bin" | "example" | "test" | "bench"));
+            if package_library_is_linked {
+                if let Some(crate_name) = target.library_crate_name() {
+                    crates.insert(crate_name.to_owned());
+                }
             }
             crates.extend(["alloc", "core"].into_iter().map(str::to_owned));
             let no_std = modules.iter().any(|module| {

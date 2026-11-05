@@ -35,6 +35,7 @@ pub struct TargetContext {
     crate_types: Vec<String>,
     edition: String,
     crate_root: PathBuf,
+    library_crate_name: Option<String>,
     target_triple: String,
     features: ResolvedFeatures,
     cfg_values: Vec<CfgValue>,
@@ -91,6 +92,7 @@ struct FeatureContext<'a> {
 struct TargetContextOptions<'a> {
     package_name: &'a str,
     target: &'a CargoTarget,
+    library_crate_name: Option<&'a str>,
     target_triple: &'a str,
     features: &'a ResolvedFeatures,
     cfg_values: &'a [CfgValue],
@@ -194,6 +196,10 @@ impl TargetContext {
 
     pub fn crate_root(&self) -> &Path {
         &self.crate_root
+    }
+
+    pub fn library_crate_name(&self) -> Option<&str> {
+        self.library_crate_name.as_deref()
     }
 
     pub fn target_triple(&self) -> &str {
@@ -343,6 +349,7 @@ impl TargetSelector {
                         targets.push(make_target_context(TargetContextOptions {
                             package_name: package.name(),
                             target,
+                            library_crate_name: package.library_crate_name(),
                             target_triple: effective_triple,
                             features,
                             cfg_values,
@@ -677,6 +684,7 @@ fn make_target_context(options: TargetContextOptions<'_>) -> TargetContext {
         crate_types: options.target.crate_types().to_vec(),
         edition: options.target.edition().to_owned(),
         crate_root: options.target.crate_root().to_path_buf(),
+        library_crate_name: options.library_crate_name.map(str::to_owned),
         target_triple: options.target_triple.to_owned(),
         features: options.features.clone(),
         cfg_values,

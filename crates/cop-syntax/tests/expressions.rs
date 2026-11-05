@@ -1,7 +1,7 @@
 use cop_syntax::{
     CoverageStatus, ExpressionSyntaxKind, ExpressionUnsupportedKind, MacroInputStatus,
-    ParseIssueKind, ParseOptions, ParseOutput, RustParser, SourceFile, StatementSyntaxKind,
-    SyntaxNodeKind, TypeSyntaxKind, UnaryOperator,
+    ParseIssueCode, ParseIssueKind, ParseOptions, ParseOutput, RustParser, SourceFile,
+    StatementSyntaxKind, SyntaxNodeKind, TypeSyntaxKind, UnaryOperator,
 };
 
 fn parse(source: SourceFile) -> ParseOutput {
@@ -262,7 +262,7 @@ fn inspect(value: Value) {
         parsed
             .issues()
             .iter()
-            .filter(|issue| issue.code() == cop_syntax::ParseIssueCode::OpaqueMacroInput)
+            .filter(|issue| issue.code() == ParseIssueCode::OpaqueMacroInput)
             .count(),
         1
     );
@@ -386,7 +386,7 @@ fn recovers_after_a_let_statement_missing_its_semicolon() {
 
     assert_eq!(parsed.coverage(), CoverageStatus::Partial);
     assert!(parsed.issues().iter().any(|issue| {
-        issue.code() == cop_syntax::ParseIssueCode::UnexpectedToken
+        issue.code() == ParseIssueCode::UnexpectedToken
             && issue.start() == text.find("let kept").expect("后续 let")
     }));
     assert!(parsed.syntax_nodes().iter().any(|node| {
@@ -662,7 +662,7 @@ fn preserves_expression_attribute_ranges_and_recovers_match_arms_locally() {
     assert!(parsed
         .issues()
         .iter()
-        .any(|issue| { issue.code() == cop_syntax::ParseIssueCode::UnexpectedToken }));
+        .any(|issue| { issue.code() == ParseIssueCode::UnexpectedToken }));
     assert!(parsed.syntax_nodes().iter().any(|node| {
         node.kind() == SyntaxNodeKind::Statement
             && parsed

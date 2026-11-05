@@ -2384,6 +2384,152 @@ fn reports_external_qualified_paths_in_nested_call_arguments() {
 }
 
 #[test]
+fn reports_self_crate_qualified_paths_in_all_test_targets() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("typol-core"));
+    fixture.write("src/lib.rs", "pub struct Marker;\n");
+    fixture.write(
+        "tests/qualified_path.rs",
+        "fn takes_self_crate_type(_: typol_core::Marker) {}\n",
+    );
+
+    let output = fixture.run(&["--all-targets", "--format", "json"]);
+    let diagnostics = rule_diagnostics(&output, "no_inline_qualified_path");
+
+    assert_eq!(output.status, 1, "{}", output.stdout);
+    assert_eq!(diagnostics.len(), 1, "{}", output.stdout);
+    assert_eq!(diagnostics[0]["target"], "qualified_path");
+    assert_eq!(diagnostics[0]["target_kind"][0], "test");
+    assert_eq!(diagnostics[0]["path"], "tests/qualified_path.rs");
+    assert!(diagnostic_message(&diagnostics[0]).contains("typol_core::Marker"));
+
+    let discovery =
+        CargoProjectLoader::discover(CargoDiscoveryRequest::new(fixture.root.join("Cargo.toml")))
+            .expect("Cargo 元数据");
+    let project = TargetSelector::select(
+        discovery,
+        CargoSelection::new(FeatureSelection::new(Vec::new(), true, true))
+            .with_all_targets(true)
+            .with_current_directory(fixture.root.clone()),
+    )
+    .expect("选择 package 与 target");
+    let package = project.packages().first().expect("选中的 package");
+    let snapshot = ProjectAnalyzer::analyze(AnalysisRequest::new(package)).expect("分析 target");
+    let reference = snapshot
+        .facts()
+        .references()
+        .iter()
+        .find(|reference| {
+            reference.kind() != ReferenceKind::Use
+                && reference
+                    .segments()
+                    .iter()
+                    .map(String::as_str)
+                    .eq(["typol_core", "Marker"])
+        })
+        .expect("自身库的限定路径");
+    assert_eq!(
+        reference.resolution().kind(),
+        PathResolutionKind::ExternalCrate
+    );
+    assert_eq!(
+        reference.resolution().root().kind(),
+        PathRootKind::ExternPreludeCrate
+    );
+    assert_eq!(
+        reference.resolution().root().external_crate(),
+        Some("typol_core")
+    );
+}
+
+#[test]
+fn uses_the_cargo_library_target_name_for_self_library_paths() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "Cargo.toml",
+        "[package]\nname = \"typol-core\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\nname = \"custom_library\"\n",
+    );
+    fixture.write("src/lib.rs", "pub struct Marker;\n");
+    fixture.write(
+        "tests/qualified_path.rs",
+        "fn takes_self_crate_type(_: custom_library::Marker) {}\n",
+    );
+
+    let output = fixture.run(&["--all-targets", "--format", "json"]);
+    let diagnostics = rule_diagnostics(&output, "no_inline_qualified_path");
+
+    assert_eq!(diagnostics.len(), 1, "{}", output.stdout);
+    assert_eq!(diagnostics[0]["target"], "qualified_path");
+    assert_eq!(diagnostics[0]["path"], "tests/qualified_path.rs");
+    assert!(diagnostic_message(&diagnostics[0]).contains("custom_library::Marker"));
+}
+
+#[test]
+fn accepts_imported_names_from_the_package_library_in_test_targets() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("typol-core"));
+    fixture.write("src/lib.rs", "pub struct Marker;\n");
+    fixture.write(
+        "tests/imported.rs",
+        "use typol_core::Marker;\n\nfn takes_self_crate_type(_: Marker) {}\n",
+    );
+
+    let output = fixture.run(&["--all-targets", "--format", "json"]);
+
+    assert_eq!(output.status, 0, "{}", output.stdout);
+    assert!(!output.has_rule("no_inline_qualified_path"));
+}
+
+#[test]
+fn reports_dev_dependency_paths_in_test_targets() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "Cargo.toml",
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[workspace]\nmembers = [\"vendor\"]\nresolver = \"2\"\n\n[dev-dependencies]\nvendor = { path = \"vendor\" }\n",
+    );
+    fixture.write("src/lib.rs", "pub struct Root;\n");
+    fixture.write("vendor/Cargo.toml", &package_manifest("vendor"));
+    fixture.write("vendor/src/lib.rs", "pub struct Thing;\n");
+    fixture.write(
+        "tests/dependency_path.rs",
+        "fn takes_dev_dependency_type(_: vendor::Thing) {}\n",
+    );
+
+    let output = fixture.run(&["--all-targets", "--format", "json", "--package", "app"]);
+    let diagnostics = rule_diagnostics(&output, "no_inline_qualified_path");
+
+    assert_eq!(diagnostics.len(), 1, "{}", output.stdout);
+    assert_eq!(diagnostics[0]["target"], "dependency_path");
+    assert_eq!(diagnostics[0]["target_kind"][0], "test");
+    assert_eq!(diagnostics[0]["path"], "tests/dependency_path.rs");
+    assert!(diagnostic_message(&diagnostics[0]).contains("vendor::Thing"));
+}
+
+#[test]
+fn scopes_self_library_roots_to_linkable_targets_and_respects_local_shadowing() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("typol-core"));
+    fixture.write("src/lib.rs", "pub struct Marker;\n");
+    fixture.write("build.rs", "fn takes(_: typol_core::Marker) {}\n");
+    fixture.write(
+        "examples/qualified_path.rs",
+        "fn takes_self_crate_type(_: typol_core::Marker) {}\n",
+    );
+    fixture.write(
+        "tests/shadowed.rs",
+        "mod typol_core { pub struct Marker; }\n\nfn local_module() { let _: typol_core::Marker; }\n\nfn local_binding(typol_core: u8) { let _ = typol_core::Marker; }\n",
+    );
+
+    let output = fixture.run(&["--all-targets", "--format", "json"]);
+    let diagnostics = rule_diagnostics(&output, "no_inline_qualified_path");
+
+    assert_eq!(diagnostics.len(), 1, "{}", output.stdout);
+    assert_eq!(diagnostics[0]["target"], "qualified_path");
+    assert_eq!(diagnostics[0]["target_kind"][0], "example");
+    assert_eq!(diagnostics[0]["path"], "examples/qualified_path.rs");
+}
+
+#[test]
 fn reports_external_paths_when_the_crate_is_reexported_by_its_own_name() {
     let fixture = Fixture::new();
     fixture.write(

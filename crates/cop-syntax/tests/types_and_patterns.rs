@@ -1,7 +1,7 @@
 use cop_syntax::{
     CoverageStatus, ExpressionSyntaxKind, GenericArgumentSyntax, GenericParameterKind,
-    ParseOptions, ParseOutput, PatternSyntaxKind, RustParser, SourceFile, SyntaxNodeKind,
-    TypeSyntaxKind, WherePredicateKind,
+    ItemSyntaxKind, ParseIssueCode, ParseIssueKind, ParseOptions, ParseOutput, PatternSyntaxKind,
+    RustParser, SourceFile, SyntaxNodeKind, TypeSyntaxKind, WherePredicateKind,
 };
 
 fn parse(source: SourceFile) -> ParseOutput {
@@ -196,7 +196,7 @@ fn attributed((#[cfg(any())] visible, hidden): (Value, Value)) {}
     assert!(parsed
         .issues()
         .iter()
-        .any(|issue| { issue.code() == cop_syntax::ParseIssueCode::OpaqueMacroInput }));
+        .any(|issue| { issue.code() == ParseIssueCode::OpaqueMacroInput }));
 }
 
 #[test]
@@ -312,7 +312,7 @@ fn recovers_from_a_malformed_type_without_consuming_the_next_function() {
     let parsed = parse(SourceFile::new("src/recovery.rs", text));
     let kept = parsed.syntax_nodes().iter().find(|node| {
         node.item_syntax().is_some_and(|item| {
-            matches!(item.kind(), cop_syntax::ItemSyntaxKind::Function { name: Some(name) } if name == "kept")
+            matches!(item.kind(), ItemSyntaxKind::Function { name: Some(name) } if name == "kept")
         })
     });
 
@@ -320,7 +320,7 @@ fn recovers_from_a_malformed_type_without_consuming_the_next_function() {
     assert!(parsed
         .issues()
         .iter()
-        .any(|issue| { issue.kind() == cop_syntax::ParseIssueKind::UnexpectedToken }));
+        .any(|issue| { issue.kind() == ParseIssueKind::UnexpectedToken }));
     assert!(parsed.syntax_nodes().iter().any(|node| {
         node.type_syntax().is_some_and(|syntax| {
             matches!(syntax.kind(), TypeSyntaxKind::Path(path)
@@ -335,7 +335,7 @@ fn recovers_from_a_malformed_pattern_without_consuming_the_next_function() {
     let parsed = parse(SourceFile::new("src/pattern_recovery.rs", text));
     let kept = parsed.syntax_nodes().iter().find(|node| {
         node.item_syntax().is_some_and(|item| {
-            matches!(item.kind(), cop_syntax::ItemSyntaxKind::Function { name: Some(name) } if name == "kept")
+            matches!(item.kind(), ItemSyntaxKind::Function { name: Some(name) } if name == "kept")
         })
     });
 
@@ -343,7 +343,7 @@ fn recovers_from_a_malformed_pattern_without_consuming_the_next_function() {
     assert!(parsed
         .issues()
         .iter()
-        .any(|issue| { issue.kind() == cop_syntax::ParseIssueKind::UnexpectedToken }));
+        .any(|issue| { issue.kind() == ParseIssueKind::UnexpectedToken }));
 }
 
 #[test]
@@ -410,7 +410,7 @@ fn reports_a_malformed_where_predicate_and_recovers_at_the_function_body() {
     let parsed = parse(SourceFile::new("src/where_recovery.rs", text));
     let kept = parsed.syntax_nodes().iter().find(|node| {
         node.item_syntax().is_some_and(|item| {
-            matches!(item.kind(), cop_syntax::ItemSyntaxKind::Function { name: Some(name) } if name == "kept")
+            matches!(item.kind(), ItemSyntaxKind::Function { name: Some(name) } if name == "kept")
         })
     });
 
@@ -426,5 +426,5 @@ fn reports_a_malformed_where_predicate_and_recovers_at_the_function_body() {
     assert!(parsed
         .issues()
         .iter()
-        .any(|issue| issue.kind() == cop_syntax::ParseIssueKind::UnexpectedToken));
+        .any(|issue| issue.kind() == ParseIssueKind::UnexpectedToken));
 }

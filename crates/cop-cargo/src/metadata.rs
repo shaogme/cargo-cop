@@ -37,6 +37,7 @@ pub struct CargoPackage {
     name: String,
     version: String,
     manifest_path: PathBuf,
+    library_crate_name: Option<String>,
     targets: Vec<CargoTarget>,
     dependencies: DependencyIndex,
     features: BTreeMap<String, Vec<String>>,
@@ -160,6 +161,10 @@ impl CargoPackage {
 
     pub fn manifest_path(&self) -> &Path {
         &self.manifest_path
+    }
+
+    pub(crate) fn library_crate_name(&self) -> Option<&str> {
+        self.library_crate_name.as_deref()
     }
 
     pub fn package_root(&self) -> &Path {
@@ -388,11 +393,16 @@ impl From<PackageDto> for CargoPackage {
                 .then_with(|| left.kind.cmp(&right.kind))
                 .then_with(|| left.crate_root.cmp(&right.crate_root))
         });
+        let library_crate_name = targets
+            .iter()
+            .find(|target| target.kind().iter().any(|kind| kind == "lib"))
+            .map(|target| target.name().to_owned());
         Self {
             id: package.id,
             name: package.name,
             version: package.version,
             manifest_path: package.manifest_path,
+            library_crate_name,
             targets,
             dependencies: DependencyIndex::from_metadata(package.dependencies),
             features: package.features,

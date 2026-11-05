@@ -1,8 +1,8 @@
 use cop_syntax::{
     AttributeMetaArgument, AttributeMetaValueKind, CoverageStatus, ExpressionSyntax,
     ExpressionSyntaxKind, ForeignItemSyntaxKind, ItemSyntaxKind, LiteralKind, ParseIssueCode,
-    ParseIssueKind, ParseOptions, PatternSyntaxKind, RustParser, SourceFile, SyntaxNodeKind,
-    TypeSyntaxKind, UnaryOperator,
+    ParseIssueKind, ParseOptions, ParseOutput, PatternSyntaxKind, RustParser, SourceFile,
+    SyntaxNodeKind, TypeSyntaxKind, UnaryOperator,
 };
 
 struct UnaryExpressionInfo<'a> {
@@ -11,7 +11,7 @@ struct UnaryExpressionInfo<'a> {
     operand: &'a ExpressionSyntax,
 }
 
-fn parse(source: &str, edition: &str) -> cop_syntax::ParseOutput {
+fn parse(source: &str, edition: &str) -> ParseOutput {
     RustParser::parse(
         SourceFile::new("src/parser_regressions.rs", source),
         ParseOptions::new(edition),
@@ -165,7 +165,7 @@ fn distinguishes_raw_borrows_from_mutable_borrows_and_field_borrows() {
     }));
 }
 
-fn unexpected_issues(parsed: &cop_syntax::ParseOutput) -> Vec<(usize, usize)> {
+fn unexpected_issues(parsed: &ParseOutput) -> Vec<(usize, usize)> {
     parsed
         .issues()
         .iter()

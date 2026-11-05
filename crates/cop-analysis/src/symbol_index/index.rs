@@ -13,7 +13,7 @@ use crate::ModuleNode;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PathRootKind {
-    ExternalCrate,
+    ExternPreludeCrate,
     ExplicitScope,
     LocalDefinition,
     Primitive,
@@ -43,7 +43,7 @@ pub struct PathResolution {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct SymbolIndex {
     symbols: Vec<SymbolRecord>,
-    external_crates: BTreeMap<usize, BTreeSet<String>>,
+    extern_prelude_crates: BTreeMap<usize, BTreeSet<String>>,
     prelude_names: BTreeMap<usize, BTreeSet<String>>,
     local_bindings: LocalBindings,
 }
@@ -138,8 +138,8 @@ impl SymbolIndex {
         &mut self.local_bindings
     }
 
-    pub(super) fn external_crates_mut(&mut self) -> &mut BTreeMap<usize, BTreeSet<String>> {
-        &mut self.external_crates
+    pub(super) fn extern_prelude_crates_mut(&mut self) -> &mut BTreeMap<usize, BTreeSet<String>> {
+        &mut self.extern_prelude_crates
     }
 
     pub(super) fn prelude_names_mut(&mut self) -> &mut BTreeMap<usize, BTreeSet<String>> {
@@ -296,7 +296,7 @@ impl SymbolIndex {
         if rooted
             && path.first().is_some_and(|segment| segment == "::")
             && self
-                .external_crates
+                .extern_prelude_crates
                 .get(&state.context_index)
                 .is_some_and(|crates| crates.contains(identifier_name(first)))
         {
@@ -383,7 +383,7 @@ impl SymbolIndex {
                         .is_some_and(|names| names.contains(identifier_name(first)))
                 {
                     let prelude_crate = if self
-                        .external_crates
+                        .extern_prelude_crates
                         .get(&state.context_index)
                         .is_some_and(|crates| crates.contains("std"))
                     {
@@ -405,7 +405,7 @@ impl SymbolIndex {
                 }
                 if (rooted || base == base_namespace)
                     && self
-                        .external_crates
+                        .extern_prelude_crates
                         .get(&state.context_index)
                         .is_some_and(|crates| crates.contains(identifier_name(first)))
                 {
@@ -585,7 +585,7 @@ impl SymbolIndex {
         if target.len() != 1 || identifier_name(&target[0]) != name {
             return None;
         }
-        self.external_crates
+        self.extern_prelude_crates
             .get(&context_index)
             .filter(|crates| crates.contains(name))
             .map(|_| name.to_owned())
@@ -630,7 +630,7 @@ fn unresolved_for_path(
 
 fn external_crate_root(name: &str) -> PathRootIdentity {
     PathRootIdentity {
-        kind: PathRootKind::ExternalCrate,
+        kind: PathRootKind::ExternPreludeCrate,
         external_crate: Some(name.to_owned()),
     }
 }
