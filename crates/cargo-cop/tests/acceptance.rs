@@ -6,7 +6,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use serde_json::{from_str, Value};
+use serde_json::{from_str, json, Value};
 
 use cop_analysis::{
     AnalysisRequest, CfgDecision, ConfiguredAstIssueKind, PathResolutionKind, PathRootKind,
@@ -107,6 +107,12 @@ impl RunOutput {
 
 fn package_manifest(name: &str) -> String {
     format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n")
+}
+
+fn code_lines_for_count(line_count: usize) -> String {
+    (0..line_count)
+        .map(|index| format!("fn item_{index}() {{}}\n"))
+        .collect()
 }
 
 fn item_spacing_diagnostics(output: &RunOutput) -> Vec<Value> {
@@ -3229,6 +3235,190 @@ fn counts_only_active_code_lines_at_module_thresholds() {
     assert!(has_diagnostic_message_fragment(&output, "801"));
     assert!(!has_diagnostic_message_fragment(&output, "is 70;"));
     assert!(!has_diagnostic_message_fragment(&output, "is 800;"));
+}
+
+#[test]
+fn all_targets_reports_one_child_module_line_count_across_test_cfg_contexts() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write("src/lib.rs", "mod filesystem;\n");
+    let source_with_shared_lines = |shared_line_count: usize| {
+        let body = (0..shared_line_count - 2)
+            .map(|index| format!("    let _value_{index} = {index};\n"))
+            .collect::<String>();
+        format!(
+            "fn count_lines() {{\n{body}    #[cfg(not(test))]\n    let _release_only = true;\n}}\n"
+        )
+    };
+    fixture.write("src/filesystem.rs", &source_with_shared_lines(800));
+
+    let arguments = ["--format", "json", "--locale", "en-US", "--all-targets"];
+    let baseline = fixture.run(&arguments);
+    let baseline_diagnostics = rule_diagnostics(&baseline, "child_module_line_count");
+
+    assert_eq!(baseline.status, 1, "{}", baseline.stdout);
+    assert_eq!(baseline_diagnostics.len(), 1, "{}", baseline.stdout);
+    assert!(diagnostic_message(&baseline_diagnostics[0]).contains("is 802;"));
+
+    fixture.write("src/filesystem.rs", &source_with_shared_lines(801));
+    let extended = fixture.run(&arguments);
+    let extended_diagnostics = rule_diagnostics(&extended, "child_module_line_count");
+
+    assert_eq!(extended.status, 1, "{}", extended.stdout);
+    assert_eq!(extended_diagnostics.len(), 1, "{}", extended.stdout);
+    assert!(diagnostic_message(&extended_diagnostics[0]).contains("is 803;"));
+}
+
+#[test]
+fn all_targets_checks_modules_reachable_in_only_one_test_mode() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "src/lib.rs",
+        "#[cfg(test)] mod test_only;\n#[cfg(not(test))] mod non_test_only;\n",
+    );
+    fixture.write("src/test_only.rs", &code_lines_for_count(801));
+    fixture.write("src/non_test_only.rs", &code_lines_for_count(801));
+
+    let output = fixture.run(&["--format", "json", "--all-targets"]);
+    let diagnostics = rule_diagnostics(&output, "child_module_line_count");
+
+    assert_eq!(output.status, 1, "{}", output.stdout);
+    assert_eq!(diagnostics.len(), 2, "{}", output.stdout);
+    assert!(diagnostics.iter().all(|diagnostic| {
+        diagnostic_message(diagnostic).contains("is 801;")
+            && matches!(
+                diagnostic["path"].as_str(),
+                Some("src/test_only.rs" | "src/non_test_only.rs")
+            )
+    }));
+    assert!(diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic["path"] == "src/test_only.rs"));
+    assert!(diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic["path"] == "src/non_test_only.rs"));
+}
+
+#[test]
+fn test_and_bench_targets_check_test_only_child_modules_once() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "Cargo.toml",
+        "[package]\nname = \"sample\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[[test]]\nname = \"integration\"\npath = \"tests/integration.rs\"\n\n[[bench]]\nname = \"performance\"\npath = \"benches/performance.rs\"\n",
+    );
+    fixture.write("src/lib.rs", "");
+    fixture.write("tests/integration.rs", "mod test_child;\n");
+    fixture.write("tests/test_child.rs", &code_lines_for_count(801));
+    fixture.write("benches/performance.rs", "mod bench_child;\n");
+    fixture.write("benches/bench_child.rs", &code_lines_for_count(801));
+
+    let output = fixture.run(&["--format", "json", "--all-targets"]);
+    let diagnostics = rule_diagnostics(&output, "child_module_line_count");
+
+    assert_eq!(output.status, 1, "{}", output.stdout);
+    assert_eq!(diagnostics.len(), 2, "{}", output.stdout);
+    assert!(diagnostics.iter().all(|diagnostic| {
+        diagnostic_message(diagnostic).contains("is 801;")
+            && diagnostic["target_kind"]
+                .as_array()
+                .is_some_and(|kinds| kinds.iter().any(|kind| kind == "test" || kind == "bench"))
+    }));
+    assert!(diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic["target"] == "integration"));
+    assert!(diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic["target"] == "performance"));
+}
+
+#[test]
+fn child_module_line_count_preserves_target_triple_and_namespace_instances() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "Cargo.toml",
+        "[package]\nname = \"sample\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\npath = \"src/lib.rs\"\n\n[[bin]]\nname = \"worker\"\npath = \"src/main.rs\"\n",
+    );
+    fixture.write(
+        "src/lib.rs",
+        "mod shared;\n#[path = \"shared.rs\"] mod alias;\n",
+    );
+    fixture.write("src/main.rs", "mod shared;\nfn main() {}\n");
+    fixture.write("src/shared.rs", &code_lines_for_count(801));
+
+    let output = fixture.run(&[
+        "--format",
+        "json",
+        "--all-targets",
+        "--target",
+        "x86_64-unknown-linux-gnu",
+        "--target",
+        "aarch64-unknown-linux-gnu",
+        "--target",
+        "x86_64-unknown-linux-gnu",
+    ]);
+    let diagnostics = rule_diagnostics(&output, "child_module_line_count");
+
+    assert_eq!(output.status, 1, "{}", output.stdout);
+    assert_eq!(diagnostics.len(), 6, "{}", output.stdout);
+    assert!(diagnostics.iter().all(|diagnostic| {
+        diagnostic["path"] == "src/shared.rs" && diagnostic_message(diagnostic).contains("is 801;")
+    }));
+    for triple in ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"] {
+        let triple_diagnostics = diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic["target_triple"] == triple)
+            .collect::<Vec<_>>();
+        assert_eq!(triple_diagnostics.len(), 3, "{}", output.stdout);
+        assert!(triple_diagnostics.iter().any(|diagnostic| {
+            diagnostic["target"] == "sample" && diagnostic["namespace"] == "crate::shared"
+        }));
+        assert!(triple_diagnostics.iter().any(|diagnostic| {
+            diagnostic["target"] == "sample" && diagnostic["namespace"] == "crate::alias"
+        }));
+        assert!(triple_diagnostics.iter().any(|diagnostic| {
+            diagnostic["target"] == "worker" && diagnostic["namespace"] == "crate::shared"
+        }));
+        assert!(triple_diagnostics.iter().all(|diagnostic| {
+            if diagnostic["target"] == "sample" {
+                diagnostic["target_kind"] == json!(["lib"])
+            } else {
+                diagnostic["target_kind"] == json!(["bin"])
+            }
+        }));
+    }
+}
+
+#[test]
+fn child_module_line_count_reports_only_outside_the_inclusive_bounds() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "src/lib.rs",
+        "mod sixty_nine;\nmod seventy;\nmod eight_hundred;\nmod eight_hundred_one;\n",
+    );
+    fixture.write("src/sixty_nine.rs", &code_lines_for_count(69));
+    fixture.write("src/seventy.rs", &code_lines_for_count(70));
+    fixture.write("src/eight_hundred.rs", &code_lines_for_count(800));
+    fixture.write("src/eight_hundred_one.rs", &code_lines_for_count(801));
+
+    let output = fixture.run(&["--format", "json"]);
+    let diagnostics = rule_diagnostics(&output, "child_module_line_count");
+
+    assert_eq!(output.status, 1, "{}", output.stdout);
+    assert_eq!(diagnostics.len(), 2, "{}", output.stdout);
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic["path"] == "src/sixty_nine.rs"
+            && diagnostic_message(diagnostic).contains("is 69;")
+    }));
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic["path"] == "src/eight_hundred_one.rs"
+            && diagnostic_message(diagnostic).contains("is 801;")
+    }));
+    assert!(diagnostics
+        .iter()
+        .all(|diagnostic| diagnostic["path"] != "src/seventy.rs"
+            && diagnostic["path"] != "src/eight_hundred.rs"));
 }
 
 #[test]

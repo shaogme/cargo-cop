@@ -1,5 +1,8 @@
 use cop_i18n::{t, PluralCount, RenderError};
-use std::path::Path;
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
 
 use crate::support::{RuleDiagnosticAdapter, RuleReport, SyntaxSupport};
 use cop_analysis::{
@@ -9,6 +12,17 @@ use cop_config::ResolvedConfig;
 use cop_model::{Diagnostic, RuleId};
 
 pub(super) struct ModuleRuleSet;
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct ModuleLineCountKey {
+    package_manifest_path: PathBuf,
+    package_name: String,
+    target_name: String,
+    target_kind: Vec<String>,
+    target_triple: String,
+    namespace: Vec<String>,
+    file_path: PathBuf,
+}
 
 fn check_item_spacing_items(
     items: &[ItemFact],
@@ -128,8 +142,8 @@ impl ModuleRuleSet {
             Self::module_layout(module, diagnostics, &adapter)?;
             Self::child_module_visibility(snapshot, module, diagnostics, &adapter)?;
             Self::item_spacing(snapshot, module, diagnostics, &adapter)?;
-            Self::module_line_count(snapshot, module, diagnostics, &adapter)?;
         }
+        Self::child_module_line_count(snapshot, diagnostics, &adapter)?;
         Ok(())
     }
 
@@ -292,37 +306,59 @@ impl ModuleRuleSet {
         Ok(())
     }
 
-    fn module_line_count(
+    fn child_module_line_count(
         snapshot: &AnalysisSnapshot,
-        module: &ModuleNode,
         diagnostics: &mut Vec<Diagnostic>,
         adapter: &RuleDiagnosticAdapter<'_>,
     ) -> Result<(), RenderError> {
-        if module.is_crate_root() || module.is_inline() {
-            return Ok(());
+        let mut modules_by_instance = BTreeMap::<ModuleLineCountKey, Vec<&ModuleNode>>::new();
+        for module in snapshot.modules() {
+            if module.is_crate_root() || module.is_inline() || module.is_order_only() {
+                continue;
+            }
+            let key = ModuleLineCountKey {
+                package_manifest_path: module.package_manifest_path().to_path_buf(),
+                package_name: module.package_name().to_owned(),
+                target_name: module.target_name().to_owned(),
+                target_kind: module.target_kind().to_vec(),
+                target_triple: module.target_triple().to_owned(),
+                namespace: module.namespace().to_vec(),
+                file_path: module.file_path().to_path_buf(),
+            };
+            modules_by_instance.entry(key).or_default().push(module);
         }
-        let line_count = snapshot
-            .facts()
-            .syntax_for_module(module)
-            .map_or(0, |syntax| syntax.code_line_count());
-        if (70..=800).contains(&line_count) {
-            return Ok(());
+
+        for modules in modules_by_instance.values() {
+            let Some(module) = modules
+                .iter()
+                .find(|module| !module.cfg_test())
+                .or_else(|| modules.first())
+            else {
+                continue;
+            };
+            let line_count = snapshot
+                .facts()
+                .syntax_for_module(module)
+                .map_or(0, |syntax| syntax.code_line_count());
+            if (70..=800).contains(&line_count) {
+                continue;
+            }
+            let file_name = module
+                .display_path()
+                .file_name()
+                .unwrap_or_else(|| Path::new("").as_os_str())
+                .to_string_lossy()
+                .into_owned();
+            adapter.push(
+                module,
+                diagnostics,
+                RuleReport::new(
+                    RuleId::ChildModuleLineCount,
+                    t!("rule.child_module_line_count", { file: file_name.as_str(), actual: line_count as i64, minimum: 70, maximum: 800 })?,
+                    Some(0..0),
+                ),
+            );
         }
-        let file_name = module
-            .display_path()
-            .file_name()
-            .unwrap_or_else(|| Path::new("").as_os_str())
-            .to_string_lossy()
-            .into_owned();
-        adapter.push(
-            module,
-            diagnostics,
-            RuleReport::new(
-                RuleId::ChildModuleLineCount,
-                t!("rule.child_module_line_count", { file: file_name.as_str(), actual: line_count as i64, minimum: 70, maximum: 800 })?,
-                Some(0..0),
-            ),
-        );
         Ok(())
     }
 }

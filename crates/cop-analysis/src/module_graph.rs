@@ -31,6 +31,7 @@ use crate::{cfg_eval::CfgDecision, ConfiguredAst, ConfiguredAstIssueKind};
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ModuleNode {
     context_index: usize,
+    cfg_test: bool,
     package_name: String,
     package_manifest_path: PathBuf,
     target_name: String,
@@ -101,6 +102,10 @@ struct GraphBuilder<'a> {
 impl ModuleNode {
     pub fn context_index(&self) -> usize {
         self.context_index
+    }
+
+    pub fn cfg_test(&self) -> bool {
+        self.cfg_test
     }
 
     pub fn package_name(&self) -> &str {
@@ -395,6 +400,7 @@ impl GraphBuilder<'_> {
             .retain(|attribute| ScopeSupport::lint_attribute_belongs_to_scope(&scope, attribute));
         let node = ModuleNode {
             context_index: self.context_index,
+            cfg_test: self.target.cfg_test(),
             package_name: self.package.name().to_owned(),
             package_manifest_path: self.package.manifest_path().to_path_buf(),
             target_name: self.target.name().to_owned(),
