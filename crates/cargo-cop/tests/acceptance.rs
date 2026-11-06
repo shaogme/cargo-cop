@@ -36,6 +36,12 @@ struct ExpectedPathDiagnostic {
     expected_path: &'static str,
 }
 
+struct VisibilityExcerpt<'a> {
+    path: &'a str,
+    line: usize,
+    text: String,
+}
+
 struct ConfiguredNodeExpectation<'a> {
     marker: &'a str,
     kind: &'a str,
@@ -804,6 +810,7 @@ fn queries_the_localized_rule_catalog_without_project_discovery() {
             "cfg_use_group_spacing",
             "cfg_inside_use_tree",
             "unnecessary_pub_crate",
+            "no_pub_in_visibility",
         ]
     );
     for rule in listed_rules {
@@ -832,7 +839,11 @@ fn queries_the_localized_rule_catalog_without_project_discovery() {
     assert!(trait_description.contains("primitive"));
     assert!(trait_description.contains("external trait"));
 
-    for rule_id in ["impl_locality", "trait_impl_locality"] {
+    for rule_id in [
+        "impl_locality",
+        "trait_impl_locality",
+        "no_pub_in_visibility",
+    ] {
         let explanation = fixture.run(&[
             "--explain-rule",
             rule_id,
@@ -916,10 +927,90 @@ fn queries_the_localized_rule_catalog_without_project_discovery() {
 
     let human_list = fixture.run(&["--list-rules"]);
     assert_eq!(human_list.status, 0, "{}", human_list.stderr);
-    assert!(human_list.stdout.contains("Rule catalog (22 rules):"));
+    assert!(human_list.stdout.contains("Rule catalog (23 rules):"));
     assert!(human_list
         .stdout
         .contains("parameter_limit [enabled, error]"));
+    assert!(human_list
+        .stdout
+        .contains("no_pub_in_visibility [enabled, error]"));
+}
+
+#[test]
+fn reports_only_explicit_pub_in_visibility_at_each_local_scope() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    let source = "pub( /* comment */ in crate) struct Root;\npub(crate) struct CrateVisible;\npub(super) struct ParentVisible;\npub(self) struct SelfVisible;\n#[cfg(any())]\npub(in crate) struct Disabled;\n#[cfg(mystery_cfg)]\npub(in crate) struct Unknown;\npub(in crate) mod restricted_api { pub(crate) struct Inner; }\nmod api {\n    pub(in crate::api) use core::fmt::Debug;\n    pub(crate) struct Record {\n        pub(in crate::api) field: u8,\n        pub(super) visible_to_parent: u8,\n    }\n    struct Local;\n    impl Local { pub(in crate::api) fn method() {} }\n    extern \"C\" { pub(in crate::api) fn foreign(); }\n    mod nested { pub(in crate::api::nested) fn nested_item() {} pub(super) fn parent_item() {} }\n}\nmod external;\n";
+    fixture.write("src/lib.rs", source);
+    fixture.write(
+        "src/external.rs",
+        "pub(in crate::external) struct External;\npub(self) struct LocalOnly;\n",
+    );
+
+    let default = fixture.run(&["--format", "json"]);
+    let diagnostics = rule_diagnostics(&default, "no_pub_in_visibility");
+    assert_eq!(diagnostics.len(), 9, "{}", default.stdout);
+
+    let mut actual = diagnostics
+        .iter()
+        .map(|diagnostic| {
+            let path = diagnostic["path"].as_str().expect("诊断路径");
+            let line = usize::try_from(diagnostic["start"]["line"].as_u64().expect("诊断起始行"))
+                .expect("诊断起始行范围");
+            let start =
+                usize::try_from(diagnostic["start"]["column"].as_u64().expect("诊断起始列"))
+                    .expect("诊断起始列范围");
+            let end = usize::try_from(diagnostic["end"]["column"].as_u64().expect("诊断结束列"))
+                .expect("诊断结束列范围");
+            let file = match path {
+                "src/lib.rs" => source,
+                "src/external.rs" => {
+                    "pub(in crate::external) struct External;\npub(self) struct LocalOnly;\n"
+                }
+                other => panic!("意外的诊断路径：{other}"),
+            };
+            let line_text = file.lines().nth(line - 1).expect("诊断源码行");
+            VisibilityExcerpt {
+                path,
+                line,
+                text: line_text[start - 1..end - 1].to_owned(),
+            }
+        })
+        .collect::<Vec<_>>();
+    actual.sort_by(|left, right| (left.path, left.line).cmp(&(right.path, right.line)));
+    let reported = actual
+        .iter()
+        .map(|excerpt| (excerpt.path, excerpt.text.as_str()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        reported,
+        [
+            ("src/external.rs", "pub(in crate::external)"),
+            ("src/lib.rs", "pub( /* comment */ in crate)"),
+            ("src/lib.rs", "pub(in crate)"),
+            ("src/lib.rs", "pub(in crate)"),
+            ("src/lib.rs", "pub(in crate::api)"),
+            ("src/lib.rs", "pub(in crate::api)"),
+            ("src/lib.rs", "pub(in crate::api)"),
+            ("src/lib.rs", "pub(in crate::api)"),
+            ("src/lib.rs", "pub(in crate::api::nested)"),
+        ],
+        "{}",
+        default.stdout
+    );
+
+    let warning = fixture.run(&[
+        "--format",
+        "json",
+        "--severity",
+        "no_pub_in_visibility=warning",
+    ]);
+    assert!(rule_diagnostics(&warning, "no_pub_in_visibility")
+        .iter()
+        .all(|diagnostic| diagnostic["severity"] == "warning"));
+
+    let disabled = fixture.run(&["--format", "json", "--disable-rule", "no_pub_in_visibility"]);
+    assert!(rule_diagnostics(&disabled, "no_pub_in_visibility").is_empty());
 }
 
 #[test]

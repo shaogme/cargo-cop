@@ -6,7 +6,7 @@
 
 `cargo-cop` is a static checker for Rust source code. It checks selected Cargo packages and targets against repository conventions, including module layout, visibility, declaration order, imports, and source structure.
 
-The project provides 22 configurable rules, human-readable and JSON reports, and English and Simplified Chinese rule descriptions and diagnostic messages. It can run as the `cargo-cop` executable or as the `cargo cop` Cargo subcommand.
+The project provides 23 configurable rules, human-readable and JSON reports, and English and Simplified Chinese rule descriptions and diagnostic messages. It can run as the `cargo-cop` executable or as the `cargo cop` Cargo subcommand.
 
 ## What it checks
 
@@ -56,7 +56,7 @@ steps:
   - uses: actions/checkout@main
   - uses: shaogme/cargo-cop@main
     with:
-      version: 0.3.1
+      version: 0.3.2
   - run: cargo cop --workspace
 ```
 
@@ -67,7 +67,7 @@ steps:
   - uses: actions/checkout@main
   - uses: shaogme/cargo-cop@main
     with:
-      version: 0.3.1
+      version: 0.3.2
       from-source: true
   - run: cargo cop --workspace
 ```
@@ -177,6 +177,7 @@ All rules are enabled by default and use `error` severity unless configured othe
 | `out_of_line_modules_at_scope_start` | Keep out-of-line modules together after `extern crate` declarations and before `use` declarations and other items. |
 | `cfg_use_group_spacing` | Keep imports with different `cfg` conditions in distinct groups separated by one blank line. |
 | `cfg_inside_use_tree` | Put `cfg` attributes on a complete `use` item, not inside a braced use tree. |
+| `no_pub_in_visibility` | Do not use explicit `pub(in path)` visibility; use private, `pub(crate)`, or `pub(super)` visibility where appropriate. |
 
 Rule IDs are stable configuration keys. Tool errors and analysis issues are not rules and cannot be disabled with `--disable-rule`.
 
@@ -225,7 +226,7 @@ The workspace separates the command-line application from the analysis pipeline:
 | `cop-cfg` | Shared `cfg` expression parsing, normalization, and three-valued evaluation. |
 | `cop-syntax` | Project-owned Rust lexer, syntax tree, parser, and parser coverage status. |
 | `cop-analysis` | `cfg` evaluation, module graph discovery, immutable definition/reference facts, path resolution, API dependency and impl-owner indexes, analysis status. |
-| `cop-rules` | The 22 source convention rules. |
+| `cop-rules` | The 23 source convention rules. |
 | `cop-model` | Shared rule IDs, diagnostics, source locations, and scan-status types. |
 | `cop-report` | Stable diagnostic ordering and human/JSON rendering. |
 | `cop-i18n` | English and Simplified Chinese messages. |

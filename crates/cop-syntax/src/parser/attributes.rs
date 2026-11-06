@@ -118,8 +118,17 @@ impl AttributeParser {
                     .slice(tokens[open_index].start(), end)
                     .unwrap_or("")
                     .to_owned();
+                let kind = if tokens
+                    .get(open_index + 1)
+                    .and_then(|token| token.kind().word())
+                    == Some("in")
+                {
+                    VisibilityKind::RestrictedIn(restricted)
+                } else {
+                    VisibilityKind::Restricted(restricted)
+                };
                 *cursor = close_index + 1;
-                return AstFactory::visibility(VisibilityKind::Restricted(restricted), start..end);
+                return AstFactory::visibility(kind, start..end);
             }
             Self::push_issue(
                 issues,

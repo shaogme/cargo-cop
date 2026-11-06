@@ -6,7 +6,7 @@
 
 `cargo-cop` 是一个 Rust 源码静态检查工具。它会按照仓库规范检查选定的 Cargo package 和 target，覆盖模块布局、可见性、声明顺序、导入组织及源码结构等方面。
 
-项目提供 22 条可配置规则、人类可读和 JSON 报告，以及英文和简体中文规则说明与诊断信息。既可以直接运行 `cargo-cop`，也可以使用 Cargo 子命令 `cargo cop`。
+项目提供 23 条可配置规则、人类可读和 JSON 报告，以及英文和简体中文规则说明与诊断信息。既可以直接运行 `cargo-cop`，也可以使用 Cargo 子命令 `cargo cop`。
 
 ## 检查内容
 
@@ -56,7 +56,7 @@ steps:
   - uses: actions/checkout@main
   - uses: shaogme/cargo-cop@main
     with:
-      version: 0.3.1
+      version: 0.3.2
   - run: cargo cop --workspace
 ```
 
@@ -67,7 +67,7 @@ steps:
   - uses: actions/checkout@main
   - uses: shaogme/cargo-cop@main
     with:
-      version: 0.3.1
+      version: 0.3.2
       from-source: true
   - run: cargo cop --workspace
 ```
@@ -177,6 +177,7 @@ Feature 选择根据所选 package 的 Cargo feature 定义计算，处理 defau
 | `out_of_line_modules_at_scope_start` | 外部模块声明位于 `extern crate` 之后、`use` 和其他 item 之前，并连续排列。 |
 | `cfg_use_group_spacing` | 不同 `cfg` 条件的导入应分组排列，组间留一行空行。 |
 | `cfg_inside_use_tree` | `cfg` 属性应放在完整的 `use` item 上，不能嵌套在花括号 use tree 中。 |
+| `no_pub_in_visibility` | 禁止显式 `pub(in path)` 可见性；按访问边界改用私有、`pub(crate)` 或 `pub(super)`。 |
 
 规则 ID 是稳定的配置键。工具错误和分析问题不是规则，不能通过 `--disable-rule` 关闭。
 
@@ -225,7 +226,7 @@ Workspace 将命令行应用与分析流程分层：
 | `cop-cfg` | 共享 `cfg` 表达式解析、规范化和三态求值。 |
 | `cop-syntax` | 自有 Rust 词法分析器、语法树、解析器和解析覆盖状态。 |
 | `cop-analysis` | `cfg` 求值、模块图发现、不可变定义/引用事实、路径解析、API 依赖和 impl 所有者索引、分析状态。 |
-| `cop-rules` | 22 条源码规范检查规则。 |
+| `cop-rules` | 23 条源码规范检查规则。 |
 | `cop-model` | 共享规则 ID、诊断、源码位置和扫描状态类型。 |
 | `cop-report` | 诊断稳定排序、人类可读和 JSON 渲染。 |
 | `cop-i18n` | 英文和简体中文消息。 |

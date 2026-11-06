@@ -319,6 +319,34 @@ mod driver {
 
 When a crate-visible API declaration must remain accessible, types and other items referenced by its signature may also need `pub(crate)`. Do not reduce visibility based on an incomplete view: unresolved syntax or macro invocations can hide references, so retain visibility when usage cannot be determined reliably.
 
+### 3.8 Explicit Path-Restricted Visibility Is Forbidden
+
+Never use explicit `pub(in path)` visibility on items, `use` imports, foreign items, fields, or associated declarations. Choose private visibility, `pub`, `pub(crate)`, `pub(super)`, or `pub(self)` according to the intended access boundary. If these forms cannot express the required boundary, restructure the module or API.
+
+```rust
+// Bad: Explicit path-restricted visibility
+mod service {
+    pub(in crate::service) struct Request;
+
+    pub(in crate::service) use crate::model::Record;
+
+    pub struct Response {
+        pub(in crate::service) status: u16,
+    }
+}
+
+// Good: Use supported visibility forms
+mod service {
+    pub(crate) struct Request;
+
+    pub(super) use crate::model::Record;
+
+    pub struct Response {
+        pub(self) status: u16,
+    }
+}
+```
+
 ---
 
 ## 4. Type & Interface Quality

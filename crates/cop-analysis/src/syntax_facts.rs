@@ -642,7 +642,9 @@ fn make_item_fact(module: &ModuleNode, node: &SyntaxNode, scope_id: usize) -> It
     let visibility = match item.visibility().kind() {
         VisibilityKind::Private => SymbolVisibility::Private,
         VisibilityKind::Public => SymbolVisibility::Public,
-        VisibilityKind::Restricted(scope) => SymbolVisibility::Restricted(scope.clone()),
+        VisibilityKind::Restricted(scope) | VisibilityKind::RestrictedIn(scope) => {
+            SymbolVisibility::Restricted(scope.clone())
+        }
     };
     let declarative = match item.kind() {
         ItemSyntaxKind::Module { .. }

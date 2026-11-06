@@ -181,6 +181,11 @@ impl RuleCatalog {
                 locale = locale.as_tag().as_locale(),
                 {}
             ),
+            RuleId::NoPubInVisibility => t!(
+                "rule_catalog.no_pub_in_visibility.summary",
+                locale = locale.as_tag().as_locale(),
+                {}
+            ),
         }
     }
 
@@ -293,6 +298,11 @@ impl RuleCatalog {
             ),
             RuleId::UnnecessaryPubCrate => t!(
                 "rule_catalog.unnecessary_pub_crate.description",
+                locale = locale.as_tag().as_locale(),
+                {}
+            ),
+            RuleId::NoPubInVisibility => t!(
+                "rule_catalog.no_pub_in_visibility.description",
                 locale = locale.as_tag().as_locale(),
                 {}
             ),

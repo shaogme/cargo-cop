@@ -23,7 +23,9 @@ impl SymbolIndexSupport {
         match kind {
             VisibilityKind::Private => SymbolVisibility::Private,
             VisibilityKind::Public => SymbolVisibility::Public,
-            VisibilityKind::Restricted(scope) => SymbolVisibility::Restricted(scope.clone()),
+            VisibilityKind::Restricted(scope) | VisibilityKind::RestrictedIn(scope) => {
+                SymbolVisibility::Restricted(scope.clone())
+            }
         }
     }
 

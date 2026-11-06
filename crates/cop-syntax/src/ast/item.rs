@@ -7,6 +7,7 @@ pub enum VisibilityKind {
     Private,
     Public,
     Restricted(String),
+    RestrictedIn(String),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

@@ -32,6 +32,7 @@ pub enum RuleId {
     CfgUseGroupSpacing,
     CfgInsideUseTree,
     UnnecessaryPubCrate,
+    NoPubInVisibility,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -90,7 +91,7 @@ pub struct Diagnostic {
 }
 
 impl RuleId {
-    pub const ALL: [Self; 22] = [
+    pub const ALL: [Self; 23] = [
         Self::ModuleFileLayout,
         Self::NoLintRelaxation,
         Self::ItemSpacing,
@@ -113,6 +114,7 @@ impl RuleId {
         Self::CfgUseGroupSpacing,
         Self::CfgInsideUseTree,
         Self::UnnecessaryPubCrate,
+        Self::NoPubInVisibility,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -139,6 +141,7 @@ impl RuleId {
             Self::CfgUseGroupSpacing => "cfg_use_group_spacing",
             Self::CfgInsideUseTree => "cfg_inside_use_tree",
             Self::UnnecessaryPubCrate => "unnecessary_pub_crate",
+            Self::NoPubInVisibility => "no_pub_in_visibility",
         }
     }
 

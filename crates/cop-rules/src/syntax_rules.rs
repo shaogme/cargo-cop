@@ -6,6 +6,7 @@ use cop_analysis::{
 use cop_config::ResolvedConfig;
 use cop_i18n::{t, RenderError};
 use cop_model::{Diagnostic, RuleId};
+use cop_syntax::{ItemSyntaxKind, VisibilityKind};
 
 pub(super) struct SyntaxRuleSet;
 
@@ -21,8 +22,52 @@ impl SyntaxRuleSet {
                 continue;
             }
             Self::lint_relaxation(module, diagnostics, &adapter)?;
+            Self::no_pub_in_visibility(module, diagnostics, &adapter)?;
             Self::syntax_shapes(module, snapshot, diagnostics, &adapter)?;
             Self::declaration_order(module, snapshot, diagnostics, &adapter)?;
+        }
+        Ok(())
+    }
+
+    fn no_pub_in_visibility(
+        module: &ModuleNode,
+        diagnostics: &mut Vec<Diagnostic>,
+        adapter: &RuleDiagnosticAdapter<'_>,
+    ) -> Result<(), RenderError> {
+        let output = module.parse_output();
+        let mut pending = module
+            .source_item_nodes()
+            .into_iter()
+            .map(|node| node.id())
+            .collect::<Vec<_>>();
+        while let Some(node_id) = pending.pop() {
+            let Some(node) = output.node(node_id) else {
+                continue;
+            };
+            let visibility = node
+                .item_syntax()
+                .map(|item| item.visibility())
+                .or_else(|| node.foreign_item_syntax().map(|item| item.visibility()))
+                .or_else(|| node.field_visibility());
+            if let Some(visibility) = visibility {
+                if matches!(visibility.kind(), VisibilityKind::RestrictedIn(_)) {
+                    adapter.push(
+                        module,
+                        diagnostics,
+                        RuleReport::new(
+                            RuleId::NoPubInVisibility,
+                            t!("rule.no_pub_in_visibility")?,
+                            Some(visibility.start()..visibility.end()),
+                        ),
+                    );
+                }
+            }
+            if node.item_syntax().is_some_and(|item| {
+                matches!(item.kind(), ItemSyntaxKind::Module { inline: true, .. })
+            }) {
+                continue;
+            }
+            pending.extend(node.children().iter().copied());
         }
         Ok(())
     }
