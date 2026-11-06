@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     env, fs,
     path::{Path, PathBuf},
     process::{id, Command, Output},
@@ -255,7 +256,7 @@ fn cfg_macro_values_are_target_scoped_and_do_not_change_availability() {
     );
     fixture.write(
         "cargo-cop.toml",
-        "version = 3\n\n[[cfg]]\npackage = \"sample\"\ntarget = \"sample\"\nname = \"flavor\"\nvalue = \"fast\"\n\n[[cfg]]\npackage = \"sample\"\ntarget = \"integration\"\nname = \"flavor\"\nvalue = \"slow\"\n",
+        "version = 4\n\n[[cfg]]\npackage = \"sample\"\ntarget = \"sample\"\nname = \"flavor\"\nvalue = \"fast\"\n\n[[cfg]]\npackage = \"sample\"\ntarget = \"integration\"\nname = \"flavor\"\nvalue = \"slow\"\n",
     );
     let config = ConfigLoader::load(ConfigRequest::new(
         Some(fixture.root.join("cargo-cop.toml")),
@@ -410,7 +411,7 @@ fn cfg_candidate_with_macro_use_module_stays_opaque() {
     fixture.write("Cargo.toml", &package_manifest("sample"));
     fixture.write(
         "cargo-cop.toml",
-        "version = 3\n\n[rules.child_module_line_count]\nenabled = false\n",
+        "version = 4\n\n[rules.child_module_line_count]\nenabled = false\n",
     );
     fixture.write(
         "src/lib.rs",
@@ -484,7 +485,7 @@ fn scoped_custom_cfg_values_apply_to_target_specific_dependencies() {
     fixture.write("vendor/src/lib.rs", "pub struct Thing;\n");
     fixture.write(
         "cargo-cop.toml",
-        "version = 3\n\n[[cfg]]\npackage = \"app\"\ntarget = \"app\"\nname = \"custom_link\"\n",
+        "version = 4\n\n[[cfg]]\npackage = \"app\"\ntarget = \"app\"\nname = \"custom_link\"\n",
     );
 
     let output = fixture.run(&["--format", "json", "--package", "app"]);
@@ -504,7 +505,7 @@ fn scans_direct_binary_and_cargo_subcommand_with_identical_output() {
     assert_eq!(direct.status, 0, "{}", direct.stderr);
     assert_eq!(cargo.status, 0, "{}", cargo.stderr);
     assert_eq!(direct.stdout, cargo.stdout);
-    assert!(direct.stdout.contains("\"schema_version\":4"));
+    assert!(direct.stdout.contains("\"schema_version\":5"));
     assert!(direct.stdout.contains("\"status\":\"complete\""));
 }
 
@@ -569,7 +570,7 @@ fn applies_config_severity_and_command_line_precedence() {
     fixture.write("src/lib.rs", "#[allow(dead_code)]\nfn unused() {}\n");
     fixture.write(
         "cargo-cop.toml",
-        "version = 3\n\n[rules.no_lint_relaxation]\nseverity = \"warning\"\n",
+        "version = 4\n\n[rules.no_lint_relaxation]\nseverity = \"warning\"\n",
     );
     let configured = fixture.run(&["--format", "json"]);
     let overridden = fixture.run(&["--format", "json", "--severity", "no_lint_relaxation=error"]);
@@ -629,7 +630,7 @@ fn suppresses_warnings_but_preserves_errors_and_partial_status() {
     fixture.write("src/generated.rs", "pub fn generated() {}\n");
     fixture.write(
         "cargo-cop.toml",
-        "version = 3\nallow_warnings = true\n\n[rules.no_lint_relaxation]\nseverity = \"warning\"\n\n[rules.item_spacing]\nseverity = \"warning\"\n",
+        "version = 4\nallow_warnings = true\n\n[rules.no_lint_relaxation]\nseverity = \"warning\"\n\n[rules.item_spacing]\nseverity = \"warning\"\n",
     );
 
     let output = fixture.run(&["--format", "json"]);
@@ -675,7 +676,7 @@ fn uses_one_resolved_locale_for_help_and_json_messages() {
     );
     fixture.write(
         "cargo-cop.toml",
-        "version = 3\n\n[i18n]\nlocale = \"en-US\"\n",
+        "version = 4\n\n[i18n]\nlocale = \"en-US\"\n",
     );
 
     let help = fixture.run(&["--manifest-path", "member/Cargo.toml", "--help"]);
@@ -928,7 +929,7 @@ fn rejects_invalid_rule_queries_and_query_option_conflicts() {
     ]);
     let unknown_report = from_str::<Value>(&unknown.stdout).expect("未知规则错误 JSON");
     assert_eq!(unknown.status, 2);
-    assert_eq!(unknown_report["schema_version"], 4);
+    assert_eq!(unknown_report["schema_version"], 5);
     assert_eq!(unknown_report["diagnostics"][0]["tool_error"], "arguments");
     assert!(unknown_report["diagnostics"][0]["message"]
         .as_str()
@@ -956,7 +957,7 @@ fn rejects_invalid_rule_queries_and_query_option_conflicts() {
         let conflict = fixture.run(&arguments);
         let report = from_str::<Value>(&conflict.stdout).expect("参数冲突 JSON");
         assert_eq!(conflict.status, 2, "{}", conflict.stdout);
-        assert_eq!(report["schema_version"], 4);
+        assert_eq!(report["schema_version"], 5);
         assert_eq!(report["diagnostics"][0]["tool_error"], "arguments");
     }
 }
@@ -968,11 +969,11 @@ fn resolves_relative_explicit_config_without_merging_discovered_config() {
     fixture.write("src/lib.rs", "#[allow(dead_code)]\nfn ready() {}\n");
     fixture.write(
         "cargo-cop.toml",
-        "version = 3\n\n[rules.no_lint_relaxation]\nenabled = false\n",
+        "version = 4\n\n[rules.no_lint_relaxation]\nenabled = false\n",
     );
     fixture.write(
         "config/alternate.toml",
-        "version = 3\n\n[rules.no_lint_relaxation]\nseverity = \"warning\"\n",
+        "version = 4\n\n[rules.no_lint_relaxation]\nseverity = \"warning\"\n",
     );
 
     let explicit = fixture.run(&["--format", "json", "--config", "config/alternate.toml"]);
@@ -1962,11 +1963,151 @@ fn preserves_exact_target_triple_dependency_matching() {
         "--target",
         "aarch64-unknown-linux-gnu",
     ]);
+    let combined = fixture.run(&[
+        "--format",
+        "json",
+        "--package",
+        "app",
+        "--target",
+        "x86_64-unknown-linux-gnu",
+        "--target",
+        "aarch64-unknown-linux-gnu",
+    ]);
 
     assert_eq!(matching.status, 1, "{}", matching.stdout);
     assert!(matching.has_rule("no_inline_qualified_path"));
     assert_eq!(other.status, 0, "{}", other.stdout);
     assert!(!other.has_rule("no_inline_qualified_path"));
+    let diagnostics = rule_diagnostics(&combined, "no_inline_qualified_path");
+    assert_eq!(combined.status, 1, "{}", combined.stdout);
+    assert_eq!(diagnostics.len(), 1, "{}", combined.stdout);
+    assert_eq!(diagnostics[0]["target_triple"], "x86_64-unknown-linux-gnu");
+}
+
+#[test]
+fn scans_multiple_target_triples_with_separate_cfg_and_diagnostics() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "src/lib.rs",
+        "pub struct Marker;\n#[cfg(windows)]\nmod windows;\n#[cfg(unix)]\nmod unix;\nfn common() { let _ = crate::Marker; }\n",
+    );
+    fixture.write(
+        "src/windows.rs",
+        "fn windows_only() { let _ = crate::Marker; }\n",
+    );
+    fixture.write("src/unix.rs", "fn unix_only() { let _ = crate::Marker; }\n");
+
+    let output = fixture.run(&[
+        "--format",
+        "json",
+        "--target",
+        "x86_64-pc-windows-msvc",
+        "--target",
+        "x86_64-pc-windows-msvc",
+        "--target",
+        "x86_64-unknown-linux-gnu",
+    ]);
+    let diagnostics = rule_diagnostics(&output, "no_inline_qualified_path");
+    let common = diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic["path"] == "src/lib.rs")
+        .collect::<Vec<_>>();
+    let windows = diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic["path"] == "src/windows.rs")
+        .collect::<Vec<_>>();
+    let unix = diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic["path"] == "src/unix.rs")
+        .collect::<Vec<_>>();
+
+    assert_eq!(output.status, 1, "{}", output.stdout);
+    assert_eq!(common.len(), 2, "{}", output.stdout);
+    assert_eq!(windows.len(), 1, "{}", output.stdout);
+    assert_eq!(unix.len(), 1, "{}", output.stdout);
+    assert_eq!(
+        windows[0]["target_triple"], "x86_64-pc-windows-msvc",
+        "{}",
+        output.stdout
+    );
+    assert_eq!(
+        unix[0]["target_triple"], "x86_64-unknown-linux-gnu",
+        "{}",
+        output.stdout
+    );
+    assert!(common
+        .iter()
+        .any(|diagnostic| { diagnostic["target_triple"] == "x86_64-pc-windows-msvc" }));
+    assert!(common
+        .iter()
+        .any(|diagnostic| { diagnostic["target_triple"] == "x86_64-unknown-linux-gnu" }));
+    assert!(diagnostics.iter().all(|diagnostic| {
+        diagnostic["target"] == "sample" && diagnostic["target_kind"][0] == "lib"
+    }));
+}
+
+#[test]
+fn analyzes_host_only_targets_once_across_a_target_matrix() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "Cargo.toml",
+        "[package]\nname = \"sample\"\nversion = \"0.1.0\"\nedition = \"2021\"\nbuild = \"build.rs\"\n\n[lib]\nproc-macro = true\n\n[[bin]]\nname = \"sample-bin\"\npath = \"src/main.rs\"\n",
+    );
+    fixture.write("build.rs", "fn main() {}\n");
+    fixture.write("src/lib.rs", "extern crate proc_macro;\n");
+    fixture.write("src/main.rs", "fn main() {}\n");
+
+    let discovery =
+        CargoProjectLoader::discover(CargoDiscoveryRequest::new(fixture.root.join("Cargo.toml")))
+            .expect("Cargo 元数据");
+    let project = TargetSelector::select(
+        discovery,
+        CargoSelection::new(FeatureSelection::new(Vec::new(), false, true))
+            .with_all_targets(true)
+            .with_target_triples(Some(vec![
+                "x86_64-pc-windows-msvc".to_owned(),
+                "x86_64-unknown-linux-gnu".to_owned(),
+            ]))
+            .with_current_directory(fixture.root.clone()),
+    )
+    .expect("选择多 triple 上下文");
+    let targets = project.packages()[0].targets();
+    let host_only_count = targets
+        .iter()
+        .filter(|target| {
+            target
+                .kind()
+                .iter()
+                .any(|kind| matches!(kind.as_str(), "proc-macro" | "custom-build"))
+        })
+        .count();
+    let build_script_count = targets
+        .iter()
+        .filter(|target| target.kind().iter().any(|kind| kind == "custom-build"))
+        .count();
+    let proc_macros = targets
+        .iter()
+        .filter(|target| target.kind().iter().any(|kind| kind == "proc-macro"))
+        .collect::<Vec<_>>();
+    let binary_triples = targets
+        .iter()
+        .filter(|target| target.kind().iter().any(|kind| kind == "bin"))
+        .map(|target| target.target_triple())
+        .collect::<BTreeSet<_>>();
+
+    assert_eq!(host_only_count, 3, "{targets:#?}");
+    assert_eq!(build_script_count, 1, "{targets:#?}");
+    assert_eq!(proc_macros.len(), 2, "{targets:#?}");
+    assert_ne!(proc_macros[0].cfg_test(), proc_macros[1].cfg_test());
+    assert_eq!(
+        proc_macros[0].target_triple(),
+        proc_macros[1].target_triple()
+    );
+    assert_eq!(
+        binary_triples,
+        BTreeSet::from(["x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu",])
+    );
 }
 
 #[test]
@@ -2850,14 +2991,17 @@ fn resolves_cli_target_over_configured_target_and_reports_invalid_target() {
     fixture.write("src/lib.rs", "pub fn ready() {}\n");
     fixture.write(
         "cargo-cop.toml",
-        "version = 3\n\n[scan]\ntarget = \"not-a-rust-target\"\n",
+        "version = 4\n\n[scan]\ntarget_triples = [\"not-a-rust-target\"]\n",
     );
     let invalid = fixture.run(&["--format", "json"]);
     let overridden = fixture.run(&["--format", "json", "--target", "host"]);
+    let invalid_cli = fixture.run(&["--format", "json", "--target", "not-a-rust-target"]);
     assert_eq!(invalid.status, 2, "{}", invalid.stderr);
     assert!(invalid.stdout.contains("\"kind\":\"tool\""));
-    assert!(invalid.stdout.contains("\"tool_error\":\"cargo_metadata\""));
+    assert!(invalid.stdout.contains("\"tool_error\":\"configuration\""));
     assert_eq!(overridden.status, 0, "{}", overridden.stderr);
+    assert_eq!(invalid_cli.status, 2, "{}", invalid_cli.stderr);
+    assert!(invalid_cli.stdout.contains("\"tool_error\":\"arguments\""));
 }
 
 #[test]
@@ -3009,13 +3153,13 @@ fn replaces_private_child_module_id_in_configuration_and_cli() {
     fixture.write("src/lib.rs", "pub mod api { fn implementation() {} }\n");
     fixture.write(
         "cargo-cop.toml",
-        "version = 3\n\n[rules.private_child_modules]\nenabled = false\n",
+        "version = 4\n\n[rules.private_child_modules]\nenabled = false\n",
     );
 
     let old_config = fixture.run(&["--format", "json"]);
     fixture.write(
         "cargo-cop.toml",
-        "version = 3\n\n[rules.child_module_visibility]\nseverity = \"warning\"\n",
+        "version = 4\n\n[rules.child_module_visibility]\nseverity = \"warning\"\n",
     );
     let new_config = fixture.run(&["--format", "json"]);
     let old_cli = fixture.run(&[
@@ -3616,7 +3760,7 @@ fn configures_extern_crate_order_rule_and_allows_disabling_it() {
     fixture.write("src/lib.rs", "fn run() {}\nextern crate std;\n");
     fixture.write(
         "cargo-cop.toml",
-        "version = 3\n\n[rules.extern_crate_at_scope_start]\nenabled = false\nseverity = \"warning\"\n",
+        "version = 4\n\n[rules.extern_crate_at_scope_start]\nenabled = false\nseverity = \"warning\"\n",
     );
 
     let configured_disabled = fixture.run(&["--format", "json"]);
@@ -3629,7 +3773,7 @@ fn configures_extern_crate_order_rule_and_allows_disabling_it() {
 
     fixture.write(
         "cargo-cop.toml",
-        "version = 3\n\n[rules.extern_crate_at_scope_start]\nenabled = true\nseverity = \"warning\"\n",
+        "version = 4\n\n[rules.extern_crate_at_scope_start]\nenabled = true\nseverity = \"warning\"\n",
     );
     let warning = fixture.run(&["--format", "json"]);
     let error = fixture.run(&[
@@ -3753,7 +3897,7 @@ fn configures_out_of_line_module_order_rule_and_allows_disabling_it() {
     fixture.write("src/child.rs", "pub struct Child;\n");
     fixture.write(
         "cargo-cop.toml",
-        "version = 3\n\n[rules.out_of_line_modules_at_scope_start]\nseverity = \"warning\"\n",
+        "version = 4\n\n[rules.out_of_line_modules_at_scope_start]\nseverity = \"warning\"\n",
     );
 
     let warning = fixture.run(&[
@@ -3835,7 +3979,7 @@ fn rejects_invalid_configuration_without_falling_back_to_defaults() {
     let fixture = Fixture::new();
     fixture.write("Cargo.toml", &package_manifest("sample"));
     fixture.write("src/lib.rs", "pub fn ready() {}\n");
-    fixture.write("cargo-cop.toml", "version = 3\nunknown = true\n");
+    fixture.write("cargo-cop.toml", "version = 4\nunknown = true\n");
 
     let output = fixture.run(&["--format", "json"]);
     assert_eq!(output.status, 2, "{}", output.stderr);
@@ -4351,7 +4495,7 @@ fn configures_inherent_and_trait_impl_locality_independently() {
     fixture.write("src/types.rs", "pub struct Remote;\n");
     fixture.write(
         "cargo-cop.toml",
-        "version = 3\n\n[rules.child_module_line_count]\nenabled = false\n\n[rules.no_inline_qualified_path]\nenabled = false\n",
+        "version = 4\n\n[rules.child_module_line_count]\nenabled = false\n\n[rules.no_inline_qualified_path]\nenabled = false\n",
     );
 
     let default = fixture.run(&["--format", "json"]);
@@ -4368,7 +4512,7 @@ fn configures_inherent_and_trait_impl_locality_independently() {
     ]);
     fixture.write(
         "cargo-cop.toml",
-        "version = 3\n\n[rules.child_module_line_count]\nenabled = false\n\n[rules.no_inline_qualified_path]\nenabled = false\n\n[rules.impl_locality]\nenabled = false\n\n[rules.trait_impl_locality]\nseverity = \"warning\"\n",
+        "version = 4\n\n[rules.child_module_line_count]\nenabled = false\n\n[rules.no_inline_qualified_path]\nenabled = false\n\n[rules.impl_locality]\nenabled = false\n\n[rules.trait_impl_locality]\nseverity = \"warning\"\n",
     );
     let configured = fixture.run(&["--format", "json"]);
 

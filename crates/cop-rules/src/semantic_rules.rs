@@ -748,6 +748,7 @@ fn push_impl_analysis_issue(
     .with_package_manifest_path(module.package_manifest_path())
     .with_target(module.target_name())
     .with_target_kind(module.target_kind().to_vec())
+    .with_target_triple(module.target_triple())
     .with_namespace(format!("crate::{}", module.namespace().join("::")));
     if let Ok(span) = module
         .parse_output()

@@ -56,7 +56,7 @@ steps:
   - uses: actions/checkout@main
   - uses: shaogme/cargo-cop@main
     with:
-      version: 0.2.13
+      version: 0.3.0
   - run: cargo cop --workspace
 ```
 
@@ -67,7 +67,7 @@ steps:
   - uses: actions/checkout@main
   - uses: shaogme/cargo-cop@main
     with:
-      version: 0.2.13
+      version: 0.3.0
       from-source: true
   - run: cargo cop --workspace
 ```
@@ -103,6 +103,7 @@ Select packages, targets, or an output format as needed:
 cargo cop --manifest-path path/to/Cargo.toml --workspace
 cargo cop --manifest-path path/to/Cargo.toml --package my-crate
 cargo cop --all-targets --target x86_64-unknown-linux-gnu
+cargo cop --target x86_64-pc-windows-msvc --target x86_64-unknown-linux-gnu
 cargo cop --features serde,logging --no-default-features
 cargo cop --format json > cargo-cop-report.json
 ```
@@ -126,7 +127,7 @@ By default the tool scans `lib`, `bin`, and `proc-macro` targets. `--all-targets
 | `--manifest-path <PATH>` | Cargo manifest to inspect. Defaults to `Cargo.toml` in the current directory. |
 | `--workspace` | Select all workspace member packages. Conflicts with `--package`. |
 | `-p, --package <NAME>` | Select a workspace package; repeat to select multiple packages. |
-| `--target <TRIPLE>` | Target triple for target-dependent analysis. `host` selects the host triple. |
+| `--target <TRIPLE>` | Target triple for target-dependent analysis; repeat to scan multiple platforms. `host` selects the host triple. |
 | `--features <LIST>` | Enable comma-separated package features; the option may be repeated. `PACKAGE/FEATURE` may qualify a feature. |
 | `--cfg <CFG>` | Provide a custom cfg flag (for example `custom_mode`) or key/value (for example `custom_mode="fast"`); repeat the option as needed. |
 | `--all-features` | Enable all features for selected root packages. |
@@ -142,9 +143,9 @@ By default the tool scans `lib`, `bin`, and `proc-macro` targets. `--all-targets
 | `-h, --help` | Print command help. |
 | `-V, --version` | Print the tool version. |
 
-`--list-rules` and `--explain-rule` are mutually exclusive and cannot be combined with scan-selection or configuration-override options. They can be combined with `--format` and `--locale`. Rule queries use the CLI or environment locale and do not read project configuration, discover a workspace, or query Cargo metadata. Their default values describe the built-in defaults. Rule-catalog JSON uses schema version `1`, separate from diagnostic JSON schema version `4`.
+`--list-rules` and `--explain-rule` are mutually exclusive and cannot be combined with scan-selection or configuration-override options. They can be combined with `--format` and `--locale`. Rule queries use the CLI or environment locale and do not read project configuration, discover a workspace, or query Cargo metadata. Their default values describe the built-in defaults. Rule-catalog JSON uses schema version `1`, separate from diagnostic JSON schema version `5`.
 
-Target selection precedence is `--target`, `scan.target` in the config, `CARGO_BUILD_TARGET`, Cargo's `build.target` setting, then the Rust host triple. For proc-macro and build-script targets, the host target is used.
+Target triple selection precedence is one or more CLI `--target` values (which replace the configured list), `scan.target_triples`, `CARGO_BUILD_TARGET`, Cargo's `build.target` setting, then the Rust host triple. Proc-macro and build-script targets use only the host triple and share one host analysis context. Cross-platform selection queries Cargo metadata and `rustc --print cfg`; it does not compile the project or require the target standard library to be installed. Build scripts are not executed, so their custom cfg values must be declared explicitly with `--cfg` or `[[cfg]]`.
 
 Feature selection follows Cargo feature definitions for selected packages, including default features, optional dependencies, and workspace package feature propagation. The `--features` option replaces the configured feature list when supplied.
 
@@ -194,7 +195,7 @@ fn run() {}
 
 ## Reports and exit codes
 
-Human output contains one diagnostic per line followed by a summary. JSON output has schema version `4` and includes the locale, scan status, summary counts, and diagnostics. Each diagnostic includes its kind, severity, rule or issue code, package and target where available, source path and span where available, a pre-rendered localized message, optional detail, and optional namespace or `cfg` condition.
+Human output contains one diagnostic per line followed by a summary. JSON output has schema version `5` and includes the locale, scan status, summary counts, and diagnostics. Each diagnostic includes its kind, severity, rule or issue code, package, Cargo target name, target kind, target triple, source path and span where available, a pre-rendered localized message, optional detail, and optional namespace or `cfg` condition.
 
 | Exit code | Meaning |
 | --- | --- |

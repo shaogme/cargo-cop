@@ -19,7 +19,7 @@ pub enum ScanTargetScope {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ScanDefaults {
     target_scope: ScanTargetScope,
-    target: Option<String>,
+    target_triples: Option<Vec<String>>,
     features: Vec<String>,
     default_features: bool,
 }
@@ -46,8 +46,8 @@ impl ScanDefaults {
         self.target_scope
     }
 
-    pub fn target(&self) -> Option<&str> {
-        self.target.as_deref()
+    pub fn target_triples(&self) -> Option<&[String]> {
+        self.target_triples.as_deref()
     }
 
     pub fn features(&self) -> &[String] {
@@ -62,8 +62,8 @@ impl ScanDefaults {
         self.target_scope = target_scope;
     }
 
-    pub(super) fn set_target(&mut self, target: String) {
-        self.target = Some(target);
+    pub(super) fn set_target_triples(&mut self, target_triples: Vec<String>) {
+        self.target_triples = Some(target_triples);
     }
 
     pub(super) fn set_features(&mut self, features: Vec<String>) {
@@ -79,7 +79,7 @@ impl Default for ScanDefaults {
     fn default() -> Self {
         Self {
             target_scope: ScanTargetScope::Default,
-            target: None,
+            target_triples: None,
             features: Vec::new(),
             default_features: true,
         }
@@ -128,10 +128,10 @@ impl ConfigDocument {
                     t!("config.version_type", { path: path_display.as_str() }),
                 )
             })?;
-        if version != 3 {
+        if version != 4 {
             return Err(ConfigError::from_localized(
                 path.to_path_buf(),
-                t!("config.unsupported_version", { path: path_display.as_str(), version: version, supported: 3 })?,
+                t!("config.unsupported_version", { path: path_display.as_str(), version: version, supported: 4 })?,
             ));
         }
 
@@ -217,7 +217,7 @@ fn parse_scan(path: &Path, value: Option<&Value>) -> Result<ScanDefaults, Config
         path,
         "scan",
         table,
-        &["targets", "target", "features", "default_features"],
+        &["targets", "target_triples", "features", "default_features"],
     )?;
 
     let target_scope = match table.get("targets") {
@@ -231,16 +231,42 @@ fn parse_scan(path: &Path, value: Option<&Value>) -> Result<ScanDefaults, Config
             None => return Err(field_error(path, "scan.targets", "must-be-string", "")),
         },
     };
-    let target = table
-        .get("target")
-        .map(|target| {
-            target
-                .as_str()
-                .filter(|target| !target.trim().is_empty())
-                .map(|target| target.to_owned())
-                .ok_or_else(|| field_error(path, "scan.target", "must-be-nonempty-string", ""))
-        })
-        .transpose()?;
+    let target_triples = match table.get("target_triples") {
+        None => None,
+        Some(value) => {
+            let triples = value.as_array().ok_or_else(|| {
+                field_error(path, "scan.target_triples", "must-be-string-array", "")
+            })?;
+            if triples.is_empty() {
+                return Err(field_error(
+                    path,
+                    "scan.target_triples",
+                    "must-be-nonempty-string-array",
+                    "",
+                ));
+            }
+            let triples = triples
+                .iter()
+                .enumerate()
+                .map(|(index, triple)| {
+                    triple
+                        .as_str()
+                        .filter(|triple| !triple.trim().is_empty())
+                        .map(|triple| triple.trim().to_owned())
+                        .ok_or_else(|| {
+                            field_error(
+                                path,
+                                &format!("scan.target_triples[{index}]"),
+                                "must-be-nonempty-string",
+                                "",
+                            )
+                        })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            ensure_unique(path, "scan.target_triples", &triples)?;
+            Some(triples)
+        }
+    };
     let features = match table.get("features") {
         None => Vec::new(),
         Some(value) => value
@@ -274,7 +300,7 @@ fn parse_scan(path: &Path, value: Option<&Value>) -> Result<ScanDefaults, Config
 
     Ok(ScanDefaults {
         target_scope,
-        target,
+        target_triples,
         features,
         default_features,
     })
@@ -474,14 +500,15 @@ mod tests {
         let cases = [
             ("", "must be an integer"),
             ("version = 1", "unsupported version"),
-            ("version = 3\nallow_warnings = \"yes\"", "must be a boolean"),
+            ("version = 3", "unsupported version"),
+            ("version = 4\nallow_warnings = \"yes\"", "must be a boolean"),
             (
-                "version = 3\n[scan]\nfeatures = [\"fast\", \"fast\"]",
+                "version = 4\n[scan]\nfeatures = [\"fast\", \"fast\"]",
                 "duplicate value",
             ),
-            ("version = 3\n[rules.unknown_rule]", "unknown rule ID"),
+            ("version = 4\n[rules.unknown_rule]", "unknown rule ID"),
             (
-                "version = 3\n[rules.parameter_limit]\nseverity = \"fatal\"",
+                "version = 4\n[rules.parameter_limit]\nseverity = \"fatal\"",
                 "unknown severity",
             ),
         ];
@@ -495,7 +522,7 @@ mod tests {
 
     #[test]
     fn loads_scoped_custom_cfg_values_and_rejects_unknown_fields() {
-        let contents = "version = 3\n\n[[cfg]]\npackage = \"core\"\ntarget = \"x86_64-unknown-linux-gnu\"\nname = \"backend\"\nvalue = \"fast\"\n\n[[cfg]]\nname = \"custom_gate\"\n";
+        let contents = "version = 4\n\n[[cfg]]\npackage = \"core\"\ntarget = \"x86_64-unknown-linux-gnu\"\nname = \"backend\"\nvalue = \"fast\"\n\n[[cfg]]\nname = \"custom_gate\"\n";
         let document =
             ConfigDocument::parse(Path::new("cargo-cop.toml"), contents).expect("解析 scoped cfg");
 
@@ -511,14 +538,14 @@ mod tests {
 
         let error = ConfigDocument::parse(
             Path::new("cargo-cop.toml"),
-            "version = 3\n\n[[cfg]]\nname = \"custom_gate\"\nunknown = true\n",
+            "version = 4\n\n[[cfg]]\nname = \"custom_gate\"\nunknown = true\n",
         )
         .expect_err("未知 cfg 字段必须拒绝");
         assert!(message(&error).contains("unknown field"));
     }
 
     #[test]
-    fn requires_version_three_for_cfg_schema() {
+    fn requires_version_four_for_cfg_schema() {
         let error = ConfigDocument::parse(Path::new("cargo-cop.toml"), "version = 2")
             .expect_err("旧 schema 必须显式迁移");
 
@@ -526,9 +553,34 @@ mod tests {
     }
 
     #[test]
+    fn validates_configured_target_triple_lists() {
+        let document = ConfigDocument::parse(
+            Path::new("cargo-cop.toml"),
+            "version = 4\n[scan]\ntarget_triples = [\"host\", \"x86_64-unknown-linux-gnu\"]\n",
+        )
+        .expect("解析多个 target triple");
+        assert_eq!(
+            document.scan.target_triples(),
+            Some(["host".to_owned(), "x86_64-unknown-linux-gnu".to_owned()].as_slice())
+        );
+
+        for contents in [
+            "version = 4\n[scan]\ntarget_triples = []\n",
+            "version = 4\n[scan]\ntarget_triples = [\"\"]\n",
+            "version = 4\n[scan]\ntarget_triples = [\"host\", \"host\"]\n",
+            "version = 4\n[scan]\ntarget = \"host\"\n",
+        ] {
+            assert!(
+                ConfigDocument::parse(Path::new("cargo-cop.toml"), contents).is_err(),
+                "无效或旧 target 配置必须失败：{contents}"
+            );
+        }
+    }
+
+    #[test]
     fn rejects_builtin_names_in_custom_cfg_overrides() {
         for name in ["unix", "feature", "target_os", "test", "proc_macro"] {
-            let contents = format!("version = 3\n\n[[cfg]]\nname = \"{name}\"\n");
+            let contents = format!("version = 4\n\n[[cfg]]\nname = \"{name}\"\n");
             let error = ConfigDocument::parse(Path::new("cargo-cop.toml"), &contents)
                 .expect_err("内置 cfg 名称不能作为自定义覆盖");
 

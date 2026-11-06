@@ -35,6 +35,7 @@ pub struct ModuleNode {
     package_manifest_path: PathBuf,
     target_name: String,
     target_kind: Vec<String>,
+    target_triple: String,
     file_path: PathBuf,
     display_path: PathBuf,
     namespace: Vec<String>,
@@ -116,6 +117,10 @@ impl ModuleNode {
 
     pub fn target_kind(&self) -> &[String] {
         &self.target_kind
+    }
+
+    pub fn target_triple(&self) -> &str {
+        &self.target_triple
     }
 
     pub fn file_path(&self) -> &Path {
@@ -394,6 +399,7 @@ impl GraphBuilder<'_> {
             package_manifest_path: self.package.manifest_path().to_path_buf(),
             target_name: self.target.name().to_owned(),
             target_kind: self.target.kind().to_vec(),
+            target_triple: self.target.target_triple().to_owned(),
             file_path: scope.file_path.clone(),
             display_path: ScopeSupport::relative_display(
                 self.package.package_root(),
@@ -592,6 +598,7 @@ impl GraphBuilder<'_> {
                     .with_package_manifest_path(self.package.manifest_path())
                     .with_target(self.target.name())
                     .with_target_kind(self.target.kind().to_vec())
+                    .with_target_triple(self.target.target_triple())
                     .with_detail(error.to_string()),
                 );
                 return Ok(None);
@@ -620,6 +627,7 @@ impl GraphBuilder<'_> {
                     .with_package_manifest_path(self.package.manifest_path())
                     .with_target(self.target.name())
                     .with_target_kind(self.target.kind().to_vec())
+                    .with_target_triple(self.target.target_triple())
                     .with_detail(error.to_string()),
                 );
                 Ok(None)
@@ -772,7 +780,8 @@ impl GraphBuilder<'_> {
             .with_package(self.package.name())
             .with_package_manifest_path(self.package.manifest_path())
             .with_target(self.target.name())
-            .with_target_kind(self.target.kind().to_vec());
+            .with_target_kind(self.target.kind().to_vec())
+            .with_target_triple(self.target.target_triple());
         if let Some(span) = issue.span {
             diagnostic = diagnostic.with_span(span);
         }

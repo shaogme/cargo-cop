@@ -22,7 +22,8 @@ pub struct CargoSelection {
     workspace: bool,
     packages: Vec<String>,
     all_targets: bool,
-    target: Option<String>,
+    target_triples: Option<Vec<String>>,
+    target_triples_error_kind: Option<ToolErrorKind>,
     features: Option<FeatureSelection>,
     current_directory: Option<PathBuf>,
     cfg_overrides: Vec<ScopedCfgValue>,
@@ -125,8 +126,13 @@ impl CargoSelection {
         self
     }
 
-    pub fn with_target(mut self, target: Option<String>) -> Self {
-        self.target = target;
+    pub fn with_target_triples(mut self, target_triples: Option<Vec<String>>) -> Self {
+        self.target_triples = target_triples;
+        self
+    }
+
+    pub fn with_target_triples_error_kind(mut self, error_kind: ToolErrorKind) -> Self {
+        self.target_triples_error_kind = Some(error_kind);
         self
     }
 
@@ -241,8 +247,13 @@ impl TargetSelector {
             None => env::current_dir()
                 .map_err(|_| CargoFailure::from_message(ToolErrorKind::Io, t!("cli.io_error")))?,
         };
-        let target_triple =
-            TargetConfiguration::resolve_target(selection.target.as_deref(), &current_directory)?;
+        let target_triples = TargetConfiguration::resolve_target_triples(
+            selection.target_triples.as_deref(),
+            &current_directory,
+        )?;
+        let target_cfg_error_kind = selection
+            .target_triples_error_kind
+            .unwrap_or(ToolErrorKind::Configuration);
         let selected_targets = selected_packages
             .iter()
             .enumerate()
@@ -263,30 +274,48 @@ impl TargetSelector {
             None
         };
         let mut cfg_by_target = BTreeMap::<String, Vec<CfgValue>>::new();
+        for target_triple in &target_triples {
+            cfg_by_target.insert(
+                target_triple.clone(),
+                TargetConfiguration::query_cfg(target_triple, target_cfg_error_kind)?,
+            );
+        }
+        if let Some(host_triple) = &host_triple {
+            if !cfg_by_target.contains_key(host_triple) {
+                cfg_by_target.insert(
+                    host_triple.clone(),
+                    TargetConfiguration::query_cfg(host_triple, ToolErrorKind::CargoMetadata)?,
+                );
+            }
+        }
         let mut context_roots = BTreeMap::<FeatureContextKey, FeatureContextRoots>::new();
         for (package_index, target) in &selected_targets {
-            let effective_triple = if target_uses_host(target) {
-                host_triple.as_deref().unwrap_or(&target_triple)
+            let effective_triples = if target_uses_host(target) {
+                let host_triple = host_triple.as_deref().ok_or_else(|| {
+                    CargoFailure::from_message(
+                        ToolErrorKind::CargoMetadata,
+                        t!("cargo.target_cfg_missing", { target: "host" }),
+                    )
+                })?;
+                vec![host_triple]
             } else {
-                &target_triple
+                target_triples.iter().map(String::as_str).collect()
             };
-            if !cfg_by_target.contains_key(effective_triple) {
-                let cfg_values = TargetConfiguration::query_cfg(effective_triple)?;
-                cfg_by_target.insert(effective_triple.to_owned(), cfg_values);
-            }
-            for cfg_test in target_test_modes(target, selection.all_targets) {
-                let key = FeatureContextKey {
-                    target_triple: effective_triple.to_owned(),
-                    cfg_test,
-                    build_script: target.kind().iter().any(|kind| kind == "custom-build"),
-                };
-                let roots = context_roots.entry(key).or_default();
-                roots.root_packages.insert(*package_index);
-                roots
-                    .target_names
-                    .entry(*package_index)
-                    .or_default()
-                    .insert(target.name().to_owned());
+            for effective_triple in effective_triples {
+                for cfg_test in target_test_modes(target, selection.all_targets) {
+                    let key = FeatureContextKey {
+                        target_triple: effective_triple.to_owned(),
+                        cfg_test,
+                        build_script: target.kind().iter().any(|kind| kind == "custom-build"),
+                    };
+                    let roots = context_roots.entry(key).or_default();
+                    roots.root_packages.insert(*package_index);
+                    roots
+                        .target_names
+                        .entry(*package_index)
+                        .or_default()
+                        .insert(target.name().to_owned());
+                }
             }
         }
         let mut feature_contexts = BTreeMap::new();
@@ -318,44 +347,52 @@ impl TargetSelector {
                 .iter()
                 .filter(|target| target_is_selected(target, selection.all_targets))
             {
-                let effective_triple = if target_uses_host(target) {
-                    host_triple.as_deref().unwrap_or(&target_triple)
+                let effective_triples = if target_uses_host(target) {
+                    let host_triple = host_triple.as_deref().ok_or_else(|| {
+                        CargoFailure::from_message(
+                            ToolErrorKind::CargoMetadata,
+                            t!("cargo.target_cfg_missing", { target: "host" }),
+                        )
+                    })?;
+                    vec![host_triple]
                 } else {
-                    &target_triple
+                    target_triples.iter().map(String::as_str).collect()
                 };
                 let build_script = target.kind().iter().any(|kind| kind == "custom-build");
-                let cfg_values = cfg_by_target.get(effective_triple).ok_or_else(|| {
-                    CargoFailure::from_message(
-                        ToolErrorKind::CargoMetadata,
-                        t!("cargo.target_cfg_missing", { target: effective_triple }),
-                    )
-                })?;
-                for cfg_test in target_test_modes(target, selection.all_targets) {
-                    let key = FeatureContextKey {
-                        target_triple: effective_triple.to_owned(),
-                        cfg_test,
-                        build_script,
-                    };
-                    let features = feature_contexts
-                        .get(&key)
-                        .and_then(|features| features.get(package_index))
-                        .ok_or_else(|| {
-                            CargoFailure::from_message(
-                                ToolErrorKind::CargoMetadata,
-                                t!("cargo.feature_context_missing", { package: package.name() }),
-                            )
-                        })?;
-                    if target_required_features_are_enabled(target, features) {
-                        targets.push(make_target_context(TargetContextOptions {
-                            package_name: package.name(),
-                            target,
-                            library_crate_name: package.library_crate_name(),
-                            target_triple: effective_triple,
-                            features,
-                            cfg_values,
+                for effective_triple in effective_triples {
+                    let cfg_values = cfg_by_target.get(effective_triple).ok_or_else(|| {
+                        CargoFailure::from_message(
+                            ToolErrorKind::CargoMetadata,
+                            t!("cargo.target_cfg_missing", { target: effective_triple }),
+                        )
+                    })?;
+                    for cfg_test in target_test_modes(target, selection.all_targets) {
+                        let key = FeatureContextKey {
+                            target_triple: effective_triple.to_owned(),
                             cfg_test,
-                            cfg_overrides: &selection.cfg_overrides,
-                        }));
+                            build_script,
+                        };
+                        let features = feature_contexts
+                            .get(&key)
+                            .and_then(|features| features.get(package_index))
+                            .ok_or_else(|| {
+                                CargoFailure::from_message(
+                                    ToolErrorKind::CargoMetadata,
+                                    t!("cargo.feature_context_missing", { package: package.name() }),
+                                )
+                            })?;
+                        if target_required_features_are_enabled(target, features) {
+                            targets.push(make_target_context(TargetContextOptions {
+                                package_name: package.name(),
+                                target,
+                                library_crate_name: package.library_crate_name(),
+                                target_triple: effective_triple,
+                                features,
+                                cfg_values,
+                                cfg_test,
+                                cfg_overrides: &selection.cfg_overrides,
+                            }));
+                        }
                     }
                 }
             }

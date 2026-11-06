@@ -81,6 +81,7 @@ pub struct Diagnostic {
     package_manifest_path: Option<PathBuf>,
     target: Option<String>,
     target_kind: Vec<String>,
+    target_triple: Option<String>,
     span: Option<SourceSpan>,
     message: Cow<'static, str>,
     detail: Option<String>,
@@ -277,6 +278,11 @@ impl Diagnostic {
         self
     }
 
+    pub fn with_target_triple(mut self, target_triple: impl Into<String>) -> Self {
+        self.target_triple = Some(target_triple.into());
+        self
+    }
+
     pub fn with_span(mut self, span: SourceSpan) -> Self {
         self.span = Some(span);
         self
@@ -321,6 +327,10 @@ impl Diagnostic {
         &self.target_kind
     }
 
+    pub fn target_triple(&self) -> Option<&str> {
+        self.target_triple.as_deref()
+    }
+
     pub fn span(&self) -> Option<&SourceSpan> {
         self.span.as_ref()
     }
@@ -349,6 +359,7 @@ impl Diagnostic {
             package_manifest_path: None,
             target: None,
             target_kind: Vec::new(),
+            target_triple: None,
             span: None,
             message,
             detail: None,

@@ -72,6 +72,7 @@ impl ProjectAnalyzer {
                             .with_package_manifest_path(request.package.manifest_path())
                             .with_target(target.name())
                             .with_target_kind(target.kind().to_vec())
+                            .with_target_triple(target.target_triple())
                             .with_cfg_condition(evaluator.normalized_condition(condition)),
                         );
                     }
@@ -81,6 +82,7 @@ impl ProjectAnalyzer {
         modules.sort_by(|left, right| {
             left.target_name()
                 .cmp(right.target_name())
+                .then_with(|| left.target_triple().cmp(right.target_triple()))
                 .then_with(|| left.context_index().cmp(&right.context_index()))
                 .then_with(|| left.namespace().cmp(right.namespace()))
                 .then_with(|| left.file_path().cmp(right.file_path()))
@@ -88,6 +90,7 @@ impl ProjectAnalyzer {
         diagnostics.sort_by(|left, right| {
             left.target()
                 .cmp(&right.target())
+                .then_with(|| left.target_triple().cmp(&right.target_triple()))
                 .then_with(|| {
                     left.span()
                         .map(|span| span.path())

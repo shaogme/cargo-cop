@@ -104,7 +104,7 @@ message config.parse_error = "解析配置文件 {path} 失败";
 message config.invalid_root = "配置文件 {path} 的根必须是 TOML 表";
 message config.version_type = "配置文件 {path} 的字段 version 必须是整数";
 message config.unsupported_version = "配置文件 {path} 使用了不支持的版本 {version}，当前支持版本 {supported}";
-message config.invalid_field = "配置文件 {path} 的字段 {field}：{reason, select, unknown_field {未知字段} must_be_table {必须是表} must_be_string {必须是字符串} must_be_nonempty_string {必须是非空字符串} must_be_string_array {必须是字符串数组} must_be_boolean {必须是布尔值} must_be_array_of_tables {必须是表数组} invalid_cfg_name {无效的 cfg 名称} unknown_rule_id {未知规则 ID} unknown_severity {未知级别 {value}} unknown_value {未知值 {value}} duplicate {重复值 {value}} invalid {值无效} other {值无效}}";
+message config.invalid_field = "配置文件 {path} 的字段 {field}：{reason, select, unknown_field {未知字段} must_be_table {必须是表} must_be_string {必须是字符串} must_be_nonempty_string {必须是非空字符串} must_be_string_array {必须是字符串数组} must_be_nonempty_string_array {必须是非空字符串数组} must_be_boolean {必须是布尔值} must_be_array_of_tables {必须是表数组} invalid_cfg_name {无效的 cfg 名称} unknown_rule_id {未知规则 ID} unknown_severity {未知级别 {value}} unknown_value {未知值 {value}} duplicate {重复值 {value}} invalid {值无效} other {值无效}}";
 message locale.invalid_cli = "无效的 --locale 值：{locale}";
 message locale.invalid_config = "无效的 [i18n].locale 配置值：{locale}";
 message cargo.error = "Cargo 操作失败";
@@ -122,6 +122,7 @@ message cargo.feature_not_declared = "选中的 package 均未声明 feature {fe
 message cargo.config_target_type = "Cargo 配置 {path} 的 build.target 必须是字符串";
 message cargo.target_cfg_invalid = "无法解析 Cargo target 条件 {condition}";
 message cargo.target_cfg_query_error = "查询 target {target} 的 cfg 值失败";
+message cargo.target_triple_empty = "target triple 不能为空：{target}";
 message cargo.manifest_unavailable = "无法访问 manifest {path}";
 message cargo.host_triple_missing = "rustc -vV 输出缺少 host triple";
 message cli.argument_error = "命令行参数无效";
@@ -139,7 +140,7 @@ message cli.help = "用法：cargo-cop [选项]
   --manifest-path <PATH>    指定 Cargo.toml 路径
   --workspace               扫描整个 workspace
   -p, --package <NAME>      选择要扫描的 package（可重复指定）
-  --target <TRIPLE>         指定目标三元组
+  --target <TRIPLE>         指定目标三元组（可重复指定）
   --features <LIST>         启用逗号分隔的 features
   --cfg <CFG>               添加自定义 cfg flag 或键值；可重复指定
   --all-features            启用所有 features

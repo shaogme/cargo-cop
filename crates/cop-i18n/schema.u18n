@@ -122,6 +122,7 @@ message cargo.feature_not_declared(feature: string);
 message cargo.config_target_type(path: string);
 message cargo.target_cfg_invalid(condition: string);
 message cargo.target_cfg_query_error(target: string);
+message cargo.target_triple_empty(target: string);
 message cargo.manifest_unavailable(path: string);
 message cargo.host_triple_missing();
 message cli.argument_error();

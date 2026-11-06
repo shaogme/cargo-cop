@@ -56,7 +56,7 @@ steps:
   - uses: actions/checkout@main
   - uses: shaogme/cargo-cop@main
     with:
-      version: 0.2.13
+      version: 0.3.0
   - run: cargo cop --workspace
 ```
 
@@ -67,7 +67,7 @@ steps:
   - uses: actions/checkout@main
   - uses: shaogme/cargo-cop@main
     with:
-      version: 0.2.13
+      version: 0.3.0
       from-source: true
   - run: cargo cop --workspace
 ```
@@ -103,6 +103,7 @@ cargo run -p cargo-cop -- --manifest-path Cargo.toml --workspace
 cargo cop --manifest-path path/to/Cargo.toml --workspace
 cargo cop --manifest-path path/to/Cargo.toml --package my-crate
 cargo cop --all-targets --target x86_64-unknown-linux-gnu
+cargo cop --target x86_64-pc-windows-msvc --target x86_64-unknown-linux-gnu
 cargo cop --features serde,logging --no-default-features
 cargo cop --format json > cargo-cop-report.json
 ```
@@ -126,7 +127,7 @@ cargo cop --list-rules --locale zh-CN --format json
 | `--manifest-path <PATH>` | 要检查的 Cargo manifest。默认读取当前目录下的 `Cargo.toml`。 |
 | `--workspace` | 选择 workspace 中的全部成员 package；不能与 `--package` 同用。 |
 | `-p, --package <NAME>` | 选择 workspace package；可重复指定多个 package。 |
-| `--target <TRIPLE>` | target 相关分析使用的 triple。`host` 表示当前 host triple。 |
+| `--target <TRIPLE>` | target 相关分析使用的 triple；可重复指定多个平台。`host` 表示当前 host triple。 |
 | `--features <LIST>` | 启用逗号分隔的 package features；可重复指定。可用 `PACKAGE/FEATURE` 限定 package。 |
 | `--cfg <CFG>` | 提供自定义 cfg flag（如 `custom_mode`）或 key/value（如 `custom_mode="fast"`）；可重复指定。 |
 | `--all-features` | 为所选根 package 启用全部 features。 |
@@ -142,9 +143,9 @@ cargo cop --list-rules --locale zh-CN --format json
 | `-h, --help` | 显示命令帮助。 |
 | `-V, --version` | 显示工具版本。 |
 
-`--list-rules` 和 `--explain-rule` 互斥，且不能与扫描范围或配置覆盖选项组合；可以与 `--format` 和 `--locale` 组合。规则查询使用命令行或环境 locale，不读取项目配置、不发现 workspace，也不查询 Cargo metadata。显示的默认值是工具内置默认值。规则目录 JSON 使用独立的 schema 版本 `1`，扫描诊断 JSON 仍使用 schema 版本 `4`。
+`--list-rules` 和 `--explain-rule` 互斥，且不能与扫描范围或配置覆盖选项组合；可以与 `--format` 和 `--locale` 组合。规则查询使用命令行或环境 locale，不读取项目配置、不发现 workspace，也不查询 Cargo metadata。显示的默认值是工具内置默认值。规则目录 JSON 使用独立的 schema 版本 `1`，扫描诊断 JSON 使用 schema 版本 `5`。
 
-Target 选择优先级依次为：`--target`、配置中的 `scan.target`、`CARGO_BUILD_TARGET`、Cargo 的 `build.target` 设置、Rust host triple。proc-macro 和 build-script targets 使用 host target。
+Target triple 选择优先级依次为：一项或多项 CLI `--target`（整体替代配置列表）、配置中的 `scan.target_triples`、`CARGO_BUILD_TARGET`、Cargo 的 `build.target` 设置、Rust host triple。proc-macro 和 build-script targets 只使用 host triple，并在 host 上下文中分析一次。跨平台选择只查询 Cargo metadata 和 `rustc --print cfg`，不编译项目，也不要求安装目标平台的标准库。工具不会执行 build script；脚本提供的自定义 cfg 需通过 `--cfg` 或 `[[cfg]]` 显式声明。
 
 Feature 选择根据所选 package 的 Cargo feature 定义计算，处理 default features、可选依赖和 workspace package 间的 feature 传递。如果命令行提供了 `--features`，它会替代配置中的 feature 列表。
 
@@ -194,7 +195,7 @@ fn run() {}
 
 ## 报告与退出码
 
-人类可读输出每条诊断占一行，最后附带汇总信息。JSON 输出使用 schema 版本 `4`，包含 locale、扫描状态、汇总计数和诊断数组。每条诊断在适用时包含诊断类型、级别、规则或问题代码、package、target、源码路径和范围、已渲染的本地化消息、独立 detail，以及 namespace 或 `cfg` 条件。
+人类可读输出每条诊断占一行，最后附带汇总信息。JSON 输出使用 schema 版本 `5`，包含 locale、扫描状态、汇总计数和诊断数组。每条诊断在适用时包含诊断类型、级别、规则或问题代码、package、Cargo target 名、target 类型、target triple、源码路径和范围、已渲染的本地化消息、独立 detail，以及 namespace 或 `cfg` 条件。
 
 | 退出码 | 含义 |
 | --- | --- |

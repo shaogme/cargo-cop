@@ -60,24 +60,46 @@ impl TargetConfiguration {
         Ok(decision == CfgDecision::True)
     }
 
-    pub(super) fn resolve_target(
-        configured_target: Option<&str>,
+    pub(super) fn resolve_target_triples(
+        configured_targets: Option<&[String]>,
         current_directory: &Path,
-    ) -> Result<String, CargoFailure> {
-        if let Some(configured_target) = configured_target {
-            return if configured_target == "host" {
-                Self::host_triple()
+    ) -> Result<Vec<String>, CargoFailure> {
+        let (targets, error_kind) = if let Some(configured_targets) = configured_targets {
+            if configured_targets.is_empty() {
+                return Err(CargoError::from_localized(
+                    ToolErrorKind::Arguments,
+                    t!("cargo.target_triple_empty", { target: "<empty list>" })?,
+                ));
+            }
+            (configured_targets.to_vec(), ToolErrorKind::Arguments)
+        } else if let Ok(target) = env::var("CARGO_BUILD_TARGET") {
+            (vec![target], ToolErrorKind::Configuration)
+        } else if let Some(target) = Self::cargo_config_target(current_directory)? {
+            (vec![target], ToolErrorKind::Configuration)
+        } else {
+            (vec![Self::host_triple()?], ToolErrorKind::CargoMetadata)
+        };
+
+        let mut resolved = Vec::with_capacity(targets.len());
+        let mut seen = BTreeSet::new();
+        for target in targets {
+            let target = target.trim();
+            if target.is_empty() {
+                return Err(CargoError::from_localized(
+                    error_kind,
+                    t!("cargo.target_triple_empty", { target: target })?,
+                ));
+            }
+            let target = if target == "host" {
+                Self::host_triple()?
             } else {
-                Ok(configured_target.to_owned())
+                target.to_owned()
             };
+            if seen.insert(target.clone()) {
+                resolved.push(target);
+            }
         }
-        if let Ok(target) = env::var("CARGO_BUILD_TARGET") {
-            return Ok(target);
-        }
-        if let Some(target) = Self::cargo_config_target(current_directory)? {
-            return Ok(target);
-        }
-        Self::host_triple()
+        Ok(resolved)
     }
 
     pub(super) fn host_triple() -> Result<String, CargoFailure> {
@@ -112,7 +134,10 @@ impl TargetConfiguration {
             })
     }
 
-    pub(super) fn query_cfg(target: &str) -> Result<Vec<CfgValue>, CargoFailure> {
+    pub(super) fn query_cfg(
+        target: &str,
+        error_kind: ToolErrorKind,
+    ) -> Result<Vec<CfgValue>, CargoFailure> {
         let output = Self::rustc_command()
             .arg("--print")
             .arg("cfg")
@@ -121,16 +146,14 @@ impl TargetConfiguration {
             .output()
             .map_err(
                 |error| match t!("cargo.target_cfg_query_error", { target: target }) {
-                    Ok(message) => {
-                        CargoError::from_localized(ToolErrorKind::CargoMetadata, message)
-                            .with_detail(error.to_string())
-                    }
+                    Ok(message) => CargoError::from_localized(error_kind, message)
+                        .with_detail(error.to_string()),
                     Err(render_error) => CargoFailure::Render(render_error),
                 },
             )?;
         if !output.status.success() {
             return Err(CargoError::from_localized(
-                ToolErrorKind::CargoMetadata,
+                error_kind,
                 t!("cargo.target_cfg_query_error", { target: target })?,
             )
             .with_detail(String::from_utf8_lossy(&output.stderr).trim().to_owned()));
@@ -206,7 +229,7 @@ impl TargetConfiguration {
                 configured.as_str().map(str::to_owned).ok_or_else(|| {
                     match t!("cargo.config_target_type", { path: path_display.as_str() }) {
                         Ok(message) => {
-                            CargoError::from_localized(ToolErrorKind::CargoMetadata, message)
+                            CargoError::from_localized(ToolErrorKind::Configuration, message)
                         }
                         Err(error) => CargoFailure::Render(error),
                     }

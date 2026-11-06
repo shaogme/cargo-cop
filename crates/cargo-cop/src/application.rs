@@ -45,8 +45,8 @@ struct CliOptions {
     workspace: bool,
     #[arg(short = 'p', long = "package", action = ArgAction::Append, value_name = "NAME")]
     packages: Vec<String>,
-    #[arg(long, value_name = "TRIPLE")]
-    target: Option<String>,
+    #[arg(long, action = ArgAction::Append, value_name = "TRIPLE")]
+    target: Vec<String>,
     #[arg(long, value_delimiter = ',', action = ArgAction::Append, value_name = "LIST")]
     features: Vec<String>,
     #[arg(long = "cfg", action = ArgAction::Append, value_name = "CFG")]
@@ -558,7 +558,12 @@ impl Application {
             .with_workspace(options.workspace)
             .with_packages(options.packages.clone())
             .with_all_targets(scan.target_scope() == ScanTargetScope::All)
-            .with_target(scan.target().map(str::to_owned))
+            .with_target_triples(scan.target_triples().map(<[String]>::to_vec))
+            .with_target_triples_error_kind(if options.target.is_empty() {
+                ToolErrorKind::Configuration
+            } else {
+                ToolErrorKind::Arguments
+            })
             .with_cfg_overrides(configuration.cfg_overrides().to_vec())
             .with_current_directory(current_directory);
         let project =
@@ -572,7 +577,11 @@ impl Application {
 
     fn config_overrides(options: &CliOptions) -> Result<ConfigOverrides, ApplicationFailure> {
         let mut overrides = ConfigOverrides::default()
-            .with_target(options.target.clone())
+            .with_target_triples(if options.target.is_empty() {
+                None
+            } else {
+                Some(options.target.clone())
+            })
             .with_features(if options.features.is_empty() {
                 None
             } else {

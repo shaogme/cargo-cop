@@ -56,6 +56,7 @@ fn compare_diagnostics(left: &Diagnostic, right: &Diagnostic, workspace_root: &P
         .cmp(&display_path(right.package_manifest_path(), workspace_root))
         .then_with(|| left.target_kind().cmp(right.target_kind()))
         .then_with(|| left.target().cmp(&right.target()))
+        .then_with(|| left.target_triple().cmp(&right.target_triple()))
         .then_with(|| {
             display_path(left.span().map(|span| span.path()), workspace_root).cmp(&display_path(
                 right.span().map(|span| span.path()),
@@ -105,7 +106,14 @@ fn render_human(
             heading.push_str(&format!(" {package}"));
         }
         if let Some(target) = diagnostic.target() {
-            heading.push_str(&format!(" ({target})"));
+            heading.push_str(&format!(" ({target}"));
+            if !diagnostic.target_kind().is_empty() {
+                heading.push_str(&format!(" [{}]", diagnostic.target_kind().join(", ")));
+            }
+            if let Some(target_triple) = diagnostic.target_triple() {
+                heading.push_str(&format!(" on {target_triple}"));
+            }
+            heading.push(')');
         }
         if let Some(span) = diagnostic.span() {
             heading.push_str(&format!(
@@ -183,6 +191,7 @@ fn diagnostic_json(diagnostic: &Diagnostic, workspace_root: &Path) -> Value {
         }),
         "target": diagnostic.target(),
         "target_kind": diagnostic.target_kind(),
+        "target_triple": diagnostic.target_triple(),
         "path": span.map(|value| display_path(Some(value.path()), workspace_root)),
         "start": span.map(|value| json!({
             "line": value.start_line(),
@@ -269,6 +278,7 @@ mod tests {
                 .with_package_manifest_path("/workspace/Cargo.toml")
                 .with_target("sample")
                 .with_target_kind(vec!["lib".to_owned()])
+                .with_target_triple("x86_64-unknown-linux-gnu")
                 .with_span(span),
         )
     }
@@ -296,9 +306,10 @@ mod tests {
             .as_array()
             .ok_or("JSON diagnostics must be an array")?;
 
-        assert_eq!(report["schema_version"], 4);
+        assert_eq!(report["schema_version"], 5);
         assert_eq!(report["locale"], "zh-CN");
         assert_eq!(diagnostics[0]["path"], "src/a.rs");
+        assert_eq!(diagnostics[0]["target_triple"], "x86_64-unknown-linux-gnu");
         assert_eq!(diagnostics[0]["start"]["line"], 1);
         assert_eq!(diagnostics[1]["start"]["line"], 7);
         assert_eq!(diagnostics[2]["path"], "src/z.rs");

@@ -29,7 +29,7 @@ pub struct ResolvedConfig {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ConfigOverrides {
-    target: Option<String>,
+    target_triples: Option<Vec<String>>,
     features: Option<Vec<String>>,
     all_features: bool,
     no_default_features: bool,
@@ -88,8 +88,8 @@ impl ResolvedConfig {
 }
 
 impl ConfigOverrides {
-    pub fn with_target(mut self, target: Option<String>) -> Self {
-        self.target = target;
+    pub fn with_target_triples(mut self, target_triples: Option<Vec<String>>) -> Self {
+        self.target_triples = target_triples;
         self
     }
 
@@ -142,8 +142,8 @@ impl ConfigResolver {
         if overrides.all_targets {
             scan.set_target_scope(ScanTargetScope::All);
         }
-        if let Some(target) = overrides.target {
-            scan.set_target(target);
+        if let Some(target_triples) = overrides.target_triples {
+            scan.set_target_triples(target_triples);
         }
         if let Some(features) = overrides.features {
             scan.set_features(features);
@@ -218,7 +218,7 @@ mod tests {
         let path = directory.join("cargo-cop.toml");
         fs::write(
             &path,
-            "version = 3\n\n[[cfg]]\npackage = \"sample\"\nname = \"custom_mode\"\nvalue = \"file\"\n\n[[cfg]]\nname = \"other_mode\"\n",
+            "version = 4\n\n[[cfg]]\npackage = \"sample\"\nname = \"custom_mode\"\nvalue = \"file\"\n\n[[cfg]]\nname = \"other_mode\"\n",
         )
         .expect("写入配置");
         let config = ConfigLoader::load(ConfigRequest::new(

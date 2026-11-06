@@ -104,7 +104,7 @@ message config.parse_error = "Could not parse configuration file {path}";
 message config.invalid_root = "The root of configuration file {path} must be a TOML table";
 message config.version_type = "Field version in configuration file {path} must be an integer";
 message config.unsupported_version = "Configuration file {path} uses unsupported version {version}; the supported version is {supported}";
-message config.invalid_field = "Field {field} in configuration file {path}: {reason, select, unknown_field {unknown field} must_be_table {must be a table} must_be_string {must be a string} must_be_nonempty_string {must be a non-empty string} must_be_string_array {must be an array of strings} must_be_boolean {must be a boolean} must_be_array_of_tables {must be an array of tables} invalid_cfg_name {invalid cfg name} unknown_rule_id {unknown rule ID} unknown_severity {unknown severity {value}} unknown_value {unknown value {value}} duplicate {duplicate value {value}} invalid {invalid value} other {invalid value}}";
+message config.invalid_field = "Field {field} in configuration file {path}: {reason, select, unknown_field {unknown field} must_be_table {must be a table} must_be_string {must be a string} must_be_nonempty_string {must be a non-empty string} must_be_string_array {must be an array of strings} must_be_nonempty_string_array {must be a non-empty array of non-empty strings} must_be_boolean {must be a boolean} must_be_array_of_tables {must be an array of tables} invalid_cfg_name {invalid cfg name} unknown_rule_id {unknown rule ID} unknown_severity {unknown severity {value}} unknown_value {unknown value {value}} duplicate {duplicate value {value}} invalid {invalid value} other {invalid value}}";
 message locale.invalid_cli = "Invalid --locale value: {locale}";
 message locale.invalid_config = "Invalid [i18n].locale configuration value: {locale}";
 message cargo.error = "Cargo operation failed";
@@ -122,6 +122,7 @@ message cargo.feature_not_declared = "None of the selected packages declares fea
 message cargo.config_target_type = "Cargo configuration {path} must set build.target to a string";
 message cargo.target_cfg_invalid = "Could not parse Cargo target condition {condition}";
 message cargo.target_cfg_query_error = "Could not query cfg values for target {target}";
+message cargo.target_triple_empty = "Target triple must not be empty: {target}";
 message cargo.manifest_unavailable = "Could not access manifest {path}";
 message cargo.host_triple_missing = "rustc -vV output is missing the host triple";
 message cli.argument_error = "Invalid command-line arguments";
@@ -139,7 +140,7 @@ Options:
   --manifest-path <PATH>    Path to Cargo.toml
   --workspace               Scan the entire workspace
   -p, --package <NAME>      Select packages to scan; may be repeated
-  --target <TRIPLE>         Target triple to scan
+  --target <TRIPLE>         Target triple to scan (repeatable)
   --features <LIST>         Enable comma-separated features
   --cfg <CFG>               Add a custom cfg flag or key/value; may be repeated
   --all-features            Enable all features

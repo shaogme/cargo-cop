@@ -2,12 +2,12 @@
 
 [English](config.md) · [项目 README](../README_CN.md)
 
-`cargo-cop` 可选读取名为 `cargo-cop.toml` 的 TOML 配置文件，配置 schema 版本为 `3`。未知字段、规则 ID、取值以及重复条目都会报错，不会被静默忽略。
+`cargo-cop` 可选读取名为 `cargo-cop.toml` 的 TOML 配置文件，配置 schema 版本为 `4`。未知字段、规则 ID、取值以及重复条目都会报错，不会被静默忽略。
 
 ## 示例
 
 ```toml
-version = 3
+version = 4
 allow_warnings = false
 
 [i18n]
@@ -15,7 +15,7 @@ locale = "zh-CN"
 
 [scan]
 targets = "default"
-target = "host"
+target_triples = ["host"]
 features = ["serde", "logging"]
 default_features = true
 
@@ -47,7 +47,7 @@ severity = "error"
 - 命令行设置覆盖对应 TOML 设置；TOML 设置覆盖内置默认值。
 - 配置不改变 manifest 和 package 的选择；请用 `--manifest-path`、`--workspace` 和 `--package` 等 CLI 选项设置扫描范围。
 
-配置文件必须包含整数 `version = 3`。顶层只允许 `version`、`allow_warnings`、`i18n`、`scan`、`rules` 和 `cfg`。本文未列出的字段或表都会被拒绝。版本 2 配置须将版本号更新为 3；原有字段语义不变。
+配置文件必须包含整数 `version = 4`。顶层只允许 `version`、`allow_warnings`、`i18n`、`scan`、`rules` 和 `cfg`。本文未列出的字段或表都会被拒绝。版本 3 配置须将版本号更新为 4，并将 `[scan].target` 改为 `[scan].target_triples` 字符串数组；旧字段不会自动迁移。
 
 可用 [`cargo cop --list-rules`](../README_CN.md#命令行选项) 或 `cargo cop --explain-rule <ID>` 查看内置规则目录。这些静态查询不会读取本文配置文件或其他项目配置；语言由 `--locale` 或环境变量选择，显示的默认值是工具内置默认值。
 
@@ -55,11 +55,11 @@ severity = "error"
 
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `version` | 整数 | 必填 | 必须是 `3`。 |
+| `version` | 整数 | 必填 | 必须是 `4`。 |
 | `allow_warnings` | 布尔值 | `false` | 设为 `true` 时，warning 诊断不会出现在诊断列表中，并计入 `summary.suppressed_warnings`；error 仍会显示。此设置同时作用于规则 warning 和分析 warning。 |
 | `[i18n].locale` | 非空字符串 | 环境语言；除非明确识别为 `zh`，否则使用英文 | 诊断和报告语言。使用 `en-US` 或 `zh-CN`。命令行 `--locale` 优先。 |
 | `[scan].targets` | `"default"` 或 `"all"` | `"default"` | 选择默认 `lib`/`bin`/`proc-macro` targets，或全部 Cargo targets。命令行 `--all-targets` 会选择 `all`。 |
-| `[scan].target` | 非空字符串 | 未设置 | Target triple，或使用 `"host"` 选择 host triple。命令行 `--target` 优先。 |
+| `[scan].target_triples` | 非空且不重复的字符串数组 | 未设置 | 一个或多个 target triple；`"host"` 表示 host triple。空数组和空字符串无效。重复的 CLI `--target` 会整体替代此列表。 |
 | `[scan].features` | 非空且不重复的字符串数组 | `[]` | 为所选根 package 请求启用的 features。若提供命令行 `--features`，命令行列表会替代此列表。 |
 | `[scan].default_features` | 布尔值 | `true` | 是否启用所选根 package 的 `default` feature。命令行 `--no-default-features` 可以将其关闭。 |
 | `[[cfg]]` | 表数组 | `[]` | 为 `cfg!`、`#[cfg]`、`cfg_attr` 和 target-specific dependency 提供自定义 cfg 值。每项支持 `package`、`target`、`name` 和可选 `value`。 |
@@ -84,7 +84,7 @@ severity = "warning"
 
 `module_file_layout`、`no_lint_relaxation`、`item_spacing`、`child_module_visibility`、`no_parent_path_attribute`、`no_parent_private_dependency`、`child_module_line_count`、`impl_locality`、`trait_impl_locality`、`private_fields_for_behavior_types`、`unnecessary_pub_crate`、`child_public_free_functions`、`declaration_before_use`、`parameter_limit`、`tuple_arity`、`no_inline_qualified_path`、`merge_common_prefix_imports`、`extern_crate_at_scope_start`、`imports_at_scope_start`、`out_of_line_modules_at_scope_start`、`cfg_use_group_spacing`、`cfg_inside_use_tree`。
 
-原来的 `private_child_modules` ID 已替换为 `child_module_visibility`。请将 `[rules.private_child_modules]`、`--disable-rule private_child_modules` 和 `--severity private_child_modules=...` 改用新 ID。配置 schema 版本为 `3`。
+原来的 `private_child_modules` ID 已替换为 `child_module_visibility`。请将 `[rules.private_child_modules]`、`--disable-rule private_child_modules` 和 `--severity private_child_modules=...` 改用新 ID。配置 schema 版本为 `4`。
 
 规则诊断可以关闭或改为 `warning`。工具错误和分析问题不属于规则，因此规则设置不能隐藏它们。即使 `allow_warnings = true` 隐藏了分析 warning，整体扫描状态仍可能是 `partial`。
 
@@ -92,15 +92,15 @@ severity = "warning"
 
 `[scan].targets = "default"` 时，`cargo-cop` 选择 `lib`、`bin` 和 `proc-macro` targets。设为 `"all"` 后，还会选择 Cargo metadata 声明的其他 targets，例如 examples、tests、benches 和 build scripts。未启用 `required-features` 的 target 会被跳过。
 
-Target 的解析顺序如下：
+Target triple 的解析顺序如下：
 
 1. CLI `--target`。
-2. `[scan].target`。
+2. `[scan].target_triples`。
 3. `CARGO_BUILD_TARGET`。
 4. Cargo `build.target` 配置。
 5. `rustc -vV` 报告的 host triple。
 
-proc-macro 和 build-script targets 使用 host triple。配置值 `"host"` 可显式选择 host triple。
+CLI 可重复指定 `--target <TRIPLE>` 扫描多个平台；至少指定一次时，CLI 列表会整体替代配置列表。未指定 triple 时，依次使用 `CARGO_BUILD_TARGET`、Cargo `build.target` 和 host triple。`"host"` 可作为列表项显式选择 host triple。proc-macro 和 build-script targets 只使用 host triple，并在同一 host 上下文合并分析。
 
 Feature 请求根据 Cargo metadata 中的 feature 定义和依赖声明解析。解析器会处理 default 和 all features、可选依赖、依赖 feature 请求、target-specific 依赖，以及所选 workspace package 之间的 feature 传递。未限定 package 的 feature 名会应用于声明了该 feature 的所选 package；`PACKAGE/FEATURE` 可指定某个 package。限定 package 的 feature 必须属于已选 package。
 
@@ -113,7 +113,7 @@ Feature 请求根据 Cargo metadata 中的 feature 定义和依赖声明解析�
 未找到配置文件时，有效默认值如下：
 
 ```toml
-version = 3
+version = 4
 allow_warnings = false
 
 [scan]
@@ -122,7 +122,7 @@ features = []
 default_features = true
 ```
 
-默认不设置 `scan.target`，由 Cargo 环境/配置或 host triple 决定 target。仓库自身的 `cargo-cop.toml` 设置了 `allow_warnings = true`；这是本仓库的选择，不是内置默认值。
+默认不设置 `scan.target_triples`，由 Cargo 环境/配置或 host triple 决定 target。仓库自身的 `cargo-cop.toml` 设置了 `allow_warnings = true`；这是本仓库的选择，不是内置默认值。
 
 ## 无效配置
 

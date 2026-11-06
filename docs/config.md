@@ -2,12 +2,12 @@
 
 [简体中文](config_CN.md) · [Project README](../README.md)
 
-`cargo-cop` reads an optional TOML configuration file named `cargo-cop.toml`. Configuration has schema version `3`. Unknown fields, rule IDs, values, and duplicate entries are errors; they are not silently ignored.
+`cargo-cop` reads an optional TOML configuration file named `cargo-cop.toml`. Configuration has schema version `4`. Unknown fields, rule IDs, values, and duplicate entries are errors; they are not silently ignored.
 
 ## Example
 
 ```toml
-version = 3
+version = 4
 allow_warnings = false
 
 [i18n]
@@ -15,7 +15,7 @@ locale = "en-US"
 
 [scan]
 targets = "default"
-target = "host"
+target_triples = ["host"]
 features = ["serde", "logging"]
 default_features = true
 
@@ -47,7 +47,7 @@ An omitted `[rules.<ID>]` entry keeps that rule enabled at `error` severity. Wit
 - Command-line settings override matching TOML settings. TOML settings override built-in defaults.
 - Configuration settings do not change manifest and package selection. Use CLI options such as `--manifest-path`, `--workspace`, and `--package` for that.
 
-The config file must contain the integer `version = 3`. The top-level fields are `version`, `allow_warnings`, `i18n`, `scan`, `rules`, and `cfg` only. Tables and fields not documented here are rejected. Version 2 files must update the version number to 3; existing fields keep their meaning.
+The config file must contain the integer `version = 4`. The top-level fields are `version`, `allow_warnings`, `i18n`, `scan`, `rules`, and `cfg` only. Tables and fields not documented here are rejected. Version 3 files must update the version number to 4 and replace `[scan].target` with a string array named `[scan].target_triples`; the old field is not migrated automatically.
 
 Use [`cargo cop --list-rules`](../README.md#command-line-options) or `cargo cop --explain-rule <ID>` to inspect the built-in rule catalog. These static queries do not read this configuration file or other project configuration; `--locale` or the environment selects their language, and the reported defaults are the built-in defaults.
 
@@ -55,11 +55,11 @@ Use [`cargo cop --list-rules`](../README.md#command-line-options) or `cargo cop 
 
 | Field | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `version` | integer | Required | Must be `3`. |
+| `version` | integer | Required | Must be `4`. |
 | `allow_warnings` | boolean | `false` | When `true`, warning diagnostics are omitted from the diagnostic list and counted in `summary.suppressed_warnings`. Errors remain visible. This applies to rule and analysis warnings. |
 | `[i18n].locale` | non-empty string | Environment locale; English unless it identifies the `zh` language | Diagnostic and report language. Use `en-US` or `zh-CN`. CLI `--locale` takes precedence. |
 | `[scan].targets` | `"default"` or `"all"` | `"default"` | Select default `lib`/`bin`/`proc-macro` targets, or all declared Cargo targets. CLI `--all-targets` selects `all`. |
-| `[scan].target` | non-empty string | Unset | Target triple, or `"host"` to use the host triple. CLI `--target` takes precedence. |
+| `[scan].target_triples` | array of unique non-empty strings | Unset | One or more target triples; `"host"` selects the host triple. Empty arrays and strings are invalid. Repeated CLI `--target` values replace this list. |
 | `[scan].features` | array of unique non-empty strings | `[]` | Features requested for selected root packages. CLI `--features` replaces this list when supplied. |
 | `[scan].default_features` | boolean | `true` | Whether selected root packages enable their `default` feature. CLI `--no-default-features` can turn this off. |
 | `[[cfg]]` | array of tables | `[]` | Custom cfg values shared by `cfg!`, `#[cfg]`, `cfg_attr`, and target-specific dependencies. Each entry accepts `package`, `target`, `name`, and optional `value`. |
@@ -84,7 +84,7 @@ Available IDs:
 
 `module_file_layout`, `no_lint_relaxation`, `item_spacing`, `child_module_visibility`, `no_parent_path_attribute`, `no_parent_private_dependency`, `child_module_line_count`, `impl_locality`, `trait_impl_locality`, `private_fields_for_behavior_types`, `unnecessary_pub_crate`, `child_public_free_functions`, `declaration_before_use`, `parameter_limit`, `tuple_arity`, `no_inline_qualified_path`, `merge_common_prefix_imports`, `extern_crate_at_scope_start`, `imports_at_scope_start`, `out_of_line_modules_at_scope_start`, `cfg_use_group_spacing`, and `cfg_inside_use_tree`.
 
-The former `private_child_modules` ID was replaced by `child_module_visibility`. Update `[rules.private_child_modules]`, `--disable-rule private_child_modules`, and `--severity private_child_modules=...` to use the new ID. The schema version is `3`.
+The former `private_child_modules` ID was replaced by `child_module_visibility`. Update `[rules.private_child_modules]`, `--disable-rule private_child_modules`, and `--severity private_child_modules=...` to use the new ID. The schema version is `4`.
 
 Rule diagnostics can be disabled or changed to `warning`. Tool errors and analysis issues are not rules, so rule settings cannot hide them. An analysis warning can still make the overall scan status `partial` even when `allow_warnings = true` suppresses it from the printed diagnostic list.
 
@@ -92,15 +92,15 @@ Rule diagnostics can be disabled or changed to `warning`. Tool errors and analys
 
 When `[scan].targets` is `"default"`, `cargo-cop` selects `lib`, `bin`, and `proc-macro` targets. `"all"` also selects other targets declared in Cargo metadata, such as examples, tests, benches, and build scripts. Targets whose `required-features` are not enabled are skipped.
 
-Target resolution order is:
+Target triple resolution order is:
 
 1. CLI `--target`.
-2. `[scan].target`.
+2. `[scan].target_triples`.
 3. `CARGO_BUILD_TARGET`.
 4. Cargo `build.target` configuration.
 5. The host triple reported by `rustc -vV`.
 
-For proc-macro and build-script targets, the host triple is used. A configured target value of `"host"` explicitly selects the host triple.
+Repeat `--target <TRIPLE>` to scan multiple platforms; one or more CLI values replace the configured list. When no triple is specified, the tool checks `CARGO_BUILD_TARGET`, Cargo's `build.target`, then the host triple. `"host"` can explicitly select the host triple in the list. Proc-macro and build-script targets use only the host triple and share one host analysis context.
 
 Feature requests are resolved using feature definitions and dependency declarations from Cargo metadata. The resolver handles default and all features, optional dependencies, dependency feature requests, target-specific dependencies, and feature propagation among selected workspace packages. Unqualified feature names apply to selected packages that declare them; `PACKAGE/FEATURE` can target a particular selected package. A package-qualified feature must name a selected package.
 
@@ -113,7 +113,7 @@ In `[[cfg]]`, `name` is the cfg flag or key and `value` is its optional string v
 If no config file is found, the effective defaults are:
 
 ```toml
-version = 3
+version = 4
 allow_warnings = false
 
 [scan]
@@ -122,7 +122,7 @@ features = []
 default_features = true
 ```
 
-`scan.target` is unset by default, so Cargo environment/configuration or the host triple determines the target. The repository's checked-in `cargo-cop.toml` sets `allow_warnings = true`; this is a repository choice, not the built-in default.
+`scan.target_triples` is unset by default, so Cargo environment/configuration or the host triple determines the target. The repository's checked-in `cargo-cop.toml` sets `allow_warnings = true`; this is a repository choice, not the built-in default.
 
 ## Invalid configuration
 
