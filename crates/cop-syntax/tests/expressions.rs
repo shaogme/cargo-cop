@@ -1,11 +1,24 @@
 use cop_syntax::{
-    CoverageStatus, ExpressionSyntaxKind, ExpressionUnsupportedKind, MacroInputStatus,
-    ParseIssueCode, ParseIssueKind, ParseOptions, ParseOutput, RustParser, SourceFile,
-    StatementSyntaxKind, SyntaxNodeKind, TypeSyntaxKind, UnaryOperator,
+    CoverageStatus, ExpressionBlockKind, ExpressionSyntax, ExpressionSyntaxKind,
+    ExpressionUnsupportedKind, MacroInputStatus, ParseIssueCode, ParseIssueKind, ParseOptions,
+    ParseOutput, RustParser, SourceFile, StatementSyntaxKind, SyntaxNodeKind, TypeSyntaxKind,
+    UnaryOperator,
 };
 
 fn parse(source: SourceFile) -> ParseOutput {
     RustParser::parse(source, ParseOptions::default()).expect("catalog messages render")
+}
+
+fn expression_with_text<'a>(parsed: &'a ParseOutput, expected: &str) -> &'a ExpressionSyntax {
+    parsed
+        .syntax_nodes()
+        .iter()
+        .filter_map(|node| node.expression_syntax())
+        .find(|expression| {
+            let bounds = expression.bounds();
+            parsed.source().slice(bounds.start, bounds.end) == Some(expected)
+        })
+        .expect("源码范围对应的表达式语法节点")
 }
 
 #[test]
@@ -509,6 +522,91 @@ fn retains_closure_parameter_and_return_types_with_parameter_attributes() {
                 .filter_map(|id| parsed.node(*id))
                 .any(|child| child.kind() == SyntaxNodeKind::Statement)
     }));
+}
+
+#[test]
+fn parses_async_closure_prefixes_without_misclassifying_async_blocks() {
+    let text = r#"
+fn inspect() {
+    let async_closure = async |value: u8| value;
+    let async_move_closure = async move |value: u8| value;
+    let async_zero = async || {};
+    let async_move_zero = async move || {};
+    let async_block = async {};
+    let async_move_block = async move {};
+    let block_with_closure = async { |value| value };
+    let move_block_with_closure = async move { || {} };
+    let ordinary_move = move |value| value;
+}
+"#;
+    let parsed = parse(SourceFile::new("src/async_closures.rs", text));
+
+    assert_eq!(
+        parsed.coverage(),
+        CoverageStatus::Complete,
+        "{:?}",
+        parsed.issues()
+    );
+    assert!(parsed.issues().is_empty(), "{:?}", parsed.issues());
+
+    let assert_closure = |source: &str,
+                          expected_async: bool,
+                          expected_move: bool,
+                          expected_parameter_count: usize| {
+        let expression = expression_with_text(&parsed, source);
+        let ExpressionSyntaxKind::Closure {
+            is_async,
+            is_move,
+            parameters,
+            ..
+        } = expression.kind()
+        else {
+            panic!("应解析为闭包：{source}: {:?}", expression.kind());
+        };
+        assert_eq!(*is_async, expected_async, "{source}");
+        assert_eq!(*is_move, expected_move, "{source}");
+        assert_eq!(parameters.len(), expected_parameter_count, "{source}");
+        if let Some(parameter) = parameters.first() {
+            assert!(parameter.pattern().is_binding(), "{source}");
+            let bounds = parameter.pattern().bounds();
+            assert_eq!(
+                parsed.source().slice(bounds.start, bounds.end),
+                Some("value")
+            );
+        }
+    };
+
+    assert_closure("async |value: u8| value", true, false, 1);
+    assert_closure("async move |value: u8| value", true, true, 1);
+    assert_closure("async || {}", true, false, 0);
+    assert_closure("async move || {}", true, true, 0);
+    assert_closure("|value| value", false, false, 1);
+    assert_closure("|| {}", false, false, 0);
+    assert_closure("move |value| value", false, true, 1);
+
+    for source in ["async |value: u8| value", "async move |value: u8| value"] {
+        let ExpressionSyntaxKind::Closure { parameters, .. } =
+            expression_with_text(&parsed, source).kind()
+        else {
+            unreachable!();
+        };
+        assert!(parameters[0].ty().is_some(), "{source}");
+    }
+
+    for source in [
+        "async {}",
+        "async move {}",
+        "async { |value| value }",
+        "async move { || {} }",
+    ] {
+        assert!(matches!(
+            expression_with_text(&parsed, source).kind(),
+            ExpressionSyntaxKind::Block {
+                kind: ExpressionBlockKind::Async,
+                ..
+            }
+        ));
+    }
 }
 
 #[test]

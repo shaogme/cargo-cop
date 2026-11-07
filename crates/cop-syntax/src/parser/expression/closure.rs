@@ -132,7 +132,7 @@ impl ClosureParser {
     ) -> Result<ExpressionSyntax, SyntaxError> {
         cursor.consume_identifier("async");
         let is_move = cursor.consume_identifier("move");
-        if Self::next_is_closure(cursor) {
+        if Self::is_closure_token(cursor.peek()) {
             return Self::parse(
                 source,
                 cursor,
@@ -159,9 +159,7 @@ impl ClosureParser {
     }
 
     pub(super) fn is_closure_start(cursor: &TokenCursor<'_>) -> bool {
-        cursor
-            .peek_n(1)
-            .is_some_and(|token| matches!(token.kind(), TokenKind::Punctuation(value) if value == "|" || value == "||"))
+        Self::is_closure_token(cursor.peek_n(1))
     }
 
     fn find_closure_pipe(cursor: &TokenCursor<'_>) -> Option<usize> {
@@ -182,9 +180,9 @@ impl ClosureParser {
         None
     }
 
-    fn next_is_closure(cursor: &TokenCursor<'_>) -> bool {
-        cursor
-            .peek_n(1)
-            .is_some_and(|token| matches!(token.kind(), TokenKind::Punctuation(value) if value == "|" || value == "||"))
+    fn is_closure_token(token: Option<&Token>) -> bool {
+        token.is_some_and(|token| {
+            matches!(token.kind(), TokenKind::Punctuation(value) if value == "|" || value == "||")
+        })
     }
 }
