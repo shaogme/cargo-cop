@@ -27,7 +27,7 @@ use crate::{
     Delimiter, RustEdition, SourceFile, Token, TokenKind,
 };
 
-use super::super::token_cursor::TokenCursor;
+use super::super::token_cursor::{AngleScanContext, CursorRange, TokenCursor};
 
 pub(crate) struct ParserContext<'source, 'state> {
     pub(super) source: &'source SourceFile,
@@ -184,18 +184,23 @@ impl ItemSyntaxParser {
             context.ast_nodes,
             context.issues,
         );
-        let signature_cursor = TokenCursor::new(context.tokens, parameter_close + 1..signature_end)
-            .expect("函数签名 token 范围有效");
+        let signature_cursor =
+            TokenCursor::from_token_range(context.tokens, parameter_close + 1..signature_end)
+                .expect("函数签名 token 范围有效");
         let where_start = signature_cursor
-            .find_top_level_identifier("where")
+            .find_top_level_identifier("where", AngleScanContext::Header)
             .unwrap_or(signature_end);
-        if let Some(arrow) = TokenCursor::new(context.tokens, parameter_close + 1..where_start)
-            .and_then(|cursor| cursor.find_top_level_punctuation("->"))
+        if let Some(arrow) =
+            TokenCursor::from_token_range(context.tokens, parameter_close + 1..where_start)
+                .and_then(|cursor| {
+                    cursor.find_top_level_punctuation("->", AngleScanContext::Header)
+                })
         {
             if arrow + 1 < where_start {
                 TypeParser::collect_prefix(TypeInput {
                     tokens: context.tokens,
-                    bounds: arrow + 1..where_start,
+                    bounds: CursorRange::from_token_range(context.tokens, arrow + 1..where_start)
+                        .expect("函数返回类型范围有效"),
                     parent,
                     ast_nodes: context.ast_nodes,
                     issues: context.issues,

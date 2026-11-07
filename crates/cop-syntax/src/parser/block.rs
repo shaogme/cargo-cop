@@ -393,7 +393,7 @@ impl BlockParser {
     }
 
     fn recover_statement(tokens: &[Token], start: usize, end: usize) -> usize {
-        let Some(mut cursor) = TokenCursor::new(tokens, start..end) else {
+        let Some(mut cursor) = TokenCursor::from_token_range(tokens, start..end) else {
             return start.saturating_add(1).min(end);
         };
         cursor.recover_to(&[";"]);

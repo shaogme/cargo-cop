@@ -19,6 +19,7 @@ pub use cop_cfg::CfgCondition;
 pub use facts::{
     AnalysisFacts, AnalysisReference, ApiDependency, CfgMacroFact, CoverageRegion,
     CoverageRegionKind, DeclarationFact, ImplOwnerRecord, ModuleId, ReferenceId, ReferenceKind,
+    TypeAliasFact,
 };
 pub use module_graph::{ConfiguredAttribute, ModuleNode};
 pub use symbol_index::{

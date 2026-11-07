@@ -5,7 +5,7 @@ use cop_i18n::{t, RenderError};
 use super::{
     attributes::AttributeParser,
     expression::{SyntaxCollector, SyntaxRequest},
-    token_cursor::TokenCursor,
+    token_cursor::{AngleScanContext, CursorRange, TokenCursor},
     types::{TypeInput, TypeParser},
     where_clause::{WhereClauseInput, WhereClauseParser},
 };
@@ -173,7 +173,22 @@ impl DeclarationParser {
         let Some(close) = Recovery::matching_delimiter(context.tokens, open) else {
             return;
         };
-        Recovery::split_top_level(context.tokens, open + 1, close, ",")
+        let Some(variants) = Recovery::split_top_level(
+            context.tokens,
+            open + 1,
+            close,
+            ",",
+            AngleScanContext::Expression,
+        ) else {
+            Self::push_issue(
+                context.issues,
+                ParseIssueKind::UnexpectedToken,
+                context.tokens[open].start()..context.tokens[close].end(),
+                t!("syntax.item_unsupported"),
+            );
+            return;
+        };
+        variants
             .into_iter()
             .filter(|range| range.start < range.end)
             .for_each(|range| {
@@ -244,7 +259,24 @@ impl DeclarationParser {
         end: usize,
         parent: AstNodeId,
     ) {
-        Recovery::split_top_level(context.tokens, start, end, ",")
+        let Some(fields) =
+            Recovery::split_top_level(context.tokens, start, end, ",", AngleScanContext::Type)
+        else {
+            if let (Some(first), Some(last)) = (
+                context.tokens.get(start),
+                end.checked_sub(1)
+                    .and_then(|index| context.tokens.get(index)),
+            ) {
+                Self::push_issue(
+                    context.issues,
+                    ParseIssueKind::UnexpectedToken,
+                    first.start()..last.end(),
+                    t!("syntax.item_unsupported"),
+                );
+            }
+            return;
+        };
+        fields
             .into_iter()
             .filter(|range| range.start < range.end)
             .for_each(|range| {
@@ -279,15 +311,19 @@ impl DeclarationParser {
                     bounds.clone(),
                     attributes.clone(),
                 );
-                let field_cursor = TokenCursor::new(context.tokens, cursor..range.end)
+                let field_cursor = TokenCursor::from_token_range(context.tokens, cursor..range.end)
                     .expect("字段 token 范围有效");
                 let type_start = field_cursor
-                    .find_top_level_punctuation(":")
+                    .find_top_level_punctuation(":", AngleScanContext::Header)
                     .map_or(cursor, |colon| colon + 1);
                 if type_start < range.end {
                     TypeParser::collect(TypeInput {
                         tokens: context.tokens,
-                        bounds: type_start..range.end,
+                        bounds: CursorRange::from_token_range(
+                            context.tokens,
+                            type_start..range.end,
+                        )
+                        .expect("字段类型范围有效"),
                         parent: field_id,
                         ast_nodes: context.ast_nodes,
                         issues: context.issues,
@@ -318,36 +354,18 @@ impl DeclarationParser {
         keyword: &str,
         tail: &Range<usize>,
     ) -> Option<(usize, usize)> {
-        let mut angle_depth = 0usize;
-        let mut index = tail.start;
-        while index < tail.end {
-            match tokens[index].kind() {
-                TokenKind::Punctuation(value) if value == "<" => angle_depth += 1,
-                TokenKind::Punctuation(value) if value == ">" => {
-                    angle_depth = angle_depth.saturating_sub(1);
-                }
-                TokenKind::Punctuation(value) if value == ">>" => {
-                    angle_depth = angle_depth.saturating_sub(2);
-                }
-                TokenKind::OpenDelimiter(Delimiter::Brace) if angle_depth == 0 => {
-                    let close = Recovery::matching_delimiter(tokens, index)?;
-                    return Some((index, close));
-                }
-                TokenKind::OpenDelimiter(Delimiter::Parenthesis)
-                    if angle_depth == 0 && keyword == "struct" =>
-                {
-                    let close = Recovery::matching_delimiter(tokens, index)?;
-                    return Some((index, close));
-                }
-                TokenKind::OpenDelimiter(_) => {
-                    index = Recovery::matching_delimiter(tokens, index)? + 1;
-                    continue;
-                }
-                _ => {}
-            }
-            index += 1;
-        }
-        None
+        let cursor = TokenCursor::from_token_range(tokens, tail.clone())?;
+        let open = cursor
+            .find_top_level_open_delimiter(Delimiter::Brace, AngleScanContext::Header)
+            .or_else(|| {
+                (keyword == "struct").then(|| {
+                    cursor.find_top_level_open_delimiter(
+                        Delimiter::Parenthesis,
+                        AngleScanContext::Header,
+                    )
+                })?
+            })?;
+        Some((open, Recovery::matching_delimiter(tokens, open)?))
     }
 
     fn collect_where_clause(
@@ -375,12 +393,17 @@ impl DeclarationParser {
                 |(open, _)| open,
             ),
             "enum" => Self::declaration_body_open(context.tokens, tail.clone()).unwrap_or(tail.end),
-            "type" => TokenCursor::new(context.tokens, tail.clone()).map_or(tail.end, |cursor| {
-                cursor
-                    .find_top_level_punctuation("=")
-                    .or_else(|| cursor.find_top_level_punctuation(";"))
-                    .unwrap_or(tail.end)
-            }),
+            "type" => TokenCursor::from_token_range(context.tokens, tail.clone()).map_or(
+                tail.end,
+                |cursor| {
+                    cursor
+                        .find_top_level_punctuation("=", AngleScanContext::Header)
+                        .or_else(|| {
+                            cursor.find_top_level_punctuation(";", AngleScanContext::Header)
+                        })
+                        .unwrap_or(tail.end)
+                },
+            ),
             _ => return,
         };
         Self::collect_where_range(context, tail.start..header_end, parent);
@@ -418,29 +441,8 @@ impl DeclarationParser {
     }
 
     fn declaration_body_open(tokens: &[Token], tail: Range<usize>) -> Option<usize> {
-        let mut angle_depth = 0usize;
-        let mut index = tail.start;
-        while index < tail.end {
-            match tokens[index].kind() {
-                TokenKind::Punctuation(value) if value == "<" => angle_depth += 1,
-                TokenKind::Punctuation(value) if value == ">" => {
-                    angle_depth = angle_depth.saturating_sub(1);
-                }
-                TokenKind::Punctuation(value) if value == ">>" => {
-                    angle_depth = angle_depth.saturating_sub(2);
-                }
-                TokenKind::OpenDelimiter(Delimiter::Brace) if angle_depth == 0 => {
-                    return Some(index);
-                }
-                TokenKind::OpenDelimiter(_) => {
-                    index = Recovery::matching_delimiter(tokens, index)? + 1;
-                    continue;
-                }
-                _ => {}
-            }
-            index += 1;
-        }
-        None
+        TokenCursor::from_token_range(tokens, tail)?
+            .find_top_level_open_delimiter(Delimiter::Brace, AngleScanContext::Header)
     }
 
     fn skip_declaration_tail(
@@ -449,56 +451,50 @@ impl DeclarationParser {
         has_body: bool,
     ) -> Range<usize> {
         let start = *cursor;
-        let mut generic_depth = 0usize;
-        while *cursor < context.tokens.len() {
-            match context.tokens[*cursor].kind() {
-                TokenKind::Punctuation(value) if value == "<" => {
-                    generic_depth += 1;
-                    *cursor += 1;
-                }
-                TokenKind::Punctuation(value) if value == ">" => {
-                    generic_depth = generic_depth.saturating_sub(1);
-                    *cursor += 1;
-                }
-                TokenKind::Punctuation(value) if value == ">>" => {
-                    generic_depth = generic_depth.saturating_sub(2);
-                    *cursor += 1;
-                }
-                TokenKind::OpenDelimiter(Delimiter::Brace) if generic_depth == 0 && has_body => {
-                    if let Some(close_index) = Recovery::matching_delimiter(context.tokens, *cursor)
-                    {
-                        *cursor = close_index + 1;
-                        return start..*cursor;
-                    }
-                    *cursor = context.tokens.len();
-                    Self::push_issue(
-                        context.issues,
-                        ParseIssueKind::UnclosedDelimiter,
-                        context
-                            .tokens
-                            .get(start)
-                            .map_or(context.source.len(), Token::start)
-                            ..context.source.len(),
-                        t!("syntax.declaration_body_unclosed"),
-                    );
-                    return start..*cursor;
-                }
-                TokenKind::OpenDelimiter(_) => {
-                    if let Some(close_index) = Recovery::matching_delimiter(context.tokens, *cursor)
-                    {
-                        *cursor = close_index + 1;
-                    } else {
-                        *cursor += 1;
-                    }
-                }
-                TokenKind::Punctuation(value) if value == ";" => {
-                    *cursor += 1;
-                    return start..*cursor;
-                }
-                TokenKind::CloseDelimiter(Delimiter::Brace) => return start..*cursor,
-                _ => *cursor += 1,
+        let range = start..context.tokens.len();
+        let scan = TokenCursor::from_token_range(context.tokens, range.clone());
+        let body_open = has_body
+            .then(|| {
+                scan.as_ref().and_then(|cursor| {
+                    cursor
+                        .find_top_level_open_delimiter(Delimiter::Brace, AngleScanContext::Header)
+                        .or_else(|| {
+                            cursor.find_top_level_open_delimiter(
+                                Delimiter::Brace,
+                                AngleScanContext::TokenSequence,
+                            )
+                        })
+                })
+            })
+            .flatten();
+        let semicolon = scan.as_ref().and_then(|cursor| {
+            cursor
+                .find_top_level_punctuation(";", AngleScanContext::Header)
+                .or_else(|| cursor.find_top_level_punctuation(";", AngleScanContext::TokenSequence))
+        });
+        if let Some(open) = body_open.filter(|open| semicolon.is_none_or(|semi| *open < semi)) {
+            if let Some(close_index) = Recovery::matching_delimiter(context.tokens, open) {
+                *cursor = close_index + 1;
+                return start..*cursor;
             }
+            *cursor = context.tokens.len();
+            Self::push_issue(
+                context.issues,
+                ParseIssueKind::UnclosedDelimiter,
+                context
+                    .tokens
+                    .get(start)
+                    .map_or(context.source.len(), Token::start)
+                    ..context.source.len(),
+                t!("syntax.declaration_body_unclosed"),
+            );
+            return start..*cursor;
         }
+        if let Some(semicolon) = semicolon {
+            *cursor = semicolon + 1;
+            return start..*cursor;
+        }
+        *cursor = context.tokens.len();
         start..*cursor
     }
 
@@ -514,7 +510,7 @@ impl DeclarationParser {
         tail: Range<usize>,
         parent: AstNodeId,
     ) {
-        let Some(cursor) = TokenCursor::new(context.tokens, tail.clone()) else {
+        let Some(cursor) = TokenCursor::from_token_range(context.tokens, tail.clone()) else {
             return;
         };
         let declaration_end = if tail
@@ -527,12 +523,12 @@ impl DeclarationParser {
         } else {
             tail.end
         };
-        let equals = cursor.find_top_level_punctuation("=");
+        let equals = cursor.find_top_level_punctuation("=", AngleScanContext::Header);
         let where_start = cursor
-            .find_top_level_identifier("where")
+            .find_top_level_identifier("where", AngleScanContext::Header)
             .unwrap_or(declaration_end);
-        let colon = TokenCursor::new(context.tokens, tail.start..where_start)
-            .and_then(|cursor| cursor.find_top_level_punctuation(":"));
+        let colon = TokenCursor::from_token_range(context.tokens, tail.start..where_start)
+            .and_then(|cursor| cursor.find_top_level_punctuation(":", AngleScanContext::Header));
         let type_bounds = match keyword {
             "type" => colon.and_then(|index| {
                 let bound_end = equals.unwrap_or(where_start).min(where_start);
@@ -543,7 +539,8 @@ impl DeclarationParser {
         if let Some(bounds) = type_bounds {
             TypeParser::collect_bounds(TypeInput {
                 tokens: context.tokens,
-                bounds,
+                bounds: CursorRange::from_token_range(context.tokens, bounds)
+                    .expect("trait bound 范围有效"),
                 parent,
                 ast_nodes: context.ast_nodes,
                 issues: context.issues,
@@ -560,7 +557,8 @@ impl DeclarationParser {
         if let Some(bounds) = type_range.filter(|bounds| bounds.start < bounds.end) {
             let input = TypeInput {
                 tokens: context.tokens,
-                bounds,
+                bounds: CursorRange::from_token_range(context.tokens, bounds)
+                    .expect("声明类型范围有效"),
                 parent,
                 ast_nodes: context.ast_nodes,
                 issues: context.issues,

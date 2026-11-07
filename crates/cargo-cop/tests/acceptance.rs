@@ -5156,7 +5156,7 @@ fn checks_trait_impl_locality_by_repository_target_ownership() {
 
     assert_eq!(output.status, 1, "{}", output.stdout);
     let locality = rule_diagnostics(&output, "trait_impl_locality");
-    assert_eq!(locality.len(), 4, "{}", output.stdout);
+    assert_eq!(locality.len(), 5, "{}", output.stdout);
     assert!(locality.iter().any(|diagnostic| {
         diagnostic_message(diagnostic).contains("Target")
             && diagnostic_message(diagnostic).contains("outside the current module scope")
@@ -5190,6 +5190,134 @@ fn checks_trait_impl_locality_by_repository_target_ownership() {
             .any(|diagnostic| diagnostic["start"]["line"] == 12
                 && diagnostic["start"]["column"] == 26)
     );
+}
+
+#[test]
+fn accepts_external_trait_impl_with_local_generic_argument() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "Cargo.toml",
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[workspace]\nmembers = [\"veloq_std\"]\nresolver = \"2\"\n\n[dependencies]\nveloq_std = { path = \"veloq_std\" }\n",
+    );
+    fixture.write(
+        "src/lib.rs",
+        "use veloq_std::result::Result as StdResult;\n\npub enum Outcome<T, E> {\n    Ok(T),\n    Err(E),\n}\n\nimpl<T, E> From<Outcome<T, E>> for StdResult<T, E> {\n    fn from(outcome: Outcome<T, E>) -> Self {\n        match outcome {\n            Outcome::Ok(value) => Self::Ok(value),\n            Outcome::Err(error) => Self::Err(error),\n        }\n    }\n}\n",
+    );
+    fixture.write(
+        "veloq_std/Cargo.toml",
+        "[package]\nname = \"veloq_std\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    fixture.write(
+        "veloq_std/src/lib.rs",
+        "pub mod result {\n    pub type Result<T, E> = core::result::Result<T, E>;\n}\n",
+    );
+
+    let output = fixture.run(&["--format", "json", "--package", "app"]);
+
+    assert_eq!(output.status, 0, "{}", output.stdout);
+    assert!(rule_diagnostics(&output, "trait_impl_locality").is_empty());
+}
+
+#[test]
+fn resolves_trait_impl_anchors_through_orphan_order_and_generic_aliases() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "Cargo.toml",
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[workspace]\nmembers = [\"remote\"]\nresolver = \"2\"\n\n[dependencies]\nremote = { path = \"remote\" }\n",
+    );
+    fixture.write("src/lib.rs", "mod implementations;\nmod types;\n");
+    fixture.write(
+        "src/types.rs",
+        "pub struct Local<T>(T);\npub struct Marker;\npub type Identity<T> = T;\npub type Layer<T> = Identity<T>;\npub type Reordered<T, U> = Layer<Local<U>>;\npub type Unqualified<T> = Local<T>;\npub type Defaulted<T = Local<u8>> = Identity<T>;\npub type Unresolved<T> = Missing<T>;\npub type Cycle<T> = Cycle<T>;\npub type Pair<T> = (Local<T>, T);\npub type Generic<'a, const N: usize, T> = Local<(&'a [u8; N], T)>;\npub type AliasSelf<T> = Local<T>;\n",
+    );
+    let implementations = "use crate::types::{AliasSelf, Cycle, Defaulted, Generic, Identity, Layer, Local, Pair, Reordered, Unqualified, Unresolved};\nuse core::pin::Pin;\nuse remote::{Foreign, HasAssoc, NonType};\n\nimpl Foreign<Local<u8>> for Vec<u8> {}\nimpl Foreign<Vec<Local<u8>>> for Vec<u8> {}\nimpl Foreign<Box<Local<u8>>> for Vec<u8> {}\nimpl Foreign<&mut Local<u8>> for Vec<u8> {}\nimpl Foreign<()> for Box<Local<u8>> {}\nimpl Foreign<()> for Vec<Local<u8>> {}\nimpl<T> Foreign<Local<T>> for Vec<T> {}\nimpl<T> Foreign<Local<T>> for Box<T> {}\nimpl Foreign<Identity<Local<u8>>> for Vec<u8> {}\nimpl Foreign<Layer<Local<u8>>> for Vec<u8> {}\nimpl Foreign<Reordered<u8, Local<u16>>> for Vec<u8> {}\nimpl Foreign<Unqualified<Local<u8>>> for Vec<u8> {}\nimpl Foreign<Defaulted> for Vec<u8> {}\nimpl Foreign<Pin<Local<u8>>> for Vec<u8> {}\nimpl Foreign<Local<u8>> for Pin<Local<u8>> {}\nimpl<T> Foreign<Vec<T>, Local<T>> for Vec<T> {}\nimpl<T> Foreign<Box<T>, Local<T>> for Vec<T> {}\nimpl<T> Foreign<T, Local> for Vec<T> {}\nimpl Foreign<Unresolved<Local<u8>>> for Vec<u8> {}\nimpl Foreign<Identity<u8, Local<u8>>> for Vec<u8> {}\nimpl Foreign<Cycle<u8>> for Vec<u8> {}\nimpl NonType<'static, 3, Local<u8>> for Vec<u8> {}\nimpl NonType<'static, 3, Vec<Local<u8>>> for Vec<u8> {}\nimpl HasAssoc<Item = Local<u8>> for Vec<u8> {}\nimpl Foreign<(Local<u8>,)> for Vec<u8> {}\nimpl Foreign<Generic<'static, 3, u8>> for Vec<u8> {}\nimpl Foreign<Pair<u8>> for Vec<u8> {}\nimpl Foreign<()> for AliasSelf<u8> {}\nimpl Foreign<&Local<u8>> for Vec<u8> {}\n";
+    fixture.write("src/implementations.rs", implementations);
+    fixture.write(
+        "cargo-cop.toml",
+        "version = 4\n\n[rules.child_module_line_count]\nenabled = false\n\n[rules.item_spacing]\nenabled = false\n",
+    );
+    fixture.write(
+        "remote/Cargo.toml",
+        "[package]\nname = \"remote\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    fixture.write(
+        "remote/src/lib.rs",
+        "pub trait Foreign<T, U = ()> {}\npub trait NonType<'a, const N: usize, T> {}\npub trait HasAssoc { type Item; }\n",
+    );
+
+    let output = fixture.run(&["--format", "json", "--package", "app"]);
+
+    assert_eq!(output.status, 1, "{}", output.stdout);
+    let locality = rule_diagnostics(&output, "trait_impl_locality");
+    assert_eq!(locality.len(), 26, "{}", output.stdout);
+    for diagnostic in &locality {
+        let message = diagnostic_message(diagnostic);
+        assert!(
+            message.contains("outside the current module scope"),
+            "{message}"
+        );
+    }
+    for line in [
+        5, 7, 8, 9, 11, 13, 14, 15, 16, 17, 18, 19, 20, 26, 30, 32, 33,
+    ] {
+        assert!(
+            locality
+                .iter()
+                .any(|diagnostic| diagnostic["path"] == "src/implementations.rs"
+                    && diagnostic["start"]["line"] == line
+                    && diagnostic_message(diagnostic).contains("Local")),
+            "expected a type anchor at line {line}: {}",
+            output.stdout
+        );
+    }
+    let direct_anchor = locality
+        .iter()
+        .find(|diagnostic| diagnostic["start"]["line"] == 5)
+        .expect("直接本地类型锚点");
+    let direct_anchor_column = implementations
+        .lines()
+        .nth(4)
+        .and_then(|line| line.find("Local"))
+        .expect("impl 中的 Local")
+        + 1;
+    assert_eq!(
+        direct_anchor["start"]["column"], direct_anchor_column,
+        "{}",
+        output.stdout
+    );
+    for (line, target) in [
+        (6, "Vec"),
+        (10, "Vec"),
+        (12, "Box"),
+        (21, "Vec"),
+        (22, "Vec"),
+        (27, "Vec"),
+        (28, "Vec"),
+        (29, "Vec"),
+        (31, "Vec"),
+    ] {
+        assert!(
+            locality
+                .iter()
+                .any(|diagnostic| diagnostic["path"] == "src/implementations.rs"
+                    && diagnostic["start"]["line"] == line
+                    && diagnostic_message(diagnostic).contains(target)),
+            "expected a {target} fallback at line {line}: {}",
+            output.stdout
+        );
+    }
+    let report = from_str::<Value>(&output.stdout).expect("JSON 诊断");
+    let unresolved = report["diagnostics"]
+        .as_array()
+        .expect("诊断数组")
+        .iter()
+        .filter(|diagnostic| {
+            diagnostic["kind"] == "analysis"
+                && diagnostic["path"] == "src/implementations.rs"
+                && [23, 24, 25].contains(&diagnostic["start"]["line"].as_u64().unwrap_or(0))
+        })
+        .count();
+    assert_eq!(unresolved, 3, "{}", output.stdout);
 }
 
 #[test]

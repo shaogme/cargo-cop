@@ -1,7 +1,7 @@
 use std::ops::Range;
 
 use cop_cfg::CfgExpression;
-use cop_syntax::AstNodeId;
+use cop_syntax::{AstNodeId, GenericParameterSyntax, PathSyntax, TypeSyntax};
 
 use super::ModuleId;
 use crate::{CfgDecision, DefinitionId};
@@ -59,10 +59,9 @@ pub struct ImplOwnerRecord {
     bounds: Range<usize>,
     condition: Option<String>,
     owner: Option<DefinitionId>,
-    target_bounds: Option<Range<usize>>,
-    target_path: Option<Vec<String>>,
-    trait_bounds: Option<Range<usize>>,
-    trait_path: Option<Vec<String>>,
+    target: Option<TypeSyntax>,
+    trait_syntax: Option<PathSyntax>,
+    generic_parameters: Vec<GenericParameterSyntax>,
     target_enabled: bool,
     target_supported: bool,
     target_is_structural: bool,
@@ -77,10 +76,9 @@ pub(super) struct ImplOwnerRecordData {
     pub(super) bounds: Range<usize>,
     pub(super) condition: Option<String>,
     pub(super) owner: Option<DefinitionId>,
-    pub(super) target_bounds: Option<Range<usize>>,
-    pub(super) target_path: Option<Vec<String>>,
-    pub(super) trait_bounds: Option<Range<usize>>,
-    pub(super) trait_path: Option<Vec<String>>,
+    pub(super) target: Option<TypeSyntax>,
+    pub(super) trait_syntax: Option<PathSyntax>,
+    pub(super) generic_parameters: Vec<GenericParameterSyntax>,
     pub(super) target_enabled: bool,
     pub(super) target_supported: bool,
     pub(super) target_is_structural: bool,
@@ -96,10 +94,9 @@ impl ImplOwnerRecord {
             bounds: data.bounds,
             condition: data.condition,
             owner: data.owner,
-            target_bounds: data.target_bounds,
-            target_path: data.target_path,
-            trait_bounds: data.trait_bounds,
-            trait_path: data.trait_path,
+            target: data.target,
+            trait_syntax: data.trait_syntax,
+            generic_parameters: data.generic_parameters,
             target_enabled: data.target_enabled,
             target_supported: data.target_supported,
             target_is_structural: data.target_is_structural,
@@ -130,11 +127,15 @@ impl ImplOwnerRecord {
     }
 
     pub fn target_bounds(&self) -> Option<Range<usize>> {
-        self.target_bounds.clone()
+        self.target.as_ref().map(TypeSyntax::bounds)
     }
 
-    pub fn target_path(&self) -> Option<&[String]> {
-        self.target_path.as_deref()
+    pub fn target(&self) -> Option<&TypeSyntax> {
+        self.target.as_ref()
+    }
+
+    pub fn generic_parameters(&self) -> &[GenericParameterSyntax] {
+        &self.generic_parameters
     }
 
     pub fn is_target_supported(&self) -> bool {
@@ -150,11 +151,11 @@ impl ImplOwnerRecord {
     }
 
     pub fn trait_bounds(&self) -> Option<Range<usize>> {
-        self.trait_bounds.clone()
+        self.trait_syntax.as_ref().map(PathSyntax::bounds)
     }
 
-    pub fn trait_path(&self) -> Option<&[String]> {
-        self.trait_path.as_deref()
+    pub fn trait_syntax(&self) -> Option<&PathSyntax> {
+        self.trait_syntax.as_ref()
     }
 
     pub fn is_trait_enabled(&self) -> bool {
@@ -167,6 +168,53 @@ impl ImplOwnerRecord {
 
     pub fn is_trait_impl(&self) -> bool {
         self.trait_impl
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TypeAliasFact {
+    definition: DefinitionId,
+    module_id: ModuleId,
+    condition: Option<String>,
+    parameters: Vec<GenericParameterSyntax>,
+    right_hand_side: TypeSyntax,
+}
+
+impl TypeAliasFact {
+    pub(super) fn new(
+        definition: DefinitionId,
+        module_id: ModuleId,
+        condition: Option<String>,
+        parameters: Vec<GenericParameterSyntax>,
+        right_hand_side: TypeSyntax,
+    ) -> Self {
+        Self {
+            definition,
+            module_id,
+            condition,
+            parameters,
+            right_hand_side,
+        }
+    }
+
+    pub fn definition(&self) -> DefinitionId {
+        self.definition
+    }
+
+    pub fn module_id(&self) -> ModuleId {
+        self.module_id
+    }
+
+    pub fn condition(&self) -> Option<&str> {
+        self.condition.as_deref()
+    }
+
+    pub fn parameters(&self) -> &[GenericParameterSyntax] {
+        &self.parameters
+    }
+
+    pub fn right_hand_side(&self) -> &TypeSyntax {
+        &self.right_hand_side
     }
 }
 

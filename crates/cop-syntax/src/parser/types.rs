@@ -12,12 +12,12 @@ use crate::{
 
 use super::{
     path::PathParser,
-    token_cursor::{SyntaxError, SyntaxErrorKind, TokenCursor},
+    token_cursor::{CursorRange, SyntaxError, SyntaxErrorKind, TokenCursor},
 };
 
 pub(super) struct TypeInput<'a> {
     pub(super) tokens: &'a [Token],
-    pub(super) bounds: Range<usize>,
+    pub(super) bounds: CursorRange,
     pub(super) parent: AstNodeId,
     pub(super) ast_nodes: &'a mut Vec<SyntaxNode>,
     pub(super) issues: &'a mut Vec<ParseIssue>,
@@ -55,7 +55,7 @@ impl TypeParser {
             ast_nodes,
             issues,
         } = input;
-        match Self::parse_range(tokens, bounds.clone()) {
+        match Self::parse_range(tokens, bounds) {
             Ok(syntax) => {
                 let id = Self::push_node(syntax.clone(), parent, ast_nodes);
                 Self::emit_opaque_macros(&syntax, id, tokens, ast_nodes, issues);
@@ -98,21 +98,13 @@ impl TypeParser {
             ast_nodes,
             issues,
         } = input;
-        let start_offset = tokens.get(bounds.start).map_or(0, Token::start);
-        let end_offset = bounds
-            .end
-            .checked_sub(1)
-            .and_then(|index| tokens.get(index))
-            .map_or(start_offset, Token::end);
+        let byte_bounds = bounds.byte_bounds();
         let mut cursor = TokenCursor::new(tokens, bounds)
             .ok_or_else(|| SyntaxError::new(SyntaxErrorKind::UnexpectedToken, 0..0))
             .ok()?;
         match Self::parse_bounds(&mut cursor) {
             Ok(parsed) if cursor.is_empty() => {
-                let syntax = TypeSyntax::new(
-                    TypeSyntaxKind::TraitBounds(parsed),
-                    start_offset..end_offset,
-                );
+                let syntax = TypeSyntax::new(TypeSyntaxKind::TraitBounds(parsed), byte_bounds);
                 let id = Self::push_node(syntax.clone(), parent, ast_nodes);
                 Self::emit_opaque_macros(&syntax, id, tokens, ast_nodes, issues);
                 Some(id)
@@ -171,12 +163,9 @@ impl TypeParser {
 
     pub(super) fn parse_range(
         tokens: &[Token],
-        bounds: Range<usize>,
+        bounds: CursorRange,
     ) -> Result<TypeSyntax, SyntaxError> {
-        let base = TokenCursor::new(tokens, bounds)
-            .ok_or_else(|| SyntaxError::new(SyntaxErrorKind::UnexpectedToken, 0..0))?;
-        let mut cursor = base
-            .subcursor(base.start()..base.end())
+        let mut cursor = TokenCursor::new(tokens, bounds)
             .ok_or_else(|| SyntaxError::new(SyntaxErrorKind::UnexpectedToken, 0..0))?;
         let value = match Self::parse(&mut cursor) {
             Ok(value) => value,

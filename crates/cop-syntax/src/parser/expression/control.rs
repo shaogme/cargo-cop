@@ -53,8 +53,9 @@ impl ControlParser {
         cursor.consume_identifier("match");
         let scrutinee = PrattParser::parse_control_header(source, cursor)?;
         let (_, group) = PrattParser::take_group(cursor)?;
-        let mut contents = TokenCursor::new(cursor.tokens(), group.start + 1..group.end - 1)
-            .ok_or_else(|| PathParser::error_at(cursor, SyntaxErrorKind::UnexpectedToken))?;
+        let mut contents =
+            TokenCursor::from_token_range(cursor.tokens(), group.start + 1..group.end - 1)
+                .ok_or_else(|| PathParser::error_at(cursor, SyntaxErrorKind::UnexpectedToken))?;
         let attributes = PrattParser::parse_inner_attributes(&mut contents)?;
         let arms =
             Self::parse_match_arms(source, cursor.tokens(), contents.index()..contents.end())?;
@@ -75,7 +76,7 @@ impl ControlParser {
         tokens: &[Token],
         bounds: Range<usize>,
     ) -> Result<Vec<ExpressionMatchArmSyntax>, SyntaxError> {
-        let mut cursor = TokenCursor::new(tokens, bounds)
+        let mut cursor = TokenCursor::from_token_range(tokens, bounds)
             .ok_or_else(|| SyntaxError::new(SyntaxErrorKind::UnexpectedToken, 0..0))?;
         let mut arms = Vec::new();
         while !cursor.is_empty() {

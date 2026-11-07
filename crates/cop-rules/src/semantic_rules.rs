@@ -1,25 +1,24 @@
+mod target_origin;
 mod unnecessary_pub_crate;
 
 use std::{borrow::Cow, ops::Range};
 
-use crate::support::{RuleDiagnosticAdapter, RuleReport, SyntaxSupport};
 use cop_analysis::{
-    AnalysisFacts, AnalysisReference, AnalysisSnapshot, DefinitionId, ExternalItemKind,
-    ImplOwnerRecord, ItemKindFact, ModuleNode, PathResolution, PathResolutionKind, PathRootKind,
-    SymbolKind, SymbolRecord, SymbolVisibility,
+    AnalysisReference, AnalysisSnapshot, ExternalItemKind, ImplOwnerRecord, ItemKindFact,
+    ModuleNode, PathResolutionKind, SymbolKind, SymbolRecord, SymbolVisibility,
 };
 use cop_config::ResolvedConfig;
 use cop_i18n::{t, RenderError};
 use cop_model::{AnalysisIssueKind, Diagnostic, RuleId, Severity};
-use cop_syntax::ItemSyntaxKind;
+use cop_syntax::{ItemSyntaxKind, PathSyntax, TypeSyntax, TypeSyntaxKind};
+
+use self::target_origin::{TypeOrigin, TypeOriginResolver};
+use crate::{
+    support::{RuleDiagnosticAdapter, RuleReport, SyntaxSupport},
+    trait_impl_locality::{OrphanAnchor, TargetOrigin, TraitImplLocalityResolver, UnknownType},
+};
 
 pub(super) struct SemanticRuleSet;
-
-enum TypeOrigin<'a> {
-    Local(&'a SymbolRecord),
-    External,
-    Primitive,
-}
 
 impl SemanticRuleSet {
     pub(super) fn run(
@@ -125,7 +124,8 @@ impl SemanticRuleSet {
         adapter: &RuleDiagnosticAdapter<'_>,
         implementation: &ImplOwnerRecord,
     ) -> Result<(), RenderError> {
-        let trait_path = implementation.trait_path();
+        let trait_path = implementation.trait_syntax().map(path_segments);
+        let trait_path = trait_path.as_deref();
         let trait_bounds = implementation
             .trait_bounds()
             .unwrap_or_else(|| implementation.bounds());
@@ -204,8 +204,11 @@ impl SemanticRuleSet {
                 return Ok(());
             };
             let mut trait_conditions = Vec::new();
-            resolution_conditions(trait_resolution, &mut trait_conditions);
-            if !conditions_may_coexist_with_impl(implementation.condition(), &trait_conditions) {
+            TypeOriginResolver::resolution_conditions(trait_resolution, &mut trait_conditions);
+            if !TypeOriginResolver::conditions_may_coexist_with_impl(
+                implementation.condition(),
+                &trait_conditions,
+            ) {
                 return Ok(());
             }
             Some(trait_symbol)
@@ -223,99 +226,110 @@ impl SemanticRuleSet {
         if implementation.is_target_structural() {
             return Ok(());
         }
-        let Some(target_reference) = snapshot.facts().reference_at(module, target_bounds.clone())
-        else {
-            if cfg_exclusive_declaration_exists(
-                snapshot,
-                module,
-                implementation.target_path(),
-                implementation.condition(),
-                false,
-            ) {
-                return Ok(());
-            }
-            push_unresolved_target_issue(module, diagnostics, implementation, target_bounds)?;
-            return Ok(());
-        };
-        let mut target_conditions = Vec::new();
-        let mut visited_aliases = Vec::new();
-        let target_origin = resolve_type_origin(
-            snapshot.facts(),
-            target_reference.resolution(),
-            &mut visited_aliases,
-            &mut target_conditions,
-        );
-        if !conditions_may_coexist_with_impl(implementation.condition(), &target_conditions) {
-            return Ok(());
-        }
-        match target_origin {
-            Some(TypeOrigin::Local(target)) if !symbol_is_in_module(target, module) => {
-                adapter.push(
-                    module,
-                    diagnostics,
-                    RuleReport::new(
-                        RuleId::TraitImplLocality,
-                        t!("rule.impl_target_outside_scope", { target: target.name() })?,
-                        Some(target_bounds),
-                    ),
-                );
-            }
-            Some(TypeOrigin::External) => {
-                if let Some(trait_symbol) = local_trait {
-                    if !symbol_is_in_module(trait_symbol, module) {
-                        let target =
-                            implementation_target_name(module, implementation, &target_bounds);
+        let mut resolver = TraitImplLocalityResolver::new(snapshot, module, implementation);
+        if let Some(trait_symbol) = local_trait {
+            match resolver.resolve_target() {
+                TargetOrigin::Local(anchor) => {
+                    if !TypeOriginResolver::conditions_may_coexist_with_impl(
+                        implementation.condition(),
+                        anchor.conditions(),
+                    ) {
+                        return Ok(());
+                    }
+                    if !symbol_is_in_module(anchor.symbol(), module) {
                         adapter.push(
                             module,
                             diagnostics,
                             RuleReport::new(
                                 RuleId::TraitImplLocality,
-                                t!("rule.impl_target_outside_scope", { target: target.as_str() })?,
-                                Some(target_bounds),
+                                t!("rule.impl_target_outside_scope", {
+                                    target: anchor.symbol().name()
+                                })?,
+                                Some(anchor.bounds()),
                             ),
                         );
                     }
-                } else {
-                    let target = implementation_target_name(module, implementation, &target_bounds);
-                    adapter.push(
+                }
+                TargetOrigin::Other(conditions) => {
+                    if !TypeOriginResolver::conditions_may_coexist_with_impl(
+                        implementation.condition(),
+                        &conditions,
+                    ) {
+                        return Ok(());
+                    }
+                    if !symbol_is_in_module(trait_symbol, module) {
+                        report_external_target_outside_scope(
+                            module,
+                            implementation,
+                            target_bounds,
+                            diagnostics,
+                            adapter,
+                        )?;
+                    }
+                }
+                TargetOrigin::Unknown(unknown) => {
+                    if cfg_exclusive_declaration_exists(
+                        snapshot,
                         module,
-                        diagnostics,
-                        RuleReport::new(
-                            RuleId::TraitImplLocality,
-                            t!("rule.impl_target_outside_scope", { target: target.as_str() })?,
-                            Some(target_bounds),
-                        ),
-                    );
+                        implementation
+                            .target()
+                            .and_then(type_path_segments)
+                            .as_deref(),
+                        implementation.condition(),
+                        false,
+                    ) {
+                        return Ok(());
+                    }
+                    push_unknown_type_issue(module, diagnostics, implementation, unknown)?;
                 }
             }
-            Some(TypeOrigin::Primitive) => {
-                if local_trait
-                    .is_some_and(|trait_symbol| !symbol_is_in_module(trait_symbol, module))
-                {
-                    let target = implementation_target_name(module, implementation, &target_bounds);
-                    adapter.push(
+        } else {
+            match resolver.resolve_orphan_anchor() {
+                OrphanAnchor::Local(anchor) => {
+                    if !TypeOriginResolver::conditions_may_coexist_with_impl(
+                        implementation.condition(),
+                        anchor.conditions(),
+                    ) {
+                        return Ok(());
+                    }
+                    if !symbol_is_in_module(anchor.symbol(), module) {
+                        adapter.push(
+                            module,
+                            diagnostics,
+                            RuleReport::new(
+                                RuleId::TraitImplLocality,
+                                t!("rule.impl_target_outside_scope", {
+                                    target: anchor.symbol().name()
+                                })?,
+                                Some(anchor.bounds()),
+                            ),
+                        );
+                    }
+                }
+                OrphanAnchor::NoAnchor => {
+                    report_external_target_outside_scope(
                         module,
+                        implementation,
+                        target_bounds,
                         diagnostics,
-                        RuleReport::new(
-                            RuleId::TraitImplLocality,
-                            t!("rule.impl_target_outside_scope", { target: target.as_str() })?,
-                            Some(target_bounds),
-                        ),
-                    );
+                        adapter,
+                    )?;
                 }
-            }
-            Some(TypeOrigin::Local(_)) => {}
-            None => {
-                if cfg_exclusive_declaration_exists(
-                    snapshot,
-                    module,
-                    implementation.target_path(),
-                    implementation.condition(),
-                    false,
-                ) {
-                    return Ok(());
+                OrphanAnchor::Unknown(unknown) => {
+                    if cfg_exclusive_declaration_exists(
+                        snapshot,
+                        module,
+                        implementation
+                            .target()
+                            .and_then(type_path_segments)
+                            .as_deref(),
+                        implementation.condition(),
+                        false,
+                    ) {
+                        return Ok(());
+                    }
+                    push_unknown_type_issue(module, diagnostics, implementation, unknown)?;
                 }
-                push_unresolved_target_issue(module, diagnostics, implementation, target_bounds)?;
             }
         }
         Ok(())
@@ -351,7 +365,10 @@ impl SemanticRuleSet {
             if cfg_exclusive_declaration_exists(
                 snapshot,
                 module,
-                implementation.target_path(),
+                implementation
+                    .target()
+                    .and_then(type_path_segments)
+                    .as_deref(),
                 implementation.condition(),
                 false,
             ) {
@@ -363,13 +380,16 @@ impl SemanticRuleSet {
         let resolution = reference.resolution();
         let mut conditions = Vec::new();
         let mut visited_aliases = Vec::new();
-        let target_origin = resolve_type_origin(
-            snapshot.facts(),
+        let target_origin = TypeOriginResolver::resolve(
+            snapshot,
             resolution,
             &mut visited_aliases,
             &mut conditions,
         );
-        if !conditions_may_coexist_with_impl(implementation.condition(), &conditions) {
+        if !TypeOriginResolver::conditions_may_coexist_with_impl(
+            implementation.condition(),
+            &conditions,
+        ) {
             return Ok(());
         }
         match target_origin {
@@ -401,7 +421,10 @@ impl SemanticRuleSet {
                 if !cfg_exclusive_declaration_exists(
                     snapshot,
                     module,
-                    implementation.target_path(),
+                    implementation
+                        .target()
+                        .and_then(type_path_segments)
+                        .as_deref(),
                     implementation.condition(),
                     false,
                 ) {
@@ -550,69 +573,6 @@ fn check_parent_path(
     Ok(())
 }
 
-fn is_repository_type(kind: SymbolKind) -> bool {
-    matches!(
-        kind,
-        SymbolKind::Struct | SymbolKind::Enum | SymbolKind::Union | SymbolKind::TypeAlias
-    )
-}
-
-fn resolve_type_origin<'a>(
-    facts: &'a AnalysisFacts,
-    resolution: &'a PathResolution,
-    visited_aliases: &mut Vec<DefinitionId>,
-    conditions: &mut Vec<Option<String>>,
-) -> Option<TypeOrigin<'a>> {
-    resolution_conditions(resolution, conditions);
-    match resolution.kind() {
-        PathResolutionKind::ExternalCrate => Some(TypeOrigin::External),
-        PathResolutionKind::Local => {
-            if resolution.root().kind() == PathRootKind::Primitive {
-                return Some(TypeOrigin::Primitive);
-            }
-            let symbol = resolution.symbol()?;
-            if symbol.kind() == SymbolKind::TypeAlias {
-                let definition = symbol.definition_id();
-                if visited_aliases.contains(&definition) {
-                    return None;
-                }
-                visited_aliases.push(definition);
-                let target = facts.type_alias_target(definition).and_then(|target| {
-                    resolve_type_origin(facts, target, visited_aliases, conditions)
-                });
-                visited_aliases.pop();
-                return target;
-            }
-            is_repository_type(symbol.kind()).then_some(TypeOrigin::Local(symbol))
-        }
-        PathResolutionKind::Unresolved
-        | PathResolutionKind::Ambiguous
-        | PathResolutionKind::AliasCycle => None,
-    }
-}
-
-fn resolution_conditions(resolution: &PathResolution, conditions: &mut Vec<Option<String>>) {
-    if let Some(symbol) = resolution.symbol() {
-        conditions.push(symbol.cfg_condition().map(str::to_owned));
-    }
-    conditions.extend(
-        resolution
-            .alias_symbols()
-            .iter()
-            .map(|symbol| symbol.cfg_condition().map(str::to_owned)),
-    );
-}
-
-fn conditions_may_coexist_with_impl(
-    implementation_condition: Option<&str>,
-    symbol_conditions: &[Option<String>],
-) -> bool {
-    let mut conditions = Vec::with_capacity(symbol_conditions.len() + 1);
-    conditions.push(implementation_condition);
-    conditions.extend(symbol_conditions.iter().map(Option::as_deref));
-    SyntaxSupport::conditions_may_coexist_all(&conditions)
-}
-
 fn implementation_target_name(
     module: &ModuleNode,
     implementation: &ImplOwnerRecord,
@@ -625,8 +585,79 @@ fn implementation_target_name(
         .map(str::trim)
         .filter(|target| !target.is_empty())
         .map(str::to_owned)
-        .or_else(|| implementation.target_path().map(|path| path.join("::")))
+        .or_else(|| {
+            implementation
+                .target()
+                .and_then(type_path_segments)
+                .map(|path| path.join("::"))
+        })
         .unwrap_or_else(|| "<unknown>".to_owned())
+}
+
+fn report_external_target_outside_scope(
+    module: &ModuleNode,
+    implementation: &ImplOwnerRecord,
+    bounds: Range<usize>,
+    diagnostics: &mut Vec<Diagnostic>,
+    adapter: &RuleDiagnosticAdapter<'_>,
+) -> Result<(), RenderError> {
+    let target = implementation_target_name(module, implementation, &bounds);
+    adapter.push(
+        module,
+        diagnostics,
+        RuleReport::new(
+            RuleId::TraitImplLocality,
+            t!("rule.impl_target_outside_scope", { target: target.as_str() })?,
+            Some(bounds),
+        ),
+    );
+    Ok(())
+}
+
+fn push_unknown_type_issue(
+    module: &ModuleNode,
+    diagnostics: &mut Vec<Diagnostic>,
+    implementation: &ImplOwnerRecord,
+    unknown: UnknownType,
+) -> Result<(), RenderError> {
+    let bounds = unknown.bounds();
+    let target = module
+        .parse_output()
+        .source()
+        .slice(bounds.start, bounds.end)
+        .map(str::trim)
+        .filter(|target| !target.is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| implementation_target_name(module, implementation, &bounds));
+    let message = t!("rule.impl_target_unresolved", { target: target.as_str() })?;
+    push_impl_analysis_issue(module, diagnostics, bounds, message);
+    Ok(())
+}
+
+fn path_segments(path: &PathSyntax) -> Vec<String> {
+    let mut segments = path
+        .segments()
+        .iter()
+        .map(|segment| segment.name().to_owned())
+        .collect::<Vec<_>>();
+    if path.has_leading_colon() {
+        segments.insert(0, "::".to_owned());
+    }
+    segments
+}
+
+fn type_path_segments(ty: &TypeSyntax) -> Option<Vec<String>> {
+    path_in_type(ty).map(path_segments)
+}
+
+fn path_in_type(ty: &TypeSyntax) -> Option<&PathSyntax> {
+    match ty.kind() {
+        TypeSyntaxKind::Path(path) if path.qualified_self().is_none() => Some(path),
+        TypeSyntaxKind::Reference { target, .. }
+        | TypeSyntaxKind::Pointer { target, .. }
+        | TypeSyntaxKind::Parenthesized(target) => path_in_type(target),
+        _ => None,
+    }
 }
 
 fn symbol_is_in_module(symbol: &SymbolRecord, module: &ModuleNode) -> bool {
@@ -739,7 +770,8 @@ fn push_unresolved_target_issue(
     bounds: Range<usize>,
 ) -> Result<(), RenderError> {
     let target = implementation
-        .target_path()
+        .target()
+        .and_then(type_path_segments)
         .map(|path| path.join("::"))
         .unwrap_or_else(|| "<unknown>".to_owned());
     let message = t!("rule.impl_target_unresolved", { target: target.as_str() })?;

@@ -19,6 +19,7 @@ pub enum ExternalItemSource {
 pub struct ExternalItemIdentity {
     canonical_path: &'static str,
     kind: ExternalItemKind,
+    fundamental: bool,
 }
 
 impl ExternalItemIdentity {
@@ -28,6 +29,10 @@ impl ExternalItemIdentity {
 
     pub fn kind(&self) -> ExternalItemKind {
         self.kind
+    }
+
+    pub fn is_fundamental(&self) -> bool {
+        self.fundamental
     }
 }
 
@@ -67,6 +72,7 @@ struct CatalogItem {
     core_prelude: bool,
     std_prelude: bool,
     paths: &'static [&'static str],
+    fundamental: bool,
 }
 
 pub(super) struct ExternalItemCatalog;
@@ -85,6 +91,7 @@ macro_rules! trait_item {
             core_prelude: $core,
             std_prelude: $std,
             paths: &[$canonical_path],
+            fundamental: false,
         }
     };
 }
@@ -99,6 +106,22 @@ macro_rules! type_item {
             core_prelude: $core,
             std_prelude: $std,
             paths: &[$($path),+],
+            fundamental: false,
+        }
+    };
+}
+
+macro_rules! fundamental_type_item {
+    ($name:literal, $canonical_path:literal, $edition:ident, $core:literal, $std:literal, [$($path:literal),+]) => {
+        CatalogItem {
+            name: $name,
+            canonical_path: $canonical_path,
+            kind: ExternalItemKind::Type,
+            first_edition: $edition,
+            core_prelude: $core,
+            std_prelude: $std,
+            paths: &[$($path),+],
+            fundamental: true,
         }
     };
 }
@@ -113,6 +136,7 @@ macro_rules! variant_item {
             core_prelude: true,
             std_prelude: true,
             paths: &[$canonical_path],
+            fundamental: false,
         }
     };
 }
@@ -127,6 +151,7 @@ macro_rules! function_item {
             core_prelude: true,
             std_prelude: true,
             paths: &[$canonical_path],
+            fundamental: false,
         }
     };
 }
@@ -137,7 +162,7 @@ const ITEMS: &[CatalogItem] = &[
     trait_item!("AsyncFn", "core::ops::AsyncFn", COMMON, true, true),
     trait_item!("AsyncFnMut", "core::ops::AsyncFnMut", COMMON, true, true),
     trait_item!("AsyncFnOnce", "core::ops::AsyncFnOnce", COMMON, true, true),
-    type_item!(
+    fundamental_type_item!(
         "Box",
         "alloc::boxed::Box",
         COMMON,
@@ -212,6 +237,14 @@ const ITEMS: &[CatalogItem] = &[
     trait_item!("Ord", "core::cmp::Ord", COMMON, true, true),
     trait_item!("PartialEq", "core::cmp::PartialEq", COMMON, true, true),
     trait_item!("PartialOrd", "core::cmp::PartialOrd", COMMON, true, true),
+    fundamental_type_item!(
+        "Pin",
+        "core::pin::Pin",
+        COMMON,
+        false,
+        false,
+        ["core::pin::Pin", "std::pin::Pin"]
+    ),
     variant_item!("Ok", "core::result::Result::Ok", COMMON),
     type_item!(
         "Result",
@@ -241,6 +274,7 @@ const ITEMS: &[CatalogItem] = &[
         core_prelude: false,
         std_prelude: true,
         paths: &["alloc::borrow::ToOwned", "std::borrow::ToOwned"],
+        fundamental: false,
     },
     CatalogItem {
         name: "ToString",
@@ -250,6 +284,7 @@ const ITEMS: &[CatalogItem] = &[
         core_prelude: false,
         std_prelude: true,
         paths: &["alloc::string::ToString", "std::string::ToString"],
+        fundamental: false,
     },
     trait_item!(
         "TryFrom",
@@ -320,6 +355,7 @@ fn identity(item: &CatalogItem) -> ExternalItemIdentity {
     ExternalItemIdentity {
         canonical_path: item.canonical_path,
         kind: item.kind,
+        fundamental: item.fundamental,
     }
 }
 

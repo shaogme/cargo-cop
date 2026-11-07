@@ -175,6 +175,26 @@ fn unexpected_issues(parsed: &ParseOutput) -> Vec<(usize, usize)> {
 }
 
 #[test]
+fn keeps_shift_discriminants_separate_from_enum_variants() {
+    let parsed = parse("enum E { A = 1 << 0, B = 2 }", "2021");
+    let variants = parsed
+        .syntax_nodes()
+        .iter()
+        .filter(|node| node.kind() == SyntaxNodeKind::EnumVariant)
+        .filter_map(|node| node.enum_variant_name())
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        parsed.coverage(),
+        CoverageStatus::Complete,
+        "{:?}",
+        parsed.issues()
+    );
+    assert!(parsed.issues().is_empty(), "{:?}", parsed.issues());
+    assert_eq!(variants, vec!["A", "B"]);
+}
+
+#[test]
 fn parses_explicit_lifetime_receivers_and_preserves_parameter_ranges() {
     let source = "struct S; impl S { fn src<'src>(&'src mut self) {} fn env<'env>(&'env mut self) {} fn a<'a>(&'a mut self) {} fn storage<'storage>(&'storage self) {} fn child<'child>(&'child mut self) {} fn b<'b>(&'b mut self) {} fn index<'index>(&'index mut self) {} fn index_shared<'index>(&'index self) {} fn shared(&self) {} fn mutable(&mut self) {} fn value(mut self) {} fn plain(self) {} }";
     let parsed = parse(source, "2021");

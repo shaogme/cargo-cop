@@ -1,11 +1,18 @@
 use cop_syntax::{
     CoverageStatus, ExpressionSyntaxKind, GenericArgumentSyntax, GenericParameterKind,
     ItemSyntaxKind, ParseIssueCode, ParseIssueKind, ParseOptions, ParseOutput, PatternSyntaxKind,
-    RustParser, SourceFile, SyntaxNodeKind, TypeSyntaxKind, WherePredicateKind,
+    RustParser, SourceFile, SyntaxNodeKind, TraitBoundKind, TypeSyntaxKind, WherePredicateKind,
 };
 
 fn parse(source: SourceFile) -> ParseOutput {
     RustParser::parse(source, ParseOptions::default()).expect("catalog messages render")
+}
+
+struct ExpectedDefault {
+    item_name: &'static str,
+    parameter_name: &'static str,
+    default_type: &'static str,
+    parameter_syntax: &'static str,
 }
 
 #[test]
@@ -17,6 +24,7 @@ struct Shape<'a, T: Iterator<Item = (u8, u16)>, const N: usize> {
     callback: for<'b> unsafe extern "C" fn(&'b T) -> bool,
     object: &'a (dyn Fn(&'a T) -> T + Send),
 }
+
 type Qualified<T> = <T as Convert<u8>>::Output;
 type MacroType = type_macro!(opaque);
 struct Defaults<'a, 'b: 'a, T = u8, const N: usize = 4> {
@@ -127,6 +135,247 @@ fn inspect<'a, T: Convert<u8>>(value: &'a T) -> <T as Convert<u8>>::Output {}
         parameter.kind() == GenericParameterKind::Const
             && parameter.name() == "N"
             && parameter.default_const().is_some()
+    }));
+}
+
+#[test]
+fn retains_generic_default_types_when_closers_share_a_token() {
+    let text = r#"
+type Alias<T = Local<u8>> = T;
+type Multi<T = Local<u8>, U = Outer<Inner<u16>>> = T;
+type Qualified<T = <<U as Trait>::Assoc as Other>::Item> = T;
+type Bound<T: Trait<Assoc = Local<u8>> = Outer<Inner<u16>>> = T;
+type Attributed<#[cfg(any())] T = Local<u8>> = T;
+"#;
+    let parsed = parse(SourceFile::new("src/generic_defaults.rs", text));
+    let parameters = parsed
+        .syntax_nodes()
+        .iter()
+        .filter_map(|node| node.generic_parameter_syntax().map(|syntax| (node, syntax)))
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        parsed.coverage(),
+        CoverageStatus::Complete,
+        "{:?}",
+        parsed.issues()
+    );
+    assert!(parsed.issues().is_empty(), "{:?}", parsed.issues());
+    assert_eq!(parameters.len(), 6);
+
+    let expected = [
+        ExpectedDefault {
+            item_name: "Alias",
+            parameter_name: "T",
+            default_type: "Local<u8>",
+            parameter_syntax: "T = Local<u8>",
+        },
+        ExpectedDefault {
+            item_name: "Multi",
+            parameter_name: "T",
+            default_type: "Local<u8>",
+            parameter_syntax: "T = Local<u8>",
+        },
+        ExpectedDefault {
+            item_name: "Multi",
+            parameter_name: "U",
+            default_type: "Outer<Inner<u16>>",
+            parameter_syntax: "U = Outer<Inner<u16>>",
+        },
+        ExpectedDefault {
+            item_name: "Qualified",
+            parameter_name: "T",
+            default_type: "<<U as Trait>::Assoc as Other>::Item",
+            parameter_syntax: "T = <<U as Trait>::Assoc as Other>::Item",
+        },
+        ExpectedDefault {
+            item_name: "Bound",
+            parameter_name: "T",
+            default_type: "Outer<Inner<u16>>",
+            parameter_syntax: "T: Trait<Assoc = Local<u8>> = Outer<Inner<u16>>",
+        },
+        ExpectedDefault {
+            item_name: "Attributed",
+            parameter_name: "T",
+            default_type: "Local<u8>",
+            parameter_syntax: "T = Local<u8>",
+        },
+    ];
+    for ((node, parameter), expected) in parameters.iter().zip(expected) {
+        assert_eq!(parameter.name(), expected.parameter_name);
+        let parent_id = node.parent().expect("参数父节点");
+        let item = parsed
+            .syntax_nodes()
+            .iter()
+            .find(|candidate| candidate.id() == parent_id)
+            .expect("父级类型别名");
+        assert_eq!(item.kind(), SyntaxNodeKind::Item);
+        assert!(parsed
+            .source()
+            .slice(item.start(), item.end())
+            .is_some_and(|text| text.contains(expected.item_name)));
+        assert!(item.start() <= node.start() && node.end() <= item.end());
+        if expected.item_name == "Attributed" {
+            assert_eq!(node.attributes().len(), 1);
+            assert!(parsed
+                .source()
+                .slice(node.start(), node.end())
+                .is_some_and(|text| text.starts_with("#[cfg(any())] T = Local<u8>")));
+        } else {
+            assert_eq!(
+                parsed.source().slice(node.start(), node.end()),
+                Some(expected.parameter_syntax)
+            );
+        }
+        let default = parameter.default_type().expect("默认类型语法");
+        assert_eq!(
+            parsed
+                .source()
+                .slice(default.bounds().start, default.bounds().end),
+            Some(expected.default_type)
+        );
+        let parameter_bounds = parameter.bounds_range();
+        assert_eq!(
+            parsed
+                .source()
+                .slice(parameter_bounds.start, parameter_bounds.end),
+            Some(expected.parameter_syntax)
+        );
+    }
+    let multi_u = parameters
+        .iter()
+        .find(|(_, parameter)| parameter.name() == "U")
+        .map(|(_, parameter)| parameter.default_type().expect("U 默认类型"))
+        .expect("U 参数");
+    let TypeSyntaxKind::Path(outer) = multi_u.kind() else {
+        panic!("外层默认类型应为路径");
+    };
+    assert!(matches!(
+        outer.segments()[0].arguments().first(),
+        Some(GenericArgumentSyntax::Type(inner))
+            if matches!(inner.kind(), TypeSyntaxKind::Path(path)
+                if path.segments()[0].name() == "Inner")
+    ));
+    let bound_parameter = parameters
+        .iter()
+        .find(|(_, parameter)| parameter.bounds().len() == 1)
+        .expect("associated type bound");
+    let TraitBoundKind::Trait(path) = bound_parameter.1.bounds()[0].kind() else {
+        panic!("trait bound path");
+    };
+    assert_eq!(
+        parsed
+            .source()
+            .slice(path.bounds().start, path.bounds().end),
+        Some("Trait<Assoc = Local<u8>>")
+    );
+}
+
+#[test]
+fn reports_missing_generic_closer_and_keeps_later_aliases() {
+    let text = "type Broken<T = Local<u8> = T;\ntype Kept<U = Outer<Inner<u8>>> = U;\n";
+    let parsed = parse(SourceFile::new("src/generic_recovery.rs", text));
+
+    assert_ne!(parsed.coverage(), CoverageStatus::Complete);
+    assert!(parsed
+        .issues()
+        .iter()
+        .any(|issue| issue.kind() == ParseIssueKind::UnexpectedToken));
+    let kept = parsed
+        .syntax_nodes()
+        .iter()
+        .filter_map(|node| node.generic_parameter_syntax())
+        .find(|parameter| parameter.name() == "U")
+        .expect("错误后的泛型参数仍解析");
+    assert_eq!(
+        parsed.source().slice(
+            kept.default_type().expect("U 默认类型").bounds().start,
+            kept.default_type().expect("U 默认类型").bounds().end,
+        ),
+        Some("Outer<Inner<u8>>")
+    );
+    assert!(parsed.syntax_nodes().iter().any(|node| {
+        node.kind() == SyntaxNodeKind::GenericParameter
+            && node.generic_parameter_syntax().is_none()
+            && parsed
+                .source()
+                .slice(node.start(), node.end())
+                .is_some_and(|text| text.starts_with("T = Local<u8>"))
+    }));
+}
+
+#[test]
+fn reports_empty_generic_parameter_segments_and_keeps_valid_parameters() {
+    let text = "type Leading<, T = u8> = T;\ntype Interior<T,, U = u16> = U;\ntype Empty<> = ();\n";
+    let parsed = parse(SourceFile::new("src/empty_generic_parameters.rs", text));
+    let parameters = parsed
+        .syntax_nodes()
+        .iter()
+        .filter_map(|node| node.generic_parameter_syntax())
+        .collect::<Vec<_>>();
+
+    assert_eq!(parsed.coverage(), CoverageStatus::Partial);
+    assert_eq!(
+        parameters
+            .iter()
+            .map(|parameter| (parameter.name(), parameter.default_type().is_some()))
+            .collect::<Vec<_>>(),
+        vec![("T", true), ("T", false), ("U", true)]
+    );
+
+    let unexpected = parsed
+        .issues()
+        .iter()
+        .filter(|issue| issue.kind() == ParseIssueKind::UnexpectedToken)
+        .collect::<Vec<_>>();
+    let empty_segment_commas = [
+        text.find("<,").expect("首个空参数段") + 1,
+        text.find(",,").expect("中间空参数段") + 1,
+    ];
+    for start in empty_segment_commas {
+        assert!(
+            unexpected
+                .iter()
+                .any(|issue| issue.start() == start && issue.end() == start + 1),
+            "comma at {start}; issues: {unexpected:?}"
+        );
+    }
+    let empty_list_close = text.find("<>").expect("空参数列表") + 1;
+    assert!(unexpected
+        .iter()
+        .any(|issue| issue.start() == empty_list_close && issue.end() == empty_list_close + 1));
+}
+
+#[test]
+fn keeps_braced_const_shift_expressions_inside_their_delimiters() {
+    let text = "type ConstDefault<const N: usize = { 8 >> 1 }> = [u8; N];\ntype ConstArgument = Buffer<{ 8 >> 1 }>;\n";
+    let parsed = parse(SourceFile::new("src/const_generic_shift.rs", text));
+
+    assert_eq!(
+        parsed.coverage(),
+        CoverageStatus::Complete,
+        "{:?}",
+        parsed.issues()
+    );
+    assert!(parsed.issues().is_empty(), "{:?}", parsed.issues());
+    let parameter = parsed
+        .syntax_nodes()
+        .iter()
+        .filter_map(|node| node.generic_parameter_syntax())
+        .find(|parameter| parameter.name() == "N")
+        .expect("const 泛型参数");
+    let default = parameter.default_const().expect("const 默认表达式");
+    assert_eq!(
+        parsed.source().slice(default.start, default.end),
+        Some("{ 8 >> 1 }")
+    );
+    assert!(parsed.syntax_nodes().iter().any(|node| {
+        node.type_syntax().is_some_and(|syntax| {
+            parsed
+                .source()
+                .slice(syntax.bounds().start, syntax.bounds().end)
+                == Some("Buffer<{ 8 >> 1 }>")
+        })
     }));
 }
 

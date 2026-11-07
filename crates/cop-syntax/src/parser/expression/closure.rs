@@ -6,7 +6,7 @@ use crate::{
         token_cursor::{SyntaxError, SyntaxErrorKind, TokenCursor},
         types::TypeParser,
     },
-    recovery::Recovery,
+    recovery::{AngleScanContext, Recovery},
     Delimiter, SourceFile, Token, TokenKind,
 };
 
@@ -45,19 +45,22 @@ impl ClosureParser {
             let close = Self::find_closure_pipe(cursor)
                 .ok_or_else(|| PathParser::error_at(cursor, SyntaxErrorKind::UnexpectedEof))?;
             let parameter_bounds = cursor.index()..close;
-            for range in Recovery::split_top_level(
+            let ranges = Recovery::split_top_level(
                 cursor.tokens(),
                 parameter_bounds.start,
                 parameter_bounds.end,
                 ",",
-            ) {
+                AngleScanContext::Header,
+            )
+            .ok_or_else(|| PathParser::error_at(cursor, SyntaxErrorKind::UnexpectedToken))?;
+            for range in ranges {
                 if range.is_empty() {
                     continue;
                 }
-                let mut parameter_cursor = TokenCursor::new(cursor.tokens(), range.clone())
-                    .ok_or_else(|| {
-                        PathParser::error_at(cursor, SyntaxErrorKind::UnexpectedToken)
-                    })?;
+                let mut parameter_cursor =
+                    TokenCursor::from_token_range(cursor.tokens(), range.clone()).ok_or_else(
+                        || PathParser::error_at(cursor, SyntaxErrorKind::UnexpectedToken),
+                    )?;
                 let attributes = PrattParser::parse_expression_attributes(&mut parameter_cursor)?;
                 let pattern_start = parameter_cursor.index();
                 let colon = PrattParser::find_top_level_token(
@@ -71,10 +74,11 @@ impl ClosureParser {
                     pattern_start..pattern_end,
                 )?;
                 let ty = if let Some(colon) = colon {
-                    let mut type_cursor = TokenCursor::new(cursor.tokens(), colon + 1..range.end)
-                        .ok_or_else(|| {
-                        PathParser::error_at(cursor, SyntaxErrorKind::UnexpectedToken)
-                    })?;
+                    let mut type_cursor =
+                        TokenCursor::from_token_range(cursor.tokens(), colon + 1..range.end)
+                            .ok_or_else(|| {
+                                PathParser::error_at(cursor, SyntaxErrorKind::UnexpectedToken)
+                            })?;
                     let ty = TypeParser::parse(&mut type_cursor)?;
                     if !type_cursor.is_empty() {
                         return Err(PathParser::error_at(
@@ -163,7 +167,8 @@ impl ClosureParser {
     }
 
     fn find_closure_pipe(cursor: &TokenCursor<'_>) -> Option<usize> {
-        let mut scan = TokenCursor::new(cursor.tokens(), cursor.index()..cursor.end())?;
+        let mut scan =
+            TokenCursor::from_token_range(cursor.tokens(), cursor.index()..cursor.end())?;
         while !scan.is_empty() {
             if scan.at_punctuation("|") {
                 return Some(scan.index());

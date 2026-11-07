@@ -1,16 +1,19 @@
-use std::ops::Range;
+use cop_i18n::t;
 
 use crate::{
     ast::{
         AstFactory, AstNodeId, GenericParameterKind, GenericParameterParts, GenericParameterSyntax,
-        Item, ItemKind, ParseIssue, SyntaxNode, SyntaxNodeData, SyntaxNodeKind,
+        Item, ItemKind, ParseIssue, ParseIssueKind, SyntaxNode, SyntaxNodeData, SyntaxNodeKind,
     },
     recovery::Recovery,
     SourceFile, Token, TokenKind,
 };
 
 use super::{
-    attributes::AttributeParser, path::PathParser, token_cursor::TokenCursor, types::TypeParser,
+    attributes::AttributeParser,
+    path::PathParser,
+    token_cursor::{CursorRange, SyntaxError, SyntaxErrorKind, TokenCursor},
+    types::TypeParser,
 };
 
 pub(super) struct GenericParameterParser;
@@ -28,7 +31,7 @@ struct GenericParameterNodeInput<'a> {
     source: &'a SourceFile,
     tokens: &'a [Token],
     parent: AstNodeId,
-    range: Range<usize>,
+    range: CursorRange,
     ast_nodes: &'a mut Vec<SyntaxNode>,
     issues: &'a mut Vec<ParseIssue>,
 }
@@ -81,53 +84,80 @@ impl GenericParameterParser {
         {
             return;
         }
-        let Some(close) = matching_angle(tokens, open, after) else {
+        let Some(mut cursor) = TokenCursor::from_token_range(tokens, open..after) else {
             return;
         };
-        let mut range_start = open + 1;
-        let mut index = open + 1;
-        let mut angle_depth = 0usize;
-        while index < close {
-            if matches!(tokens[index].kind(), TokenKind::OpenDelimiter(_)) {
-                if let Some(group_end) = Recovery::matching_delimiter(tokens, index) {
-                    if group_end < close {
-                        index = group_end + 1;
-                        continue;
-                    }
+        match cursor.split_angle_list() {
+            Ok(scan) => {
+                for range in scan.parameters() {
+                    Self::push_parameter(GenericParameterNodeInput {
+                        source,
+                        tokens,
+                        parent,
+                        range: *range,
+                        ast_nodes,
+                        issues,
+                    });
+                }
+                for error in scan.errors() {
+                    Self::record_error(error.clone(), parent, ast_nodes, issues);
                 }
             }
-            match tokens[index].kind() {
-                TokenKind::Punctuation(value) if value == "<" => angle_depth += 1,
-                TokenKind::Punctuation(value) if value == "<<" => angle_depth += 2,
-                TokenKind::Punctuation(value) if value == ">" => {
-                    angle_depth = angle_depth.saturating_sub(1);
+            Err(scan_error) => {
+                for range in scan_error.completed() {
+                    Self::push_parameter(GenericParameterNodeInput {
+                        source,
+                        tokens,
+                        parent,
+                        range: *range,
+                        ast_nodes,
+                        issues,
+                    });
                 }
-                TokenKind::Punctuation(value) if value == ">>" => {
-                    angle_depth = angle_depth.saturating_sub(2);
+                for error in scan_error.recoverable_errors() {
+                    Self::record_error(error.clone(), parent, ast_nodes, issues);
                 }
-                _ => {}
+                if let Some(range) = scan_error.remainder() {
+                    Self::push_unparsed_parameter(GenericParameterNodeInput {
+                        source,
+                        tokens,
+                        parent,
+                        range,
+                        ast_nodes,
+                        issues,
+                    });
+                }
+                Self::record_error(scan_error.error(), parent, ast_nodes, issues);
             }
-            if angle_depth == 0 && Recovery::is_punctuation(&tokens[index], ",") {
-                Self::push_parameter(GenericParameterNodeInput {
-                    source,
-                    tokens,
-                    parent,
-                    range: range_start..index,
-                    ast_nodes,
-                    issues,
-                });
-                range_start = index + 1;
-            }
-            index += 1;
         }
-        Self::push_parameter(GenericParameterNodeInput {
+    }
+
+    fn push_unparsed_parameter(input: GenericParameterNodeInput<'_>) {
+        let GenericParameterNodeInput {
             source,
             tokens,
             parent,
-            range: range_start..close,
+            range,
             ast_nodes,
             issues,
-        });
+        } = input;
+        let byte_bounds = range.byte_bounds();
+        if byte_bounds.is_empty() {
+            return;
+        }
+        let mut attribute_cursor = range.start().token_index();
+        let attributes =
+            AttributeParser::parse_attributes(source, tokens, &mut attribute_cursor, issues);
+        let start = attributes
+            .first()
+            .map_or(byte_bounds.start, |attribute| attribute.start());
+        AstFactory::push_ast_node(
+            ast_nodes,
+            Some(parent),
+            SyntaxNodeKind::GenericParameter,
+            start..byte_bounds.end,
+            attributes,
+        );
     }
 
     fn push_parameter(input: GenericParameterNodeInput<'_>) {
@@ -139,50 +169,73 @@ impl GenericParameterParser {
             ast_nodes,
             issues,
         } = input;
-        let Some(first) = tokens.get(range.start) else {
+        let byte_bounds = range.byte_bounds();
+        if byte_bounds.is_empty() {
             return;
-        };
-        let Some(last) = range.end.checked_sub(1).and_then(|index| tokens.get(index)) else {
-            return;
-        };
-        let mut cursor = range.start;
-        let attributes = AttributeParser::parse_attributes(source, tokens, &mut cursor, issues);
-        let start = attributes
+        }
+        let mut attribute_cursor = range.start().token_index();
+        let attributes =
+            AttributeParser::parse_attributes(source, tokens, &mut attribute_cursor, issues);
+        let node_start = attributes
             .first()
-            .map_or(first.start(), |attribute| attribute.start());
+            .map_or(byte_bounds.start, |attribute| attribute.start());
         let parameter_id = AstFactory::push_ast_node(
             ast_nodes,
             Some(parent),
             SyntaxNodeKind::GenericParameter,
-            start..last.end(),
+            node_start..byte_bounds.end,
             attributes,
         );
-        if let Some(syntax) = Self::parse_parameter_syntax(tokens, cursor..range.end) {
-            AstFactory::set_ast_node_data(
+        let Some(syntax_start) = CursorRange::from_token_range(
+            tokens,
+            attribute_cursor..range.start().token_index().max(attribute_cursor),
+        )
+        .map(|attribute_range| attribute_range.end()) else {
+            return;
+        };
+        let Some(syntax_range) = CursorRange::new(syntax_start, range.end()) else {
+            return;
+        };
+        let Some(parameter_cursor) =
+            TokenCursor::new(tokens, range).and_then(|cursor| cursor.subcursor(syntax_range))
+        else {
+            return;
+        };
+        match Self::parse_parameter_syntax(parameter_cursor) {
+            Ok(syntax) => AstFactory::set_ast_node_data(
                 ast_nodes,
                 parameter_id,
                 SyntaxNodeData::GenericParameter(syntax),
-            );
+            ),
+            Err(error) => Self::record_error(error, parameter_id, ast_nodes, issues),
         }
     }
 
     fn parse_parameter_syntax(
-        tokens: &[Token],
-        range: Range<usize>,
-    ) -> Option<GenericParameterSyntax> {
-        let mut cursor = TokenCursor::new(tokens, range.clone())?;
+        mut cursor: TokenCursor<'_>,
+    ) -> Result<GenericParameterSyntax, SyntaxError> {
         let start_offset = cursor.offset();
-        let (kind, name) = match cursor.consume()?.kind() {
-            TokenKind::Lifetime(name) => (GenericParameterKind::Lifetime, name.clone()),
-            TokenKind::Identifier(value) if value == "const" => {
-                let name = match cursor.consume()?.kind() {
-                    TokenKind::Identifier(name) => name.clone(),
-                    _ => return None,
+        let (kind, name) = match cursor.consume().map(Token::kind) {
+            Some(TokenKind::Lifetime(name)) => (GenericParameterKind::Lifetime, name.clone()),
+            Some(TokenKind::Identifier(value)) if value == "const" => {
+                let name = match cursor.consume().map(Token::kind) {
+                    Some(TokenKind::Identifier(name)) => name.clone(),
+                    _ => {
+                        return Err(PathParser::error_at(
+                            &cursor,
+                            SyntaxErrorKind::UnexpectedToken,
+                        ))
+                    }
                 };
                 (GenericParameterKind::Const, name)
             }
-            TokenKind::Identifier(name) => (GenericParameterKind::Type, name.clone()),
-            _ => return None,
+            Some(TokenKind::Identifier(name)) => (GenericParameterKind::Type, name.clone()),
+            _ => {
+                return Err(PathParser::error_at(
+                    &cursor,
+                    SyntaxErrorKind::UnexpectedToken,
+                ))
+            }
         };
         let mut trait_bounds = Vec::new();
         let mut lifetime_bounds = Vec::new();
@@ -191,51 +244,60 @@ impl GenericParameterParser {
         let mut default_const = None;
         if cursor.consume_punctuation(":") {
             if kind == GenericParameterKind::Const {
-                let type_end = (cursor.index()..range.end)
-                    .find(|index| Recovery::is_punctuation(&tokens[*index], "="))
-                    .unwrap_or(range.end);
-                declared_type = TypeParser::parse_range(tokens, cursor.index()..type_end).ok();
-                while cursor.index() < type_end {
-                    cursor.consume();
-                }
+                declared_type = Some(TypeParser::parse(&mut cursor)?);
             } else if kind == GenericParameterKind::Lifetime {
                 loop {
-                    let TokenKind::Lifetime(lifetime) = cursor.peek()?.kind() else {
-                        return None;
-                    };
-                    lifetime_bounds.push(lifetime.clone());
-                    cursor.consume();
+                    match cursor.peek().map(Token::kind) {
+                        Some(TokenKind::Lifetime(lifetime)) => {
+                            lifetime_bounds.push(lifetime.clone());
+                            cursor.consume();
+                        }
+                        _ => {
+                            return Err(PathParser::error_at(
+                                &cursor,
+                                SyntaxErrorKind::UnexpectedToken,
+                            ))
+                        }
+                    }
                     if !cursor.consume_punctuation("+") {
                         break;
                     }
                 }
             } else {
-                trait_bounds = TypeParser::parse_bounds(&mut cursor).ok()?;
+                trait_bounds = TypeParser::parse_bounds(&mut cursor)?;
             }
         }
         if cursor.consume_punctuation("=") {
             if kind == GenericParameterKind::Const {
-                let start = cursor.index();
-                default_const = Some(PathParser::span(
-                    tokens,
-                    start,
-                    range.end,
-                    cursor.offset(),
-                    tokens
-                        .get(range.end.saturating_sub(1))
-                        .map_or(cursor.offset(), Token::end),
-                ));
+                let start = cursor.offset();
                 while !cursor.is_empty() {
-                    cursor.consume();
+                    if matches!(
+                        cursor.peek().map(Token::kind),
+                        Some(TokenKind::OpenDelimiter(_))
+                    ) {
+                        if cursor.skip_delimited_group().is_none() {
+                            return Err(PathParser::error_at(
+                                &cursor,
+                                SyntaxErrorKind::UnclosedDelimiter,
+                            ));
+                        }
+                    } else {
+                        cursor.consume();
+                    }
                 }
+                default_const = Some(start..cursor.consumed_offset());
             } else {
-                default_type = Some(TypeParser::parse(&mut cursor).ok()?);
+                default_type = Some(TypeParser::parse(&mut cursor)?);
             }
         }
         if !cursor.is_empty() {
-            return None;
+            return Err(PathParser::error_at(
+                &cursor,
+                SyntaxErrorKind::UnexpectedToken,
+            ));
         }
-        Some(GenericParameterSyntax::new(GenericParameterParts {
+        let end_offset = cursor.consumed_position().byte_offset();
+        Ok(GenericParameterSyntax::new(GenericParameterParts {
             kind,
             name,
             trait_bounds,
@@ -243,44 +305,35 @@ impl GenericParameterParser {
             declared_type,
             default_type,
             default_const,
-            bounds_range: start_offset
-                ..tokens
-                    .get(range.end.saturating_sub(1))
-                    .map_or(start_offset, Token::end),
+            bounds_range: start_offset..end_offset,
         }))
     }
-}
 
-fn matching_angle(tokens: &[Token], open: usize, end: usize) -> Option<usize> {
-    let mut depth = 0usize;
-    let mut index = open;
-    while index < end {
-        if matches!(tokens[index].kind(), TokenKind::OpenDelimiter(_)) {
-            if let Some(close) = Recovery::matching_delimiter(tokens, index) {
-                if close < end {
-                    index = close + 1;
-                    continue;
-                }
-            }
+    fn record_error(
+        error: SyntaxError,
+        parent: AstNodeId,
+        ast_nodes: &mut Vec<SyntaxNode>,
+        issues: &mut Vec<ParseIssue>,
+    ) {
+        let bounds = error.bounds();
+        let kind = if error.kind() == SyntaxErrorKind::UnclosedDelimiter {
+            ParseIssueKind::UnclosedDelimiter
+        } else {
+            ParseIssueKind::UnexpectedToken
+        };
+        if !bounds.is_empty() {
+            AstFactory::push_ast_node(
+                ast_nodes,
+                Some(parent),
+                SyntaxNodeKind::Opaque,
+                bounds.clone(),
+                Vec::new(),
+            );
         }
-        match tokens[index].kind() {
-            TokenKind::Punctuation(value) if value == "<" => depth += 1,
-            TokenKind::Punctuation(value) if value == "<<" => depth += 2,
-            TokenKind::Punctuation(value) if value == ">" => {
-                depth = depth.checked_sub(1)?;
-                if depth == 0 {
-                    return Some(index);
-                }
-            }
-            TokenKind::Punctuation(value) if value == ">>" => {
-                depth = depth.checked_sub(2)?;
-                if depth == 0 {
-                    return Some(index);
-                }
-            }
-            _ => {}
-        }
-        index += 1;
+        issues.push(AstFactory::parse_issue(
+            kind,
+            bounds,
+            t!("syntax.item_unsupported"),
+        ));
     }
-    None
 }

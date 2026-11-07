@@ -11,6 +11,7 @@ use crate::{
     parser::{
         attributes::AttributeParser,
         expression::SyntaxCollector,
+        token_cursor::CursorRange,
         types::{TypeInput, TypeParser},
     },
     recovery::Recovery,
@@ -441,7 +442,11 @@ impl ForeignItemParser {
             if colon && *context.cursor < semicolon {
                 TypeParser::collect(TypeInput {
                     tokens: context.tokens,
-                    bounds: *context.cursor..semicolon,
+                    bounds: CursorRange::from_token_range(
+                        context.tokens,
+                        *context.cursor..semicolon,
+                    )
+                    .expect("foreign static 类型范围有效"),
                     parent: node_id,
                     ast_nodes: context.ast_nodes,
                     issues: context.issues,

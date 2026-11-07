@@ -45,7 +45,7 @@ impl PrattParser {
         tokens: &[Token],
         bounds: Range<usize>,
     ) -> Result<ExpressionSyntax, SyntaxError> {
-        let mut cursor = TokenCursor::new(tokens, bounds)
+        let mut cursor = TokenCursor::from_token_range(tokens, bounds)
             .ok_or_else(|| SyntaxError::new(SyntaxErrorKind::UnexpectedToken, 0..0))?;
         let expression = Self::parse(source, &mut cursor, 0)?;
         if !cursor.is_empty() {
@@ -581,8 +581,9 @@ impl PrattParser {
     ) -> Result<Vec<ExpressionSyntax>, SyntaxError> {
         let (_, group) = Self::take_group(cursor)?;
         let mut arguments = Vec::new();
-        let mut inner = TokenCursor::new(cursor.tokens(), group.start + 1..group.end - 1)
-            .ok_or_else(|| PathParser::error_at(cursor, SyntaxErrorKind::UnexpectedToken))?;
+        let mut inner =
+            TokenCursor::from_token_range(cursor.tokens(), group.start + 1..group.end - 1)
+                .ok_or_else(|| PathParser::error_at(cursor, SyntaxErrorKind::UnexpectedToken))?;
         while !inner.is_empty() {
             arguments.push(Self::parse(source, &mut inner, 0)?);
             if !inner.consume_punctuation(",") && !inner.is_empty() {

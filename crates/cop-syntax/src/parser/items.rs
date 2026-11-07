@@ -10,7 +10,7 @@ use super::{
     block::LocalItemInput,
     expression::{ImplHeaderInput, MacroInputRequest, SyntaxCollector},
     generic_parameters::{GenericParameterInput, GenericParameterParser},
-    token_cursor::TokenCursor,
+    token_cursor::{AngleScanContext, CursorRange, TokenCursor},
     types::{TypeInput, TypeParser},
     where_clause::{WhereClauseInput, WhereClauseParser},
 };
@@ -452,16 +452,18 @@ impl<'a> Parser<'a> {
             );
             return Some(AstFactory::trait_item(name));
         };
-        let trait_header_end = TokenCursor::new(self.tokens, self.cursor..open_index)
-            .and_then(|cursor| cursor.find_top_level_identifier("where"))
+        let trait_header_end = TokenCursor::from_token_range(self.tokens, self.cursor..open_index)
+            .and_then(|cursor| cursor.find_top_level_identifier("where", AngleScanContext::Header))
             .unwrap_or(open_index);
-        if let Some(colon) = TokenCursor::new(self.tokens, self.cursor..trait_header_end)
-            .and_then(|cursor| cursor.find_top_level_punctuation(":"))
+        if let Some(colon) =
+            TokenCursor::from_token_range(self.tokens, self.cursor..trait_header_end)
+                .and_then(|cursor| cursor.find_top_level_punctuation(":", AngleScanContext::Header))
         {
             if colon + 1 < trait_header_end {
                 TypeParser::collect_bounds(TypeInput {
                     tokens: self.tokens,
-                    bounds: colon + 1..trait_header_end,
+                    bounds: CursorRange::from_token_range(self.tokens, colon + 1..trait_header_end)
+                        .expect("trait bound 范围有效"),
                     parent,
                     ast_nodes: &mut self.ast_nodes,
                     issues: &mut self.issues,

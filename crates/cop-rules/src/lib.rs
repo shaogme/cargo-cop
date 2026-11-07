@@ -5,6 +5,7 @@ mod module_rules;
 mod semantic_rules;
 mod support;
 mod syntax_rules;
+mod trait_impl_locality;
 
 use cop_analysis::AnalysisSnapshot;
 use cop_config::ResolvedConfig;

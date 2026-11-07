@@ -8,6 +8,14 @@ use crate::{
 
 pub(crate) struct Recovery;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum AngleScanContext {
+    Type,
+    Header,
+    Expression,
+    TokenSequence,
+}
+
 pub(crate) struct ExternBlockHeader {
     pub(crate) unsafe_: bool,
     pub(crate) abi: Option<Range<usize>>,
@@ -184,17 +192,14 @@ impl Recovery {
         let mut index = start;
         let mut generic_depth = 0usize;
         while index < tokens.len() {
+            if matches!(
+                tokens[index].kind(),
+                TokenKind::OpenDelimiter(Delimiter::Parenthesis)
+            ) && generic_depth == 0
+            {
+                return Some(index);
+            }
             match tokens[index].kind() {
-                TokenKind::Punctuation(value) if value == "<" => generic_depth += 1,
-                TokenKind::Punctuation(value) if value == ">" => {
-                    generic_depth = generic_depth.saturating_sub(1);
-                }
-                TokenKind::Punctuation(value) if value == ">>" => {
-                    generic_depth = generic_depth.saturating_sub(2);
-                }
-                TokenKind::OpenDelimiter(Delimiter::Parenthesis) if generic_depth == 0 => {
-                    return Some(index);
-                }
                 TokenKind::OpenDelimiter(_) => {
                     index = Self::matching_delimiter(tokens, index)? + 1;
                     continue;
@@ -203,6 +208,11 @@ impl Recovery {
                 TokenKind::CloseDelimiter(Delimiter::Brace) => return None,
                 _ => {}
             }
+            Self::update_angle_depth(
+                tokens[index].kind(),
+                AngleScanContext::Header,
+                &mut generic_depth,
+            )?;
             index += 1;
         }
         None
@@ -212,17 +222,14 @@ impl Recovery {
         let mut index = start;
         let mut generic_depth = 0usize;
         while index < tokens.len() {
+            if matches!(
+                tokens[index].kind(),
+                TokenKind::OpenDelimiter(Delimiter::Brace)
+            ) && generic_depth == 0
+            {
+                return Some(index);
+            }
             match tokens[index].kind() {
-                TokenKind::Punctuation(value) if value == "<" => generic_depth += 1,
-                TokenKind::Punctuation(value) if value == ">" => {
-                    generic_depth = generic_depth.saturating_sub(1);
-                }
-                TokenKind::Punctuation(value) if value == ">>" => {
-                    generic_depth = generic_depth.saturating_sub(2);
-                }
-                TokenKind::OpenDelimiter(Delimiter::Brace) if generic_depth == 0 => {
-                    return Some(index);
-                }
                 TokenKind::OpenDelimiter(_) => {
                     if let Some(close_index) = Self::matching_delimiter(tokens, index) {
                         index = close_index + 1;
@@ -234,6 +241,11 @@ impl Recovery {
                 TokenKind::CloseDelimiter(Delimiter::Brace) => return None,
                 _ => {}
             }
+            Self::update_angle_depth(
+                tokens[index].kind(),
+                AngleScanContext::Header,
+                &mut generic_depth,
+            )?;
             index += 1;
         }
         None
@@ -311,96 +323,69 @@ impl Recovery {
         start: usize,
         end: usize,
         separator: &str,
-    ) -> Vec<Range<usize>> {
+        context: AngleScanContext,
+    ) -> Option<Vec<Range<usize>>> {
+        if start > end || end > tokens.len() {
+            return None;
+        }
         let mut ranges = Vec::new();
         let mut item_start = start;
         let mut index = start;
+        let mut angle_depth = 0usize;
         while index < end {
-            if let Some(close_index) = Self::generic_arguments_end(tokens, index, end) {
+            if let TokenKind::OpenDelimiter(_) = tokens[index].kind() {
+                let close_index = Self::matching_delimiter(tokens, index)?;
+                if close_index >= end {
+                    return None;
+                }
                 index = close_index + 1;
                 continue;
             }
-            if let TokenKind::OpenDelimiter(_) = tokens[index].kind() {
-                if let Some(close_index) = Self::matching_delimiter(tokens, index) {
-                    if close_index < end {
-                        index = close_index + 1;
-                        continue;
-                    }
-                }
-            }
-            if Self::is_punctuation(&tokens[index], separator) {
+            if angle_depth == 0 && Self::is_punctuation(&tokens[index], separator) {
                 ranges.push(item_start..index);
                 item_start = index + 1;
+                index += 1;
+                continue;
             }
+            Self::update_angle_depth(tokens[index].kind(), context, &mut angle_depth)?;
             index += 1;
+        }
+        if angle_depth != 0 {
+            return None;
         }
         if item_start < end {
             ranges.push(item_start..end);
         }
-        ranges
+        Some(ranges)
     }
 
-    fn generic_arguments_end(tokens: &[Token], open_index: usize, end: usize) -> Option<usize> {
-        if !Self::is_punctuation(tokens.get(open_index)?, "<") {
-            return None;
+    fn update_angle_depth(
+        kind: &TokenKind,
+        context: AngleScanContext,
+        angle_depth: &mut usize,
+    ) -> Option<()> {
+        if matches!(
+            context,
+            AngleScanContext::Expression | AngleScanContext::TokenSequence
+        ) {
+            return Some(());
         }
-        let previous = open_index
-            .checked_sub(1)
-            .and_then(|index| tokens.get(index))?;
-        let turbofish = Self::is_punctuation(previous, "::");
-        if previous.kind().identifier().is_none() && !turbofish {
-            return None;
-        }
-        let mut depth = 1usize;
-        let mut index = open_index + 1;
-        while index < end {
-            if matches!(tokens[index].kind(), TokenKind::OpenDelimiter(_)) {
-                if let Some(close_index) = Self::matching_delimiter(tokens, index) {
-                    if close_index < end {
-                        index = close_index + 1;
-                        continue;
-                    }
-                }
+        match kind {
+            TokenKind::Punctuation(value) if value == "<" => {
+                *angle_depth = angle_depth.checked_add(1)?;
             }
-            match tokens[index].kind() {
-                TokenKind::Punctuation(value) if value == "<" => depth += 1,
-                TokenKind::Punctuation(value) if value == ">" => {
-                    depth = depth.saturating_sub(1);
-                    if depth == 0
-                        && Self::can_follow_generic_arguments(tokens, index + 1, turbofish)
-                    {
-                        return Some(index);
-                    }
-                }
-                TokenKind::Punctuation(value) if value == ">>" => {
-                    depth = depth.saturating_sub(2);
-                    if depth == 0
-                        && Self::can_follow_generic_arguments(tokens, index + 1, turbofish)
-                    {
-                        return Some(index);
-                    }
-                }
-                _ => {}
+            TokenKind::Punctuation(value) if value == "<<" => {
+                *angle_depth = angle_depth.checked_add(2)?;
             }
-            index += 1;
+            TokenKind::Punctuation(value) if value == ">" => {
+                *angle_depth = angle_depth.checked_sub(1)?;
+            }
+            TokenKind::Punctuation(value) if value == ">>" => {
+                *angle_depth = angle_depth.checked_sub(2)?;
+            }
+            _ => {}
         }
-        None
-    }
-
-    fn can_follow_generic_arguments(tokens: &[Token], index: usize, turbofish: bool) -> bool {
-        let Some(token) = tokens.get(index) else {
-            return true;
-        };
-        match token.kind() {
-            TokenKind::CloseDelimiter(_) | TokenKind::OpenDelimiter(Delimiter::Bracket) => true,
-            TokenKind::OpenDelimiter(Delimiter::Parenthesis) => turbofish,
-            TokenKind::Punctuation(value) => matches!(
-                value.as_str(),
-                "::" | "!" | "?" | "." | "+" | "=" | "," | ";" | "|" | ">" | ">>"
-            ),
-            TokenKind::Identifier(value) => matches!(value.as_str(), "as" | "where"),
-            _ => false,
-        }
+        Some(())
     }
 
     pub(crate) fn is_punctuation(token: &Token, expected: &str) -> bool {

@@ -47,7 +47,7 @@ impl StatementParser {
         start: usize,
         end: usize,
     ) -> Result<ParsedStatement, SyntaxError> {
-        let mut cursor = TokenCursor::new(tokens, start..end)
+        let mut cursor = TokenCursor::from_token_range(tokens, start..end)
             .ok_or_else(|| SyntaxError::new(SyntaxErrorKind::UnexpectedToken, 0..0))?;
         if cursor.at_identifier("let") {
             return Self::parse_let(source, &mut cursor);

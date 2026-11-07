@@ -170,6 +170,37 @@ fn model(mut value: Option<Box<Thing>>, xs: &[i32]) {
 }
 
 #[test]
+fn keeps_shift_assignment_operators_as_expression_tokens() {
+    let text = "fn shift(mut left: u8, right: u8) { let _ = left >> 1; let _ = left << 1; left >>= right; left <<= right; }";
+    let parsed = parse(SourceFile::new("src/shift_assignment.rs", text));
+    let assignments = parsed
+        .syntax_nodes()
+        .iter()
+        .filter_map(|node| node.expression_syntax())
+        .filter_map(|expression| match expression.kind() {
+            ExpressionSyntaxKind::Assignment { operator, .. } => Some(operator.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let binaries = parsed
+        .syntax_nodes()
+        .iter()
+        .filter_map(|node| node.expression_syntax())
+        .filter_map(|expression| match expression.kind() {
+            ExpressionSyntaxKind::Binary { operator, .. } => Some(operator.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert!(parsed.issues().is_empty(), "{:?}", parsed.issues());
+    assert_eq!(parsed.coverage(), CoverageStatus::Complete);
+    assert!(assignments.contains(&">>="));
+    assert!(assignments.contains(&"<<="));
+    assert!(binaries.contains(&">>"));
+    assert!(binaries.contains(&"<<"));
+}
+
+#[test]
 fn cfg_macro_candidates_keep_structured_predicates_and_absolute_ranges() {
     let text = "fn check() { let enabled = cfg!(all(unix, target_os = \"linux\")); }";
     let parsed = parse(SourceFile::new("src/cfg_macro.rs", text));

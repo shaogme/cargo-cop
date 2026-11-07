@@ -23,7 +23,7 @@ impl PatternParser {
         tokens: &[Token],
         bounds: Range<usize>,
     ) -> Result<PatternSyntax, SyntaxError> {
-        let mut cursor = TokenCursor::new(tokens, bounds)
+        let mut cursor = TokenCursor::from_token_range(tokens, bounds)
             .ok_or_else(|| SyntaxError::new(SyntaxErrorKind::UnexpectedToken, 0..0))?;
         let start = cursor.offset();
         if !cursor.consume_punctuation("&") {
@@ -83,7 +83,7 @@ impl PatternParser {
         bind_bare_identifiers: bool,
         context: PatternParseContext,
     ) -> Result<PatternSyntax, SyntaxError> {
-        let mut cursor = TokenCursor::new(tokens, bounds)
+        let mut cursor = TokenCursor::from_token_range(tokens, bounds)
             .ok_or_else(|| SyntaxError::new(SyntaxErrorKind::UnexpectedToken, 0..0))?;
         let pattern = Self::parse(&mut cursor, bind_bare_identifiers, context)?;
         if !cursor.is_empty() {

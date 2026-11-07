@@ -8,7 +8,7 @@ use crate::{
         AttributeMetaKind, AttributeMetaValue, AttributeMetaValueKind, ParseIssue, ParseIssueKind,
         Visibility, VisibilityKind,
     },
-    recovery::Recovery,
+    recovery::{AngleScanContext, Recovery},
     Delimiter, LiteralKind, RustStringLiteral, SourceFile, Token, TokenKind,
 };
 
@@ -297,7 +297,8 @@ impl AttributeParser {
     }
 
     fn meta_value_end(tokens: &[Token], start: usize, end: usize) -> Result<usize, Range<usize>> {
-        Recovery::split_top_level(tokens, start, end, ",")
+        Recovery::split_top_level(tokens, start, end, ",", AngleScanContext::TokenSequence)
+            .unwrap_or_default()
             .first()
             .filter(|range| range.start == start && range.end > start)
             .map_or_else(

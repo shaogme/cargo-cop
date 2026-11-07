@@ -28,7 +28,7 @@ impl AtomParser {
                 ExpressionSyntaxKind::Tuple(Vec::new()),
             ));
         }
-        let mut inner_cursor = TokenCursor::new(cursor.tokens(), inner.clone())
+        let mut inner_cursor = TokenCursor::from_token_range(cursor.tokens(), inner.clone())
             .ok_or_else(|| PathParser::error_at(cursor, SyntaxErrorKind::UnexpectedToken))?;
         let first = PrattParser::parse(source, &mut inner_cursor, 0)?;
         if inner_cursor.consume_punctuation(",") {
@@ -79,7 +79,7 @@ impl AtomParser {
                 ExpressionSyntaxKind::Array(Vec::new()),
             ));
         }
-        let mut inner_cursor = TokenCursor::new(cursor.tokens(), inner.clone())
+        let mut inner_cursor = TokenCursor::from_token_range(cursor.tokens(), inner.clone())
             .ok_or_else(|| PathParser::error_at(cursor, SyntaxErrorKind::UnexpectedToken))?;
         let first = PrattParser::parse(source, &mut inner_cursor, 0)?;
         if inner_cursor.consume_punctuation(";") {
@@ -131,8 +131,9 @@ impl AtomParser {
     ) -> Result<ExpressionSyntax, SyntaxError> {
         let (_, group) = PrattParser::take_group(cursor)?;
         let mut fields = Vec::new();
-        let mut field_cursor = TokenCursor::new(cursor.tokens(), group.start + 1..group.end - 1)
-            .ok_or_else(|| PathParser::error_at(cursor, SyntaxErrorKind::UnexpectedToken))?;
+        let mut field_cursor =
+            TokenCursor::from_token_range(cursor.tokens(), group.start + 1..group.end - 1)
+                .ok_or_else(|| PathParser::error_at(cursor, SyntaxErrorKind::UnexpectedToken))?;
         while !field_cursor.is_empty() {
             let field_start = field_cursor.index();
             let attributes = PrattParser::parse_expression_attributes(&mut field_cursor)?;
@@ -170,8 +171,11 @@ impl AtomParser {
                     )
                 } else {
                     let path = PathParser::parse_expression(
-                        &mut TokenCursor::new(cursor.tokens(), name_index..name_index + 1)
-                            .expect("字段名 token 范围有效"),
+                        &mut TokenCursor::from_token_range(
+                            cursor.tokens(),
+                            name_index..name_index + 1,
+                        )
+                        .expect("字段名 token 范围有效"),
                     )?;
                     (
                         Some(ExpressionSyntax::new(

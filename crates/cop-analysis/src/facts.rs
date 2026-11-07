@@ -5,10 +5,14 @@ mod records;
 use std::{collections::BTreeMap, mem, ops::Range, path::PathBuf};
 
 use cop_cargo::SelectedPackage;
-use cop_syntax::{AstNodeId, CoverageStatus, SyntaxNode, SyntaxNodeKind, TypeSyntaxKind};
+use cop_syntax::{
+    AstNodeId, CoverageStatus, ItemSyntaxKind, SyntaxNode, SyntaxNodeKind, TypeSyntaxKind,
+};
 
 pub use collector::ReferenceKind;
-pub use records::{CfgMacroFact, CoverageRegion, CoverageRegionKind, ImplOwnerRecord};
+pub use records::{
+    CfgMacroFact, CoverageRegion, CoverageRegionKind, ImplOwnerRecord, TypeAliasFact,
+};
 
 use api_surface::{ApiSurfaceCollector, ApiSurfaceRange, PendingDeclaration};
 use collector::SyntaxFactCollector;
@@ -99,7 +103,7 @@ pub struct AnalysisFacts {
     impl_owners: Vec<ImplOwnerRecord>,
     impls_by_definition: BTreeMap<DefinitionId, Vec<usize>>,
     api_dependencies: BTreeMap<DefinitionId, Vec<ApiDependency>>,
-    type_alias_targets: BTreeMap<DefinitionId, PathResolution>,
+    type_aliases: BTreeMap<DefinitionId, TypeAliasFact>,
     syntax_by_module: Vec<ModuleSyntaxFacts>,
     definitions_by_location: BTreeMap<DefinitionLocation, DefinitionId>,
     declarations_by_definition: BTreeMap<DefinitionId, DeclarationFact>,
@@ -282,7 +286,7 @@ impl AnalysisFacts {
             }
             facts.resolve_impl_owners(module, module_id);
         }
-        facts.resolve_type_alias_targets(modules);
+        facts.collect_type_alias_facts(modules);
         for symbol in facts.symbols.symbols() {
             let Some(module) = declaration_module_for(modules, symbol) else {
                 continue;
@@ -427,8 +431,8 @@ impl AnalysisFacts {
         self.definition(*definition_id)
     }
 
-    pub fn type_alias_target(&self, definition: DefinitionId) -> Option<&PathResolution> {
-        self.type_alias_targets.get(&definition)
+    pub fn type_alias(&self, definition: DefinitionId) -> Option<&TypeAliasFact> {
+        self.type_aliases.get(&definition)
     }
 
     pub fn declaration_for_definition(&self, definition: DefinitionId) -> Option<&DeclarationFact> {
@@ -523,10 +527,15 @@ impl AnalysisFacts {
             return;
         }
         let target = syntax.self_type();
-        let target_bounds = target.map(|target| target.bounds());
-        let target_path = target.and_then(SymbolIndexSupport::type_path);
         let trait_path = syntax.trait_path();
         let trait_bounds = trait_path.map(|path| path.bounds());
+        let generic_parameters = item
+            .children()
+            .iter()
+            .filter_map(|child| module.parse_output().node(*child))
+            .filter_map(SyntaxNode::generic_parameter_syntax)
+            .cloned()
+            .collect();
         self.impl_owners
             .push(ImplOwnerRecord::new(ImplOwnerRecordData {
                 module_id,
@@ -536,10 +545,9 @@ impl AnalysisFacts {
                     .condition_for_span(item.start(), item.end())
                     .map(str::to_owned),
                 owner: None,
-                target_bounds,
-                target_path,
-                trait_bounds: trait_bounds.clone(),
-                trait_path: trait_path.map(SymbolIndexSupport::path_segments),
+                target: target.cloned(),
+                trait_syntax: trait_path.cloned(),
+                generic_parameters,
                 target_enabled: module
                     .configured_ast()
                     .is_enabled_range(item.start(), item.end()),
@@ -577,7 +585,7 @@ impl AnalysisFacts {
             }));
     }
 
-    fn resolve_type_alias_targets(&mut self, modules: &[ModuleNode]) {
+    fn collect_type_alias_facts(&mut self, modules: &[ModuleNode]) {
         let aliases = self
             .symbols
             .symbols()
@@ -586,29 +594,57 @@ impl AnalysisFacts {
             .cloned()
             .collect::<Vec<_>>();
         for alias in aliases {
-            let (Some(target_path), Some(bounds)) = (
-                alias.target_path(),
-                alias.span().map(|span| span.byte_range()),
-            ) else {
+            let Some(bounds) = alias.span().map(|span| span.byte_range()) else {
                 continue;
             };
             let Some(module) = declaration_module_for(modules, &alias) else {
                 continue;
             };
-            let resolution = self
-                .references_for_module(module)
-                .filter(|reference| {
-                    reference.kind != ReferenceKind::Use
-                        && reference.segments == target_path
-                        && bounds.start <= reference.bounds.start
-                        && reference.bounds.end <= bounds.end
+            let Some(module_id) = self.module_id(module) else {
+                continue;
+            };
+            let Some(alias_node) = module
+                .parse_output()
+                .syntax_nodes()
+                .iter()
+                .filter(|node| {
+                    node.start() <= bounds.start
+                        && bounds.end <= node.end()
+                        && node.item_syntax().is_some_and(|item| {
+                            matches!(item.kind(), ItemSyntaxKind::TypeAlias(Some(name)) if name == alias.name())
+                        })
                 })
-                .min_by_key(|reference| reference.bounds.end - reference.bounds.start)
-                .map(|reference| reference.resolution.clone());
-            if let Some(resolution) = resolution {
-                self.type_alias_targets
-                    .insert(alias.definition_id(), resolution);
-            }
+                .min_by_key(|node| node.end() - node.start())
+            else {
+                continue;
+            };
+            let parameters = alias_node
+                .children()
+                .iter()
+                .filter_map(|child| module.parse_output().node(*child))
+                .filter_map(SyntaxNode::generic_parameter_syntax)
+                .cloned()
+                .collect();
+            let Some(right_hand_side) = alias_node
+                .children()
+                .iter()
+                .filter_map(|child| module.parse_output().node(*child))
+                .filter_map(SyntaxNode::type_syntax)
+                .find(|ty| ty.bounds().start >= bounds.start)
+                .cloned()
+            else {
+                continue;
+            };
+            self.type_aliases.insert(
+                alias.definition_id(),
+                TypeAliasFact::new(
+                    alias.definition_id(),
+                    module_id,
+                    alias.cfg_condition().map(str::to_owned),
+                    parameters,
+                    right_hand_side,
+                ),
+            );
         }
     }
 
@@ -620,12 +656,14 @@ impl AnalysisFacts {
             if implementation.module_id() != module_id {
                 continue;
             }
-            let (Some(target_path), Some(target_bounds)) =
-                (implementation.target_path(), implementation.target_bounds())
+            let (Some(target), Some(target_bounds)) =
+                (implementation.target(), implementation.target_bounds())
             else {
                 continue;
             };
-            let target_path = target_path.to_vec();
+            let Some(target_path) = SymbolIndexSupport::type_path(target) else {
+                continue;
+            };
             let owner = self
                 .references_for_module(module)
                 .filter(|reference| {

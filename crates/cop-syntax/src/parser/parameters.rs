@@ -1,5 +1,5 @@
 use cop_i18n::t;
-use std::ops::Range;
+use std::{iter, ops::Range};
 
 use crate::{
     ast::{
@@ -13,7 +13,7 @@ use crate::{
 use super::{
     attributes::AttributeParser,
     expression::{ParameterPatternInput, SyntaxCollector, SyntaxRequest},
-    token_cursor::TokenCursor,
+    token_cursor::{AngleScanContext, CursorRange, TokenCursor},
     types::{TypeInput, TypeParser},
 };
 
@@ -106,7 +106,16 @@ impl ParameterParser {
             ast_nodes,
             issues,
         } = input;
-        let ranges = Recovery::split_top_level(tokens, start, end, ",")
+        let ranges = Recovery::split_top_level(tokens, start, end, ",", AngleScanContext::Header)
+            .unwrap_or_else(|| {
+                let bounds = Recovery::token_bounds(tokens, start..end);
+                issues.push(AstFactory::parse_issue(
+                    ParseIssueKind::UnexpectedToken,
+                    bounds,
+                    t!("syntax.item_unsupported"),
+                ));
+                iter::once(start..end).collect()
+            })
             .into_iter()
             .filter(|range| range.start < range.end)
             .collect::<Vec<_>>();
@@ -157,13 +166,16 @@ impl ParameterParser {
                     },
                     ast_nodes,
                 );
-                let parameter_cursor =
-                    TokenCursor::new(tokens, cursor..range.end).expect("参数 token 范围有效");
-                if let Some(colon) = parameter_cursor.find_top_level_punctuation(":") {
+                let parameter_cursor = TokenCursor::from_token_range(tokens, cursor..range.end)
+                    .expect("参数 token 范围有效");
+                if let Some(colon) =
+                    parameter_cursor.find_top_level_punctuation(":", AngleScanContext::Type)
+                {
                     if colon + 1 < range.end {
                         TypeParser::collect(TypeInput {
                             tokens,
-                            bounds: colon + 1..range.end,
+                            bounds: CursorRange::from_token_range(tokens, colon + 1..range.end)
+                                .expect("参数类型范围有效"),
                             parent: parameter_id,
                             ast_nodes,
                             issues,
