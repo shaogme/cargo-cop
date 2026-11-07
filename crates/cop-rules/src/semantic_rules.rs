@@ -1,3 +1,4 @@
+mod declaration_scope;
 mod target_origin;
 mod unnecessary_pub_crate;
 
@@ -5,14 +6,17 @@ use std::{borrow::Cow, ops::Range};
 
 use cop_analysis::{
     AnalysisReference, AnalysisSnapshot, ExternalItemKind, ImplOwnerRecord, ItemKindFact,
-    ModuleNode, PathResolutionKind, SymbolKind, SymbolRecord, SymbolVisibility,
+    ModuleNode, PathResolutionKind, SymbolKind, SymbolVisibility,
 };
 use cop_config::ResolvedConfig;
 use cop_i18n::{t, RenderError};
 use cop_model::{AnalysisIssueKind, Diagnostic, RuleId, Severity};
-use cop_syntax::{ItemSyntaxKind, PathSyntax, TypeSyntax, TypeSyntaxKind};
+use cop_syntax::{PathSyntax, TypeSyntax, TypeSyntaxKind};
 
-use self::target_origin::{TypeOrigin, TypeOriginResolver};
+use self::{
+    declaration_scope::DeclarationScope,
+    target_origin::{TypeOrigin, TypeOriginResolver},
+};
 use crate::{
     support::{RuleDiagnosticAdapter, RuleReport, SyntaxSupport},
     trait_impl_locality::{OrphanAnchor, TargetOrigin, TraitImplLocalityResolver, UnknownType},
@@ -144,7 +148,7 @@ impl SemanticRuleSet {
         }
         let Some(trait_reference) = snapshot.facts().reference_at(module, trait_bounds.clone())
         else {
-            if cfg_exclusive_declaration_exists(
+            if DeclarationScope::cfg_exclusive_declaration_exists(
                 snapshot,
                 module,
                 trait_path,
@@ -184,7 +188,7 @@ impl SemanticRuleSet {
                 .symbol()
                 .filter(|symbol| symbol.kind() == SymbolKind::Trait)
             else {
-                if cfg_exclusive_declaration_exists(
+                if DeclarationScope::cfg_exclusive_declaration_exists(
                     snapshot,
                     module,
                     trait_path,
@@ -236,7 +240,7 @@ impl SemanticRuleSet {
                     ) {
                         return Ok(());
                     }
-                    if !symbol_is_in_module(anchor.symbol(), module) {
+                    if !DeclarationScope::symbol_is_in_module(anchor.symbol(), module) {
                         adapter.push(
                             module,
                             diagnostics,
@@ -257,18 +261,32 @@ impl SemanticRuleSet {
                     ) {
                         return Ok(());
                     }
-                    if !symbol_is_in_module(trait_symbol, module) {
-                        report_external_target_outside_scope(
+                    if !DeclarationScope::symbol_is_in_module(trait_symbol, module)
+                        && !DeclarationScope::sealed_trait_exception(
+                            snapshot,
                             module,
                             implementation,
-                            target_bounds,
+                            trait_symbol,
+                        )
+                    {
+                        let target =
+                            implementation_target_name(module, implementation, &target_bounds);
+                        adapter.push(
+                            module,
                             diagnostics,
-                            adapter,
-                        )?;
+                            RuleReport::new(
+                                RuleId::TraitImplLocality,
+                                t!("rule.impl_trait_definition_outside_scope", {
+                                    trait_name: trait_symbol.name(),
+                                    target: target.as_str()
+                                })?,
+                                Some(trait_bounds.clone()),
+                            ),
+                        );
                     }
                 }
                 TargetOrigin::Unknown(unknown) => {
-                    if cfg_exclusive_declaration_exists(
+                    if DeclarationScope::cfg_exclusive_declaration_exists(
                         snapshot,
                         module,
                         implementation
@@ -292,7 +310,7 @@ impl SemanticRuleSet {
                     ) {
                         return Ok(());
                     }
-                    if !symbol_is_in_module(anchor.symbol(), module) {
+                    if !DeclarationScope::symbol_is_in_module(anchor.symbol(), module) {
                         adapter.push(
                             module,
                             diagnostics,
@@ -316,7 +334,7 @@ impl SemanticRuleSet {
                     )?;
                 }
                 OrphanAnchor::Unknown(unknown) => {
-                    if cfg_exclusive_declaration_exists(
+                    if DeclarationScope::cfg_exclusive_declaration_exists(
                         snapshot,
                         module,
                         implementation
@@ -362,7 +380,7 @@ impl SemanticRuleSet {
             return Ok(());
         }
         let Some(reference) = snapshot.facts().reference_at(module, bounds.clone()) else {
-            if cfg_exclusive_declaration_exists(
+            if DeclarationScope::cfg_exclusive_declaration_exists(
                 snapshot,
                 module,
                 implementation
@@ -418,7 +436,7 @@ impl SemanticRuleSet {
                 );
             }
             None => {
-                if !cfg_exclusive_declaration_exists(
+                if !DeclarationScope::cfg_exclusive_declaration_exists(
                     snapshot,
                     module,
                     implementation
@@ -658,109 +676,6 @@ fn path_in_type(ty: &TypeSyntax) -> Option<&PathSyntax> {
         | TypeSyntaxKind::Parenthesized(target) => path_in_type(target),
         _ => None,
     }
-}
-
-fn symbol_is_in_module(symbol: &SymbolRecord, module: &ModuleNode) -> bool {
-    symbol.context_index() == module.context_index() && symbol.namespace() == module.namespace()
-}
-
-fn cfg_exclusive_declaration_exists(
-    snapshot: &AnalysisSnapshot,
-    module: &ModuleNode,
-    path: Option<&[String]>,
-    implementation_condition: Option<&str>,
-    trait_declaration: bool,
-) -> bool {
-    let Some(path) = path else {
-        return false;
-    };
-    let Some(name) = path.last().map(String::as_str) else {
-        return false;
-    };
-    let namespaces = declaration_namespaces(module, path);
-    let declarations = snapshot
-        .modules()
-        .iter()
-        .filter(|candidate_module| {
-            candidate_module.context_index() == module.context_index()
-                && namespaces.contains(&candidate_module.namespace().to_vec())
-        })
-        .flat_map(|candidate_module| {
-            candidate_module
-                .source_item_nodes()
-                .into_iter()
-                .filter_map(move |node| {
-                    let item = node.item_syntax()?;
-                    let declaration_name = match item.kind() {
-                        ItemSyntaxKind::Trait(name) if trait_declaration => name.as_deref(),
-                        ItemSyntaxKind::Struct(name)
-                        | ItemSyntaxKind::Enum(name)
-                        | ItemSyntaxKind::Union(name)
-                        | ItemSyntaxKind::TypeAlias(name)
-                            if !trait_declaration =>
-                        {
-                            name.as_deref()
-                        }
-                        _ => None,
-                    };
-                    (declaration_name == Some(name)).then(|| {
-                        candidate_module
-                            .configured_ast()
-                            .node(node.id())
-                            .and_then(|configured| configured.availability_condition())
-                            .map(str::to_owned)
-                    })
-                })
-        })
-        .collect::<Vec<_>>();
-    !declarations.is_empty()
-        && declarations.iter().all(|condition| {
-            !SyntaxSupport::conditions_may_coexist(implementation_condition, condition.as_deref())
-        })
-}
-
-fn declaration_namespaces(module: &ModuleNode, path: &[String]) -> Vec<Vec<String>> {
-    let Some((_, prefixes)) = path.split_last() else {
-        return Vec::new();
-    };
-    let mut base = module.namespace().to_vec();
-    let mut rest = prefixes;
-    let mut search_ancestors = false;
-    match rest.first().map(String::as_str) {
-        Some("crate") | Some("::") => {
-            base.clear();
-            rest = &rest[1..];
-        }
-        Some("self") => rest = &rest[1..],
-        Some("super") => {
-            while rest.first().is_some_and(|segment| segment == "super") {
-                if base.pop().is_none() {
-                    return Vec::new();
-                }
-                rest = &rest[1..];
-            }
-        }
-        _ => search_ancestors = true,
-    }
-    let mut namespaces = Vec::new();
-    let first_depth = if search_ancestors {
-        module.namespace().len()
-    } else {
-        base.len()
-    };
-    let last_depth = if search_ancestors { 0 } else { base.len() };
-    for depth in (last_depth..=first_depth).rev() {
-        let mut namespace = if search_ancestors {
-            module.namespace()[..depth].to_vec()
-        } else {
-            base.clone()
-        };
-        namespace.extend(rest.iter().cloned());
-        if !namespaces.contains(&namespace) {
-            namespaces.push(namespace);
-        }
-    }
-    namespaces
 }
 
 fn push_unresolved_target_issue(

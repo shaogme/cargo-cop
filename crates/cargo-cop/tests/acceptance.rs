@@ -5193,6 +5193,169 @@ fn checks_trait_impl_locality_by_repository_target_ownership() {
 }
 
 #[test]
+fn allows_only_private_inline_sealed_trait_scope_exceptions() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    let source = r#"mod sealed { pub trait Sealed {} }
+use sealed::Sealed as SealedAlias;
+impl SealedAlias for String {}
+mod remote_types { pub struct RemoteTarget; }
+impl sealed::Sealed for remote_types::RemoteTarget {}
+mod unrelated_impl {
+    impl crate::sealed::Sealed for String {}
+}
+pub mod public_container { pub trait Sealed {} }
+impl public_container::Sealed for String {}
+pub(crate) mod restricted_container { pub trait Sealed {} }
+impl restricted_container::Sealed for String {}
+mod non_inline;
+impl non_inline::Sealed for String {}
+mod outer { pub mod nested { pub trait Sealed {} } }
+impl outer::nested::Sealed for String {}
+mod restricted_trait { pub(crate) trait Sealed {} }
+impl restricted_trait::Sealed for String {}
+mod other_trait { pub trait NotSealed {} }
+impl other_trait::NotSealed for String {}
+"#;
+    fixture.write("src/lib.rs", source);
+    fixture.write("src/non_inline.rs", "pub trait Sealed {}\n");
+    fixture.write(
+        "cargo-cop.toml",
+        "version = 4\n\n[rules.child_module_line_count]\nenabled = false\n\n[rules.imports_at_scope_start]\nenabled = false\n\n[rules.item_spacing]\nenabled = false\n\n[rules.no_inline_qualified_path]\nenabled = false\n\n[rules.out_of_line_modules_at_scope_start]\nenabled = false\n\n[rules.unnecessary_pub_crate]\nenabled = false\n",
+    );
+
+    let output = fixture.run(&["--format", "json"]);
+
+    let locality = rule_diagnostics(&output, "trait_impl_locality");
+    assert_eq!(output.status, 1, "{}", output.stdout);
+    assert_eq!(locality.len(), 8, "{}", output.stdout);
+    let target_diagnostic = locality
+        .iter()
+        .find(|diagnostic| diagnostic["start"]["line"] == 5)
+        .expect("sealed trait 不应隐藏本地 target 越界诊断");
+    let target_path = "remote_types::RemoteTarget";
+    assert!(diagnostic_message(target_diagnostic).contains("RemoteTarget"));
+    assert!(diagnostic_message(target_diagnostic).contains("outside the current module scope"));
+    assert_eq!(
+        target_diagnostic["start"]["column"],
+        source.lines().nth(4).unwrap().find(target_path).unwrap() + 1
+    );
+    for (line, path) in [
+        (7, "crate::sealed::Sealed"),
+        (10, "public_container::Sealed"),
+        (12, "restricted_container::Sealed"),
+        (14, "non_inline::Sealed"),
+        (16, "outer::nested::Sealed"),
+        (18, "restricted_trait::Sealed"),
+        (20, "other_trait::NotSealed"),
+    ] {
+        let diagnostic = locality
+            .iter()
+            .find(|diagnostic| diagnostic["start"]["line"] == line)
+            .unwrap_or_else(|| {
+                panic!(
+                    "missing locality diagnostic at line {line}: {}",
+                    output.stdout
+                )
+            });
+        let trait_name = path.rsplit("::").next().unwrap();
+        assert!(diagnostic_message(diagnostic).contains("trait definition"));
+        assert!(diagnostic_message(diagnostic).contains(trait_name));
+        assert!(diagnostic_message(diagnostic).contains("outside the current module scope"));
+        assert_eq!(
+            diagnostic["start"]["column"],
+            source.lines().nth(line - 1).unwrap().find(path).unwrap() + 1
+        );
+    }
+    assert!(!locality
+        .iter()
+        .any(|diagnostic| diagnostic["start"]["line"] == 3));
+}
+
+struct TraitScopeCase {
+    line: usize,
+    column: usize,
+    trait_name: &'static str,
+    target_name: &'static str,
+}
+
+#[test]
+fn reports_trait_scope_mismatch_for_standard_library_targets() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "src/lib.rs",
+        "#![no_std]\nextern crate alloc;\npub mod conversion {\n    pub trait EnvironmentScalar {}\n    pub trait EnvironmentSourcedValue {}\n\n    mod pipeline {\n        use alloc::string::String;\n\n        impl<T> crate::conversion::EnvironmentSourcedValue for Option<T> {}\n        impl crate::conversion::EnvironmentScalar for String {}\n        impl crate::conversion::EnvironmentScalar for bool {}\n        impl crate::conversion::EnvironmentScalar for f32 {}\n        impl crate::conversion::EnvironmentScalar for f64 {}\n    }\n}\n",
+    );
+    fixture.write(
+        "cargo-cop.toml",
+        "version = 4\n\n[rules.item_spacing]\nenabled = false\n\n[rules.no_inline_qualified_path]\nenabled = false\n",
+    );
+
+    let output = fixture.run(&["--format", "json"]);
+
+    let locality = rule_diagnostics(&output, "trait_impl_locality");
+    assert_eq!(output.status, 1, "{}", output.stdout);
+    assert_eq!(locality.len(), 5, "{}", output.stdout);
+    for case in [
+        TraitScopeCase {
+            line: 10,
+            column: 17,
+            trait_name: "EnvironmentSourcedValue",
+            target_name: "Option<T>",
+        },
+        TraitScopeCase {
+            line: 11,
+            column: 14,
+            trait_name: "EnvironmentScalar",
+            target_name: "String",
+        },
+        TraitScopeCase {
+            line: 12,
+            column: 14,
+            trait_name: "EnvironmentScalar",
+            target_name: "bool",
+        },
+        TraitScopeCase {
+            line: 13,
+            column: 14,
+            trait_name: "EnvironmentScalar",
+            target_name: "f32",
+        },
+        TraitScopeCase {
+            line: 14,
+            column: 14,
+            trait_name: "EnvironmentScalar",
+            target_name: "f64",
+        },
+    ] {
+        let diagnostic = locality
+            .iter()
+            .find(|diagnostic| diagnostic["start"]["line"] == case.line)
+            .unwrap_or_else(|| {
+                panic!(
+                    "missing diagnostic on line {}: {}",
+                    case.line, output.stdout
+                )
+            });
+        assert!(
+            diagnostic_message(diagnostic).contains(case.trait_name)
+                && diagnostic_message(diagnostic).contains("trait definition")
+                && diagnostic_message(diagnostic).contains(case.target_name),
+            "expected the out-of-scope trait {} for target {}: {}",
+            case.trait_name,
+            case.target_name,
+            output.stdout
+        );
+        assert_eq!(
+            diagnostic["start"]["column"], case.column,
+            "{}",
+            output.stdout
+        );
+    }
+}
+
+#[test]
 fn accepts_external_trait_impl_with_local_generic_argument() {
     let fixture = Fixture::new();
     fixture.write(

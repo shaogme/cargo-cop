@@ -12,6 +12,7 @@ message rule.no_parent_glob_import();
 message rule.no_parent_private_path(ancestor: string, item: string);
 message rule.impl_cross_file(target: string);
 message rule.impl_target_outside_scope(target: string);
+message rule.impl_trait_definition_outside_scope(trait_name: string, target: string);
 message rule.impl_inherent_target();
 message rule.impl_trait_unresolved(trait_path: string);
 message rule.impl_target_unresolved(target: string);

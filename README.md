@@ -56,7 +56,7 @@ steps:
   - uses: actions/checkout@main
   - uses: shaogme/cargo-cop@main
     with:
-      version: 0.3.7
+      version: 0.3.8
   - run: cargo cop --workspace
 ```
 
@@ -67,7 +67,7 @@ steps:
   - uses: actions/checkout@main
   - uses: shaogme/cargo-cop@main
     with:
-      version: 0.3.7
+      version: 0.3.8
       from-source: true
   - run: cargo cop --workspace
 ```
@@ -163,7 +163,7 @@ All rules are enabled by default and use `error` severity unless configured othe
 | `no_parent_private_dependency` | A child module must not import `super::*` or resolve a `super::`/`crate::` path to a private ancestor item. |
 | `child_module_line_count` | Each out-of-line child-module file may contain at most 800 effective code lines. Files without direct out-of-line child modules must also contain at least 70. Blank lines, comments, and `#[cfg(test)]` code are excluded. |
 | `impl_locality` | An inherent impl may target only a repository type defined in the same source file. Targets defined in another file, external types, and primitive types are reported. |
-| `trait_impl_locality` | A trait impl must share the analysis context and module namespace of its repository-defined ownership type. For external traits, the first local nominal type in `Self` and then the trait's type arguments is the ownership anchor when it satisfies orphan-rule ordering; aliases are expanded with their generic arguments. Fundamental wrappers such as references, `Box`, and resolved `Pin` expose their type arguments, while ordinary external wrappers such as `Vec` do not. A local trait still falls back to its own definition module when `Self` is external or primitive. Structural `Self` targets are skipped. Known standard library traits are resolved using the target edition, std/core prelude, and module-scoped `no_implicit_prelude`; known standard library non-traits in the impl trait position produce an analysis warning. Uncatalogued external paths remain opaque. Unresolved type or alias information that affects the anchor produces an analysis warning. |
+| `trait_impl_locality` | A trait impl must share the analysis context and module namespace of its repository-defined ownership type. For external traits, the first local nominal type in `Self` and then the trait's type arguments is the ownership anchor when it satisfies orphan-rule ordering; aliases are expanded with their generic arguments. Fundamental wrappers such as references, `Box`, and resolved `Pin` expose their type arguments, while ordinary external wrappers such as `Vec` do not. A local trait still falls back to its own definition module when `Self` is external or primitive, except that a `pub trait Sealed` in a direct private inline child module of the current impl module does not trigger a trait definition scope diagnostic for an external target. This exception does not apply to modules with other visibilities, out-of-line child modules, or deeper nested modules. The ownership check for repository-defined targets still applies. Structural `Self` targets are skipped. Known standard library traits are resolved using the target edition, std/core prelude, and module-scoped `no_implicit_prelude`; known standard library non-traits in the impl trait position produce an analysis warning. Uncatalogued external paths remain opaque. Unresolved type or alias information that affects the anchor produces an analysis warning. |
 | `private_fields_for_behavior_types` | Fields of a struct, enum, or union with an impl block must be private. |
 | `unnecessary_pub_crate` | A `pub(crate)` item or associated item is retained when an outside reference or a retained crate-visible API's visible type interface requires it. Dependencies propagate through signatures, constraints, aliases, visible fields, enum payloads, and supported foreign items; function bodies and private fields do not count. Unresolved syntax and macro invocations are handled conservatively. |
 | `child_public_free_functions` | Free functions in child modules must be private. |
