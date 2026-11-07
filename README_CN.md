@@ -56,7 +56,7 @@ steps:
   - uses: actions/checkout@main
   - uses: shaogme/cargo-cop@main
     with:
-      version: 0.3.2
+      version: 0.3.3
   - run: cargo cop --workspace
 ```
 
@@ -67,7 +67,7 @@ steps:
   - uses: actions/checkout@main
   - uses: shaogme/cargo-cop@main
     with:
-      version: 0.3.2
+      version: 0.3.3
       from-source: true
   - run: cargo cop --workspace
 ```
@@ -161,7 +161,7 @@ Feature 选择根据所选 package 的 Cargo feature 定义计算，处理 defau
 | `child_module_visibility` | 子模块默认私有；仅含嵌套模块、私有、`pub` 或 `pub(crate)` `use` 导入、`macro_rules!` 定义、类型别名、结构体、枚举、trait、union、常量或静态变量时，才可使用 `pub` 或 `pub(crate)`。 |
 | `no_parent_path_attribute` | 外部模块的 `#[path]` 属性不能包含 `..` 路径分量，包括嵌套在 `cfg_attr` 中的路径属性。 |
 | `no_parent_private_dependency` | 子模块不能使用 `super::*`，也不能通过 `super::` 或 `crate::` 路径访问祖先模块的私有 item。 |
-| `child_module_line_count` | 每个外部子模块文件须有 70–800 行有效代码；空行、注释和 `#[cfg(test)]` 代码不计入。 |
+| `child_module_line_count` | 每个外部子模块文件最多 800 行有效代码；没有直接外部子模块的文件还须至少有 70 行。空行、注释和 `#[cfg(test)]` 代码不计入。 |
 | `impl_locality` | 固有 impl 只能面向同一源文件中定义的仓库类型；其他文件中的类型、外部类型和基本类型都会报告诊断。 |
 | `trait_impl_locality` | 仓库内定义的 struct、enum、union 及解析到这些类型的别名，其 trait impl 必须与目标定义属于同一分析 context 和模块 namespace。目标为外部 crate 类型或基本类型时，本地 trait 定义模块作为归属锚点。引用、指针、tuple、slice、array、函数指针和 never 等结构化目标跳过此规则。外部 trait 配合其他 crate 类型目标时会报告诊断。无法解析 trait、目标或别名归属时会报告分析 warning。 |
 | `private_fields_for_behavior_types` | 有 impl 块的 struct、enum 或 union，其字段必须保持私有。 |
