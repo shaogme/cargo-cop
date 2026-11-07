@@ -4,9 +4,9 @@ use std::{borrow::Cow, ops::Range};
 
 use crate::support::{RuleDiagnosticAdapter, RuleReport, SyntaxSupport};
 use cop_analysis::{
-    AnalysisFacts, AnalysisReference, AnalysisSnapshot, DefinitionId, ImplOwnerRecord,
-    ItemKindFact, ModuleNode, PathResolution, PathResolutionKind, PathRootKind, SymbolKind,
-    SymbolRecord, SymbolVisibility,
+    AnalysisFacts, AnalysisReference, AnalysisSnapshot, DefinitionId, ExternalItemKind,
+    ImplOwnerRecord, ItemKindFact, ModuleNode, PathResolution, PathResolutionKind, PathRootKind,
+    SymbolKind, SymbolRecord, SymbolVisibility,
 };
 use cop_config::ResolvedConfig;
 use cop_i18n::{t, RenderError};
@@ -164,6 +164,20 @@ impl SemanticRuleSet {
         };
         let trait_resolution = trait_reference.resolution();
         let local_trait = if trait_resolution.kind() == PathResolutionKind::ExternalCrate {
+            if trait_resolution
+                .external_item_identity()
+                .is_some_and(|item| item.kind() != ExternalItemKind::Trait)
+            {
+                let path =
+                    trait_path.map_or_else(|| "<unknown>".to_owned(), |path| path.join("::"));
+                push_impl_analysis_issue(
+                    module,
+                    diagnostics,
+                    trait_bounds,
+                    t!("rule.impl_trait_unresolved", { trait_path: path.as_str() })?,
+                );
+                return Ok(());
+            }
             None
         } else {
             let Some(trait_symbol) = trait_resolution

@@ -1,5 +1,6 @@
 mod index;
 mod local_bindings;
+mod prelude;
 mod support;
 
 use std::{
@@ -20,6 +21,8 @@ use crate::{
     module_graph::ModuleNode,
 };
 pub use index::{PathResolution, PathRootIdentity, PathRootKind, SymbolIndex};
+pub use prelude::{ExternalItemIdentity, ExternalItemKind, ExternalItemSource};
+use prelude::{PreludeConfig, PreludeProvider};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SymbolKind {
@@ -287,6 +290,12 @@ impl SymbolIndexBuilder {
                 (module.context_index(), module.namespace().to_vec()),
                 module.cfg_condition().map(str::to_owned),
             );
+            if module.no_implicit_prelude() {
+                builder.index.add_no_implicit_prelude_scope(
+                    module.context_index(),
+                    module.namespace().to_vec(),
+                );
+            }
         }
         builder.add_extern_prelude_crates(package, modules);
         builder
@@ -696,7 +705,9 @@ impl SymbolIndexBuilder {
                 }) {
                     continue;
                 }
-                crates.insert(dependency.rust_name().to_owned());
+                if target.edition() != "2015" {
+                    crates.insert(dependency.rust_name().to_owned());
+                }
             }
             let package_library_is_linked = target
                 .kind()
@@ -707,23 +718,11 @@ impl SymbolIndexBuilder {
                     crates.insert(crate_name.to_owned());
                 }
             }
-            crates.extend(["alloc", "core"].into_iter().map(str::to_owned));
+            crates.insert("core".to_owned());
             let no_std = modules.iter().any(|module| {
                 module.context_index() == context_index
                     && module.is_crate_root()
-                    && module.scope_inner_attributes().iter().any(|attribute| {
-                        attribute.path().last().is_some_and(|name| name == "no_std")
-                    })
-            });
-            let no_implicit_prelude = modules.iter().any(|module| {
-                module.context_index() == context_index
-                    && module.is_crate_root()
-                    && module.scope_inner_attributes().iter().any(|attribute| {
-                        attribute
-                            .path()
-                            .last()
-                            .is_some_and(|name| name == "no_implicit_prelude")
-                    })
+                    && module.is_no_std()
             });
             if !no_std {
                 crates.insert("std".to_owned());
@@ -731,10 +730,15 @@ impl SymbolIndexBuilder {
             if target.crate_types().iter().any(|kind| kind == "proc-macro") {
                 crates.insert("proc_macro".to_owned());
             }
-            if !no_implicit_prelude {
-                let names = SymbolIndex::prelude_names(target.edition(), !no_std);
-                self.index.prelude_names_mut().insert(context_index, names);
-            }
+            let provider = if no_std {
+                PreludeProvider::Core
+            } else {
+                PreludeProvider::Std
+            };
+            self.index.prelude_configurations_mut().insert(
+                context_index,
+                PreludeConfig::new(target.edition(), provider),
+            );
         }
     }
 }

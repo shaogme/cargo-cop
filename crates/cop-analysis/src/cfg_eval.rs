@@ -1,4 +1,4 @@
-use std::ops::Range;
+use std::{collections::BTreeSet, ops::Range};
 
 use cop_cargo::TargetContext;
 use cop_cfg::{CfgCondition, CfgContext, CfgEvaluator as SharedCfgEvaluator, CfgExpression};
@@ -39,6 +39,7 @@ pub(crate) struct AttributeEffects {
     pub(crate) path: Option<String>,
     pub(crate) path_unknown: bool,
     pub(crate) conditions: Vec<String>,
+    pub(crate) active_attributes: BTreeSet<String>,
     pub(crate) unknown: Vec<UnknownCondition>,
     pub(crate) lint_relaxations: Vec<ConditionalAttribute>,
     pub(crate) path_attributes: Vec<ConditionalPathAttribute>,
@@ -121,6 +122,11 @@ impl<'a> CfgEvaluator<'a> {
             return;
         }
         let name = meta.path().join("::");
+        if matches!(name.as_str(), "no_std" | "no_implicit_prelude")
+            && self.evaluate_guards(&context.guards) != CfgDecision::False
+        {
+            context.effects.active_attributes.insert(name.clone());
+        }
         if context.path_only && !matches!(name.as_str(), "cfg_attr" | "path") {
             return;
         }

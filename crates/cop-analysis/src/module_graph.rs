@@ -43,6 +43,8 @@ pub struct ModuleNode {
     parent_namespace: Vec<String>,
     declared_at: Option<SourceSpan>,
     cfg_condition: Option<String>,
+    no_std: bool,
+    no_implicit_prelude: bool,
     crate_root: bool,
     inline: bool,
     order_only: bool,
@@ -150,6 +152,14 @@ impl ModuleNode {
 
     pub fn cfg_condition(&self) -> Option<&str> {
         self.cfg_condition.as_deref()
+    }
+
+    pub(crate) fn is_no_std(&self) -> bool {
+        self.no_std
+    }
+
+    pub(crate) fn no_implicit_prelude(&self) -> bool {
+        self.no_implicit_prelude
     }
 
     pub fn is_crate_root(&self) -> bool {
@@ -272,6 +282,7 @@ impl GraphBuilder<'_> {
             source_is_root: true,
             is_inline: false,
             active: true,
+            no_implicit_prelude: false,
             scope_id: root_scope_id,
             source,
         };
@@ -294,6 +305,8 @@ impl GraphBuilder<'_> {
             .node(scope_node.id())
             .map(|node| node.attribute_evaluation().clone())
             .unwrap_or_default();
+        scope.no_implicit_prelude |= scope_effects.has_active_attribute("no_implicit_prelude");
+        let no_std = scope.is_root && scope_effects.has_active_attribute("no_std");
         let scope_condition = configured_ast
             .node(scope_node.id())
             .and_then(|node| node.availability_condition())
@@ -415,6 +428,8 @@ impl GraphBuilder<'_> {
             namespace: scope.namespace,
             declared_at: scope.declared_at,
             cfg_condition: scope.cfg_condition,
+            no_std,
+            no_implicit_prelude: scope.no_implicit_prelude,
             crate_root: scope.is_root,
             inline: scope.is_inline,
             order_only: !scope.active,
@@ -464,6 +479,8 @@ impl GraphBuilder<'_> {
                 source_is_root: scope.source_is_root,
                 is_inline: true,
                 active: scope.active && effects.decision() != Some(CfgDecision::False),
+                no_implicit_prelude: scope.no_implicit_prelude
+                    || effects.has_active_attribute("no_implicit_prelude"),
                 scope_id: inline_scope.id(),
                 source: scope.source.clone(),
             })?;
@@ -510,6 +527,8 @@ impl GraphBuilder<'_> {
             source_is_root: false,
             is_inline: false,
             active: true,
+            no_implicit_prelude: scope.no_implicit_prelude
+                || effects.has_active_attribute("no_implicit_prelude"),
             scope_id: source
                 .syntax_nodes()
                 .iter()

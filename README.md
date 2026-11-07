@@ -56,7 +56,7 @@ steps:
   - uses: actions/checkout@main
   - uses: shaogme/cargo-cop@main
     with:
-      version: 0.3.5
+      version: 0.3.6
   - run: cargo cop --workspace
 ```
 
@@ -67,7 +67,7 @@ steps:
   - uses: actions/checkout@main
   - uses: shaogme/cargo-cop@main
     with:
-      version: 0.3.5
+      version: 0.3.6
       from-source: true
   - run: cargo cop --workspace
 ```
@@ -163,7 +163,7 @@ All rules are enabled by default and use `error` severity unless configured othe
 | `no_parent_private_dependency` | A child module must not import `super::*` or resolve a `super::`/`crate::` path to a private ancestor item. |
 | `child_module_line_count` | Each out-of-line child-module file may contain at most 800 effective code lines. Files without direct out-of-line child modules must also contain at least 70. Blank lines, comments, and `#[cfg(test)]` code are excluded. |
 | `impl_locality` | An inherent impl may target only a repository type defined in the same source file. Targets defined in another file, external types, and primitive types are reported. |
-| `trait_impl_locality` | For repository-defined structs, enums, unions, and aliases that resolve to those types, a trait impl must share the target definition's analysis context and module namespace. When the target is an external crate type or primitive, a locally defined trait's module is the ownership anchor. Structural targets such as references, pointers, tuples, slices, arrays, function pointers, and never types are skipped. With an external trait, an external crate type target has no repository ownership location and is reported. Unresolved trait, target, or alias ownership is reported as an analysis warning. |
+| `trait_impl_locality` | For repository-defined structs, enums, unions, and aliases that resolve to those types, a trait impl must share the target definition's analysis context and module namespace. When the target is an external crate type or primitive, a locally defined trait's module is the ownership anchor. Structural targets are skipped. Known standard library traits are resolved using the target edition, the std/core prelude provider, and module-scoped `no_implicit_prelude`; a known standard library non-trait used in the impl trait position produces an analysis warning. Uncatalogued external paths remain opaque, so the analyzer does not verify their actual item kind. With an external trait, an external crate type target has no repository ownership location and is reported. Unresolved trait, target, or alias ownership is reported as an analysis warning. |
 | `private_fields_for_behavior_types` | Fields of a struct, enum, or union with an impl block must be private. |
 | `unnecessary_pub_crate` | A `pub(crate)` item or associated item is retained when an outside reference or a retained crate-visible API's visible type interface requires it. Dependencies propagate through signatures, constraints, aliases, visible fields, enum payloads, and supported foreign items; function bodies and private fields do not count. Unresolved syntax and macro invocations are handled conservatively. |
 | `child_public_free_functions` | Free functions in child modules must be private. |

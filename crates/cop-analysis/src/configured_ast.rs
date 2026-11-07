@@ -1,4 +1,8 @@
-use std::{collections::BTreeMap, ops::Range, slice::from_ref};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    ops::Range,
+    slice::from_ref,
+};
 
 use cop_cargo::TargetContext;
 use cop_cfg::{CfgCondition, CfgExpression};
@@ -52,6 +56,7 @@ pub struct ConfiguredAttributeEvaluation {
     path: Option<String>,
     path_unknown: bool,
     conditions: Vec<String>,
+    active_attributes: BTreeSet<String>,
     lint_relaxations: Vec<ConfiguredLintRelaxation>,
     path_attributes: Vec<ConfiguredPathAttribute>,
     malformed_ranges: Vec<Range<usize>>,
@@ -164,6 +169,7 @@ impl ConfiguredAttributeEvaluation {
             path: effects.path.clone(),
             path_unknown: effects.path_unknown,
             conditions: effects.conditions.clone(),
+            active_attributes: effects.active_attributes.clone(),
             lint_relaxations: effects
                 .lint_relaxations
                 .iter()
@@ -203,6 +209,10 @@ impl ConfiguredAttributeEvaluation {
 
     pub fn conditions(&self) -> &[String] {
         &self.conditions
+    }
+
+    pub fn has_active_attribute(&self, name: &str) -> bool {
+        self.active_attributes.contains(name)
     }
 
     pub fn lint_relaxations(&self) -> &[ConfiguredLintRelaxation] {

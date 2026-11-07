@@ -9,8 +9,8 @@ use std::{
 use serde_json::{from_str, json, Value};
 
 use cop_analysis::{
-    AnalysisRequest, CfgDecision, ConfiguredAstIssueKind, PathResolutionKind, PathRootKind,
-    ProjectAnalyzer, ReferenceKind,
+    AnalysisRequest, CfgDecision, ConfiguredAstIssueKind, ExternalItemKind, ExternalItemSource,
+    PathResolutionKind, PathRootKind, ProjectAnalyzer, ReferenceKind,
 };
 use cop_cargo::{
     CargoDiscoveryRequest, CargoProjectLoader, CargoSelection, FeatureSelection, TargetSelector,
@@ -4838,6 +4838,309 @@ fn classifies_trait_impl_locality_by_resolved_trait_and_target_ownership() {
     assert!(output.stdout.contains("\"status\":\"partial\""));
     assert!(!output.stdout.contains("impl trait Conditional"));
     assert!(!output.stdout.contains("impl target GatedType"));
+}
+
+#[test]
+fn preserves_standard_trait_identity_across_prelude_paths_and_aliases() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "Cargo.toml",
+        "[package]\nname = \"sample\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    );
+    fixture.write(
+        "src/lib.rs",
+        "use core::convert::From as CoreFrom;\nuse std::convert::From as StdFrom;\npub struct Source;\npub struct Target;\nimpl From<Source> for Target {}\nimpl core::convert::From<Source> for Target {}\nimpl std::convert::From<Source> for Target {}\nimpl CoreFrom<Source> for Target {}\nimpl StdFrom<Source> for Target {}\n",
+    );
+    let discovery =
+        CargoProjectLoader::discover(CargoDiscoveryRequest::new(fixture.root.join("Cargo.toml")))
+            .expect("Cargo 元数据");
+    let project = TargetSelector::select(
+        discovery,
+        CargoSelection::new(FeatureSelection::new(Vec::new(), false, true))
+            .with_current_directory(fixture.root.clone()),
+    )
+    .expect("选择 package 与 target");
+    let package = project.packages().first().expect("选中的 package");
+    let snapshot = ProjectAnalyzer::analyze(AnalysisRequest::new(package)).expect("分析 target");
+    let module = snapshot
+        .modules()
+        .iter()
+        .find(|module| module.is_crate_root())
+        .expect("crate 根模块");
+    let paths = [
+        vec!["From".to_owned()],
+        vec!["core".to_owned(), "convert".to_owned(), "From".to_owned()],
+        vec!["std".to_owned(), "convert".to_owned(), "From".to_owned()],
+        vec!["CoreFrom".to_owned()],
+        vec!["StdFrom".to_owned()],
+    ];
+    let resolutions = paths
+        .iter()
+        .map(|path| snapshot.symbols().resolve_path(module, path))
+        .collect::<Vec<_>>();
+    let identities = resolutions
+        .iter()
+        .map(|resolution| {
+            resolution
+                .external_item_identity()
+                .expect("catalog identity")
+        })
+        .collect::<Vec<_>>();
+
+    assert!(identities
+        .iter()
+        .all(|identity| identity.canonical_path() == "core::convert::From"));
+    assert!(identities
+        .iter()
+        .all(|identity| identity.kind() == ExternalItemKind::Trait));
+    assert_eq!(
+        resolutions[0].external_item_source(),
+        Some(ExternalItemSource::ImplicitPrelude)
+    );
+    assert_eq!(
+        resolutions[1].external_item_source(),
+        Some(ExternalItemSource::ExplicitPath)
+    );
+    assert_eq!(
+        resolutions[2].external_item_source(),
+        Some(ExternalItemSource::ExplicitPath)
+    );
+    assert_eq!(
+        resolutions[3].external_item_source(),
+        Some(ExternalItemSource::UseAlias)
+    );
+    assert_eq!(
+        resolutions[4].external_item_source(),
+        Some(ExternalItemSource::UseAlias)
+    );
+}
+
+#[test]
+fn resolves_debug_and_hash_from_the_implicit_prelude() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "src/lib.rs",
+        "pub struct Target;\n\nimpl Debug for Target {}\n\nimpl Hash for Target {}\n",
+    );
+
+    let output = fixture.run(&["--format", "json"]);
+    let report = from_str::<Value>(&output.stdout).expect("JSON 报告");
+    let diagnostics = report["diagnostics"].as_array().expect("诊断数组");
+
+    assert!(
+        diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic["analysis_issue"] != "parser_coverage"),
+        "{}",
+        output.stdout
+    );
+}
+
+#[test]
+fn warns_when_known_standard_non_traits_appear_in_impl_trait_positions() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "src/lib.rs",
+        "use core::option::Option as Maybe;\npub struct Target;\nimpl Option for Target {}\nimpl Some for Target {}\nimpl std::option::Option for Target {}\nimpl Maybe for Target {}\npub mod local {\n    pub trait Option {}\n    pub struct Target;\n    impl Option for Target {}\n}\n",
+    );
+
+    let output = fixture.run(&["--format", "json"]);
+    let diagnostics = from_str::<Value>(&output.stdout).expect("JSON 报告")["diagnostics"]
+        .as_array()
+        .expect("诊断数组")
+        .iter()
+        .filter(|diagnostic| {
+            diagnostic["analysis_issue"] == "parser_coverage"
+                && message_contains_either(
+                    diagnostic,
+                    "Could not resolve the trait ownership",
+                    "无法解析 impl trait",
+                )
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+
+    assert_eq!(diagnostics.len(), 4, "{}", output.stdout);
+    assert!(diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic["start"]["line"] == 3));
+    assert!(diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic["start"]["line"] == 4));
+    assert!(diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic["start"]["line"] == 5));
+    assert!(diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic["start"]["line"] == 6));
+}
+
+#[test]
+fn applies_no_implicit_prelude_to_modules_and_descendants_only() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "src/lib.rs",
+        "pub struct Root;\nimpl Clone for Root {}\nuse core::clone::Clone;\n#[no_implicit_prelude]\nmod blocked {\n    pub struct Target;\n    impl Clone for Target {}\n    impl core::clone::Clone for Target {}\n    impl std::fmt::Debug for Target {}\n    impl super::Clone for Target {}\n    impl Debug for Target {}\n    mod nested {\n        pub struct Target;\n        impl Clone for Target {}\n        impl Debug for Target {}\n    }\n}\nmod sibling {\n    pub struct Target;\n    impl Clone for Target {}\n}\n#[no_implicit_prelude]\nmod explicit {\n    extern crate core;\n    use core::clone::Clone;\n    pub struct Target;\n    impl Clone for Target {}\n}\n",
+    );
+
+    let output = fixture.run(&["--format", "json"]);
+    let diagnostics = from_str::<Value>(&output.stdout).expect("JSON 报告")["diagnostics"]
+        .as_array()
+        .expect("诊断数组")
+        .iter()
+        .filter(|diagnostic| {
+            diagnostic["analysis_issue"] == "parser_coverage"
+                && message_contains_either(
+                    diagnostic,
+                    "Could not resolve the trait ownership",
+                    "无法解析 impl trait",
+                )
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+
+    assert_eq!(diagnostics.len(), 4, "{}", output.stdout);
+    assert!(diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic["start"]["line"] == 8));
+    assert!(diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic["start"]["line"] == 11));
+    assert!(diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic["start"]["line"] == 9));
+    assert!(diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic["start"]["line"] == 15));
+}
+
+#[test]
+fn applies_cfg_attr_no_std_and_edition_specific_preludes() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "Cargo.toml",
+        "[package]\nname = \"sample\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[features]\nno_std_mode = []\n",
+    );
+    fixture.write(
+        "src/lib.rs",
+        "#![cfg_attr(feature = \"no_std_mode\", no_std)]\npub struct Target;\nimpl From<Target> for Target {}\nimpl Future for Target {}\nimpl Vec for Target {}\n",
+    );
+    let discovery =
+        CargoProjectLoader::discover(CargoDiscoveryRequest::new(fixture.root.join("Cargo.toml")))
+            .expect("Cargo 元数据");
+    let project = TargetSelector::select(
+        discovery,
+        CargoSelection::new(FeatureSelection::new(Vec::new(), true, false))
+            .with_current_directory(fixture.root.clone()),
+    )
+    .expect("选择 package 与 target");
+    let package = project.packages().first().expect("选中的 package");
+    let snapshot = ProjectAnalyzer::analyze(AnalysisRequest::new(package)).expect("分析 target");
+    let module = snapshot
+        .modules()
+        .iter()
+        .find(|module| module.is_crate_root())
+        .expect("crate 根模块");
+    let symbols = snapshot.symbols();
+    let from = symbols.resolve_path(module, &["From".to_owned()]);
+    let future = symbols.resolve_path(module, &["Future".to_owned()]);
+    let vector = symbols.resolve_path(module, &["Vec".to_owned()]);
+
+    assert_eq!(
+        from.external_item_identity()
+            .expect("core prelude From")
+            .canonical_path(),
+        "core::convert::From"
+    );
+    assert_eq!(
+        future
+            .external_item_identity()
+            .expect("core 2024 prelude Future")
+            .canonical_path(),
+        "core::future::Future"
+    );
+    assert_eq!(vector.kind(), PathResolutionKind::Unresolved);
+
+    for edition in ["2015", "2018", "2021", "2024"] {
+        let edition_fixture = Fixture::new();
+        edition_fixture.write(
+            "Cargo.toml",
+            &format!(
+                "[package]\nname = \"sample\"\nversion = \"0.1.0\"\nedition = \"{edition}\"\n"
+            ),
+        );
+        edition_fixture.write("src/lib.rs", "pub struct Target;\n");
+        let discovery = CargoProjectLoader::discover(CargoDiscoveryRequest::new(
+            edition_fixture.root.join("Cargo.toml"),
+        ))
+        .expect("Cargo 元数据");
+        let project = TargetSelector::select(
+            discovery,
+            CargoSelection::new(FeatureSelection::new(Vec::new(), false, true))
+                .with_current_directory(edition_fixture.root.clone()),
+        )
+        .expect("选择 package 与 target");
+        let package = project.packages().first().expect("选中的 package");
+        let snapshot =
+            ProjectAnalyzer::analyze(AnalysisRequest::new(package)).expect("分析 target");
+        let module = snapshot
+            .modules()
+            .iter()
+            .find(|module| module.is_crate_root())
+            .expect("crate 根模块");
+        let future = snapshot
+            .symbols()
+            .resolve_path(module, &["Future".to_owned()]);
+        let from_iterator = snapshot
+            .symbols()
+            .resolve_path(module, &["FromIterator".to_owned()]);
+        let from = snapshot
+            .symbols()
+            .resolve_path(module, &["From".to_owned()]);
+        let debug = snapshot
+            .symbols()
+            .resolve_path(module, &["Debug".to_owned()]);
+        let hash = snapshot
+            .symbols()
+            .resolve_path(module, &["Hash".to_owned()]);
+        let double_ended_iterator = snapshot
+            .symbols()
+            .resolve_path(module, &["DoubleEndedIterator".to_owned()]);
+
+        assert_eq!(
+            future.external_item_identity().is_some(),
+            edition == "2024",
+            "edition {edition}"
+        );
+        assert_eq!(
+            from_iterator.external_item_identity().is_some(),
+            matches!(edition, "2021" | "2024"),
+            "edition {edition}"
+        );
+        assert!(from.external_item_identity().is_some(), "edition {edition}");
+        assert_eq!(
+            debug
+                .external_item_identity()
+                .expect("Debug prelude trait")
+                .canonical_path(),
+            "core::fmt::Debug",
+            "edition {edition}"
+        );
+        assert_eq!(
+            hash.external_item_identity()
+                .expect("Hash prelude trait")
+                .canonical_path(),
+            "core::hash::Hash",
+            "edition {edition}"
+        );
+        assert!(
+            double_ended_iterator.external_item_identity().is_some(),
+            "edition {edition}"
+        );
+    }
 }
 
 #[test]

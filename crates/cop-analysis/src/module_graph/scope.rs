@@ -23,6 +23,7 @@ pub(super) struct ModuleScope {
     pub(super) source_is_root: bool,
     pub(super) is_inline: bool,
     pub(super) active: bool,
+    pub(super) no_implicit_prelude: bool,
     pub(super) scope_id: AstNodeId,
     pub(super) source: Arc<ParseOutput>,
 }

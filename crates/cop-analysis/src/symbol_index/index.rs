@@ -4,8 +4,10 @@ use std::{
 };
 
 use super::{
-    local_bindings::LocalBindings, DefinitionId, PathResolutionKind, SymbolIndexSupport,
-    SymbolKind, SymbolRecord, VisibilityResult,
+    local_bindings::LocalBindings,
+    prelude::{ExternalItemCatalog, ExternalItemIdentity, ExternalItemSource, PreludeConfig},
+    DefinitionId, PathResolutionKind, SymbolIndexSupport, SymbolKind, SymbolRecord,
+    VisibilityResult,
 };
 use cop_model::SourceSpan;
 
@@ -33,7 +35,10 @@ pub struct PathResolution {
     root: PathRootIdentity,
     symbol: Option<SymbolRecord>,
     external_crate: Option<String>,
+    external_path: Vec<String>,
     external_path_depth: Option<usize>,
+    external_item: Option<ExternalItemIdentity>,
+    external_item_source: Option<ExternalItemSource>,
     external_crate_qualifier: bool,
     visibility: VisibilityResult,
     alias_chain: Vec<String>,
@@ -44,7 +49,8 @@ pub struct PathResolution {
 pub struct SymbolIndex {
     symbols: Vec<SymbolRecord>,
     extern_prelude_crates: BTreeMap<usize, BTreeSet<String>>,
-    prelude_names: BTreeMap<usize, BTreeSet<String>>,
+    prelude_configurations: BTreeMap<usize, PreludeConfig>,
+    no_implicit_prelude_scopes: BTreeSet<(usize, Vec<String>)>,
     local_bindings: LocalBindings,
 }
 
@@ -54,6 +60,7 @@ struct ResolveState<'a> {
     requester: &'a [String],
     offset: Option<usize>,
     query_condition: Option<String>,
+    no_implicit_prelude: bool,
     alias_chain: Vec<String>,
     alias_symbols: Vec<SymbolRecord>,
     seen_aliases: BTreeSet<(Vec<String>, String)>,
@@ -75,6 +82,18 @@ impl PathResolution {
 
     pub fn external_crate(&self) -> Option<&str> {
         self.external_crate.as_deref()
+    }
+
+    pub fn external_path(&self) -> &[String] {
+        &self.external_path
+    }
+
+    pub fn external_item_identity(&self) -> Option<&ExternalItemIdentity> {
+        self.external_item.as_ref()
+    }
+
+    pub fn external_item_source(&self) -> Option<ExternalItemSource> {
+        self.external_item_source
     }
 
     pub fn visibility(&self) -> VisibilityResult {
@@ -107,6 +126,9 @@ impl PathResolution {
             kind: PathRootKind::UseAlias,
             external_crate,
         };
+        if self.external_item.is_some() {
+            self.external_item_source = Some(ExternalItemSource::UseAlias);
+        }
         self
     }
 }
@@ -142,66 +164,17 @@ impl SymbolIndex {
         &mut self.extern_prelude_crates
     }
 
-    pub(super) fn prelude_names_mut(&mut self) -> &mut BTreeMap<usize, BTreeSet<String>> {
-        &mut self.prelude_names
+    pub(super) fn prelude_configurations_mut(&mut self) -> &mut BTreeMap<usize, PreludeConfig> {
+        &mut self.prelude_configurations
     }
 
-    pub(super) fn prelude_names(edition: &str, standard_library: bool) -> BTreeSet<String> {
-        let mut names = [
-            "AsMut",
-            "AsRef",
-            "AsyncFn",
-            "AsyncFnMut",
-            "AsyncFnOnce",
-            "Clone",
-            "Copy",
-            "Default",
-            "Drop",
-            "Eq",
-            "Err",
-            "ExactSizeIterator",
-            "Extend",
-            "Fn",
-            "FnMut",
-            "FnOnce",
-            "From",
-            "Into",
-            "IntoIterator",
-            "Iterator",
-            "None",
-            "Ok",
-            "Option",
-            "Ord",
-            "PartialEq",
-            "PartialOrd",
-            "Result",
-            "Send",
-            "Sized",
-            "Some",
-            "Sync",
-            "Unpin",
-        ]
-        .into_iter()
-        .map(str::to_owned)
-        .collect::<BTreeSet<_>>();
-        if edition == "2021" || edition == "2024" {
-            names.extend(
-                ["FromIterator", "TryFrom", "TryInto"]
-                    .into_iter()
-                    .map(str::to_owned),
-            );
-        }
-        if edition == "2024" {
-            names.extend(["Future", "IntoFuture"].into_iter().map(str::to_owned));
-        }
-        if standard_library {
-            names.extend(
-                ["Box", "String", "ToOwned", "ToString", "Vec"]
-                    .into_iter()
-                    .map(str::to_owned),
-            );
-        }
-        names
+    pub(super) fn add_no_implicit_prelude_scope(
+        &mut self,
+        context_index: usize,
+        namespace: Vec<String>,
+    ) {
+        self.no_implicit_prelude_scopes
+            .insert((context_index, namespace));
     }
 
     pub(super) fn sort_and_assign_definition_ids(&mut self) {
@@ -245,6 +218,7 @@ impl SymbolIndex {
             requester: module.namespace(),
             offset: source_range.map(|range| range.start),
             query_condition,
+            no_implicit_prelude: module.no_implicit_prelude(),
             alias_chain: Vec::new(),
             alias_symbols: Vec::new(),
             seen_aliases: BTreeSet::new(),
@@ -286,7 +260,10 @@ impl SymbolIndex {
                 root: root_identity_for_explicit_scope(path),
                 symbol: None,
                 external_crate: None,
+                external_path: Vec::new(),
                 external_path_depth: None,
+                external_item: None,
+                external_item_source: None,
                 external_crate_qualifier: false,
                 visibility: VisibilityResult::Reachable,
                 alias_chain: state.alias_chain.clone(),
@@ -295,22 +272,19 @@ impl SymbolIndex {
         };
         if rooted
             && path.first().is_some_and(|segment| segment == "::")
+            && !state.no_implicit_prelude
             && self
                 .extern_prelude_crates
                 .get(&state.context_index)
                 .is_some_and(|crates| crates.contains(identifier_name(first)))
         {
-            return PathResolution {
-                kind: PathResolutionKind::ExternalCrate,
-                root: external_crate_root(identifier_name(first)),
-                symbol: None,
-                external_crate: Some(identifier_name(first).to_owned()),
-                external_path_depth: Some(rest.len().saturating_sub(1)),
-                external_crate_qualifier: true,
-                visibility: VisibilityResult::Public,
-                alias_chain: state.alias_chain.clone(),
-                alias_symbols: state.alias_symbols.clone(),
-            };
+            return external_resolution(
+                state,
+                identifier_name(first),
+                &rest[1..],
+                true,
+                ExternalItemSource::ExplicitPath,
+            );
         }
         let has_explicit_scope = path
             .first()
@@ -354,7 +328,10 @@ impl SymbolIndex {
                         },
                         symbol: None,
                         external_crate: None,
+                        external_path: Vec::new(),
                         external_path_depth: None,
+                        external_item: None,
+                        external_item_source: None,
                         external_crate_qualifier: false,
                         visibility: VisibilityResult::Reachable,
                         alias_chain: state.alias_chain.clone(),
@@ -375,51 +352,31 @@ impl SymbolIndex {
                 if !has_explicit_scope && rest.len() == 1 && is_primitive_type(first) {
                     return primitive_resolution(state);
                 }
-                if !has_explicit_scope
-                    && rest.len() == 1
-                    && self
-                        .prelude_names
-                        .get(&state.context_index)
-                        .is_some_and(|names| names.contains(identifier_name(first)))
-                {
-                    let prelude_crate = if self
-                        .extern_prelude_crates
-                        .get(&state.context_index)
-                        .is_some_and(|crates| crates.contains("std"))
+                if !has_explicit_scope && rest.len() == 1 && !state.no_implicit_prelude {
+                    if let Some(configuration) =
+                        self.prelude_configurations.get(&state.context_index)
                     {
-                        "std"
-                    } else {
-                        "core"
-                    };
-                    return PathResolution {
-                        kind: PathResolutionKind::ExternalCrate,
-                        root: external_crate_root(prelude_crate),
-                        symbol: None,
-                        external_crate: Some(prelude_crate.to_owned()),
-                        external_path_depth: Some(0),
-                        external_crate_qualifier: false,
-                        visibility: VisibilityResult::Public,
-                        alias_chain: state.alias_chain.clone(),
-                        alias_symbols: state.alias_symbols.clone(),
-                    };
+                        if let Some(item) =
+                            ExternalItemCatalog::prelude_item(identifier_name(first), configuration)
+                        {
+                            return prelude_resolution(state, configuration.provider_crate(), item);
+                        }
+                    }
                 }
                 if (rooted || base == base_namespace)
+                    && !state.no_implicit_prelude
                     && self
                         .extern_prelude_crates
                         .get(&state.context_index)
                         .is_some_and(|crates| crates.contains(identifier_name(first)))
                 {
-                    return PathResolution {
-                        kind: PathResolutionKind::ExternalCrate,
-                        root: external_crate_root(identifier_name(first)),
-                        symbol: None,
-                        external_crate: Some(identifier_name(first).to_owned()),
-                        external_path_depth: Some(rest.len().saturating_sub(1)),
-                        external_crate_qualifier: true,
-                        visibility: VisibilityResult::Public,
-                        alias_chain: state.alias_chain.clone(),
-                        alias_symbols: state.alias_symbols.clone(),
-                    };
+                    return external_resolution(
+                        state,
+                        identifier_name(first),
+                        &rest[1..],
+                        true,
+                        ExternalItemSource::ExplicitPath,
+                    );
                 }
                 return unresolved_for_path(PathResolutionKind::Unresolved, state, path);
             }
@@ -435,7 +392,10 @@ impl SymbolIndex {
                     },
                     symbol: Some(candidate.clone()),
                     external_crate: None,
+                    external_path: Vec::new(),
                     external_path_depth: None,
+                    external_item: None,
+                    external_item_source: None,
                     external_crate_qualifier: false,
                     visibility,
                     alias_chain: state.alias_chain.clone(),
@@ -447,17 +407,16 @@ impl SymbolIndex {
                 if let Some(external_crate) =
                     self.self_reexported_external_crate(candidate, state.context_index)
                 {
-                    return PathResolution {
-                        kind: PathResolutionKind::ExternalCrate,
-                        root: external_crate_root(&external_crate),
-                        symbol: Some(candidate.clone()),
-                        external_crate: Some(external_crate),
-                        external_path_depth: Some(rest.len().saturating_sub(1)),
-                        external_crate_qualifier: true,
-                        visibility: candidate.is_visible_from(state.requester),
-                        alias_chain: state.alias_chain.clone(),
-                        alias_symbols: state.alias_symbols.clone(),
-                    };
+                    let mut resolution = external_resolution(
+                        state,
+                        &external_crate,
+                        &rest[1..],
+                        true,
+                        ExternalItemSource::ExplicitPath,
+                    );
+                    resolution.symbol = Some(candidate.clone());
+                    resolution.visibility = candidate.is_visible_from(state.requester);
+                    return resolution;
                 }
                 return unresolved_for_path(PathResolutionKind::AliasCycle, state, path);
             }
@@ -467,8 +426,13 @@ impl SymbolIndex {
             let suffix_length = rest.len().saturating_sub(1);
             redirected.extend(rest.iter().skip(1).cloned());
             let request_offset = state.offset.take();
+            let request_no_implicit_prelude = state.no_implicit_prelude;
+            state.no_implicit_prelude = self
+                .no_implicit_prelude_scopes
+                .contains(&(candidate.context_index(), candidate.namespace().to_vec()));
             let mut resolution = self.resolve_inner(state, candidate.namespace(), &redirected);
             state.offset = request_offset;
+            state.no_implicit_prelude = request_no_implicit_prelude;
             if resolution.external_path_depth == Some(suffix_length) {
                 resolution.external_crate_qualifier = true;
             } else if resolution.external_crate.is_some() {
@@ -481,17 +445,16 @@ impl SymbolIndex {
             return resolution.with_alias_root();
         }
         if let Some(external) = candidate.external_crate() {
-            return PathResolution {
-                kind: PathResolutionKind::ExternalCrate,
-                root: external_crate_root(external),
-                symbol: Some(candidate.clone()),
-                external_crate: Some(external.to_owned()),
-                external_path_depth: Some(rest.len().saturating_sub(1)),
-                external_crate_qualifier: true,
-                visibility: candidate.is_visible_from(state.requester),
-                alias_chain: state.alias_chain.clone(),
-                alias_symbols: state.alias_symbols.clone(),
-            };
+            let mut resolution = external_resolution(
+                state,
+                external,
+                &rest[1..],
+                true,
+                ExternalItemSource::ExplicitPath,
+            );
+            resolution.symbol = Some(candidate.clone());
+            resolution.visibility = candidate.is_visible_from(state.requester);
+            return resolution;
         }
         let visibility = candidate.is_visible_from(state.requester);
         if visibility == VisibilityResult::Private {
@@ -503,7 +466,10 @@ impl SymbolIndex {
                 },
                 symbol: Some(candidate.clone()),
                 external_crate: None,
+                external_path: Vec::new(),
                 external_path_depth: None,
+                external_item: None,
+                external_item_source: None,
                 external_crate_qualifier: false,
                 visibility,
                 alias_chain: state.alias_chain.clone(),
@@ -525,7 +491,10 @@ impl SymbolIndex {
             root: root_identity_for_explicit_scope(path),
             symbol: Some(candidate.clone()),
             external_crate: None,
+            external_path: Vec::new(),
             external_path_depth: None,
+            external_item: None,
+            external_item_source: None,
             external_crate_qualifier: false,
             visibility,
             alias_chain: state.alias_chain.clone(),
@@ -596,6 +565,51 @@ fn identifier_name(name: &str) -> &str {
     name.strip_prefix("r#").unwrap_or(name)
 }
 
+fn external_resolution(
+    state: &ResolveState<'_>,
+    crate_name: &str,
+    path: &[String],
+    crate_qualifier: bool,
+    source: ExternalItemSource,
+) -> PathResolution {
+    let item = ExternalItemCatalog::explicit_item(crate_name, path);
+    PathResolution {
+        kind: PathResolutionKind::ExternalCrate,
+        root: external_crate_root(crate_name),
+        symbol: None,
+        external_crate: Some(crate_name.to_owned()),
+        external_path: path.to_vec(),
+        external_path_depth: Some(path.len()),
+        external_item_source: item.as_ref().map(|_| source),
+        external_item: item,
+        external_crate_qualifier: crate_qualifier,
+        visibility: VisibilityResult::Public,
+        alias_chain: state.alias_chain.clone(),
+        alias_symbols: state.alias_symbols.clone(),
+    }
+}
+
+fn prelude_resolution(
+    state: &ResolveState<'_>,
+    crate_name: &str,
+    item: ExternalItemIdentity,
+) -> PathResolution {
+    PathResolution {
+        kind: PathResolutionKind::ExternalCrate,
+        root: external_crate_root(crate_name),
+        symbol: None,
+        external_crate: Some(crate_name.to_owned()),
+        external_path: Vec::new(),
+        external_path_depth: Some(0),
+        external_item: Some(item),
+        external_item_source: Some(ExternalItemSource::ImplicitPrelude),
+        external_crate_qualifier: false,
+        visibility: VisibilityResult::Public,
+        alias_chain: state.alias_chain.clone(),
+        alias_symbols: state.alias_symbols.clone(),
+    }
+}
+
 fn unresolved(kind: PathResolutionKind, state: &ResolveState<'_>) -> PathResolution {
     PathResolution {
         kind,
@@ -605,7 +619,10 @@ fn unresolved(kind: PathResolutionKind, state: &ResolveState<'_>) -> PathResolut
         },
         symbol: None,
         external_crate: None,
+        external_path: Vec::new(),
         external_path_depth: None,
+        external_item: None,
+        external_item_source: None,
         external_crate_qualifier: false,
         visibility: VisibilityResult::Unknown,
         alias_chain: state.alias_chain.clone(),
@@ -644,7 +661,10 @@ fn primitive_resolution(state: &ResolveState<'_>) -> PathResolution {
         },
         symbol: None,
         external_crate: None,
+        external_path: Vec::new(),
         external_path_depth: None,
+        external_item: None,
+        external_item_source: None,
         external_crate_qualifier: false,
         visibility: VisibilityResult::Reachable,
         alias_chain: state.alias_chain.clone(),
