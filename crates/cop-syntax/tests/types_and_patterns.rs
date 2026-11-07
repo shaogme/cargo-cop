@@ -312,7 +312,7 @@ fn recovers_from_a_malformed_type_without_consuming_the_next_function() {
     let parsed = parse(SourceFile::new("src/recovery.rs", text));
     let kept = parsed.syntax_nodes().iter().find(|node| {
         node.item_syntax().is_some_and(|item| {
-            matches!(item.kind(), ItemSyntaxKind::Function { name: Some(name) } if name == "kept")
+            matches!(item.kind(), ItemSyntaxKind::Function { name: Some(name), .. } if name == "kept")
         })
     });
 
@@ -335,7 +335,7 @@ fn recovers_from_a_malformed_pattern_without_consuming_the_next_function() {
     let parsed = parse(SourceFile::new("src/pattern_recovery.rs", text));
     let kept = parsed.syntax_nodes().iter().find(|node| {
         node.item_syntax().is_some_and(|item| {
-            matches!(item.kind(), ItemSyntaxKind::Function { name: Some(name) } if name == "kept")
+            matches!(item.kind(), ItemSyntaxKind::Function { name: Some(name), .. } if name == "kept")
         })
     });
 
@@ -410,7 +410,7 @@ fn reports_a_malformed_where_predicate_and_recovers_at_the_function_body() {
     let parsed = parse(SourceFile::new("src/where_recovery.rs", text));
     let kept = parsed.syntax_nodes().iter().find(|node| {
         node.item_syntax().is_some_and(|item| {
-            matches!(item.kind(), ItemSyntaxKind::Function { name: Some(name) } if name == "kept")
+            matches!(item.kind(), ItemSyntaxKind::Function { name: Some(name), .. } if name == "kept")
         })
     });
 

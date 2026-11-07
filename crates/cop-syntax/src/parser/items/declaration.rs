@@ -119,7 +119,11 @@ impl ItemSyntaxParser {
         parent: AstNodeId,
         allow_variadic: bool,
     ) -> Option<FunctionItem> {
-        let keyword_index = Recovery::function_keyword(context.tokens, *context.cursor)?;
+        let function_start = *context.cursor;
+        let keyword_index = Recovery::function_keyword(context.tokens, function_start)?;
+        let has_extern_modifier = context.tokens[function_start..keyword_index]
+            .iter()
+            .any(|token| Recovery::is_identifier(token, "extern"));
         *context.cursor = keyword_index + 1;
         let Some(name) = Self::take_identifier(&mut context) else {
             Self::push_current_issue(
@@ -267,7 +271,7 @@ impl ItemSyntaxParser {
             *context.cursor = parameter_close + 1;
             Self::skip_signature_tail(&mut context);
         }
-        Some(AstFactory::function(Some(name)))
+        Some(AstFactory::function(Some(name), has_extern_modifier))
     }
 
     pub(super) fn parse_macro_item(context: ParserContext<'_, '_>) -> Option<MacroInvocation> {

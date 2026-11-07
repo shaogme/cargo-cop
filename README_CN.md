@@ -56,7 +56,7 @@ steps:
   - uses: actions/checkout@main
   - uses: shaogme/cargo-cop@main
     with:
-      version: 0.3.3
+      version: 0.3.4
   - run: cargo cop --workspace
 ```
 
@@ -67,7 +67,7 @@ steps:
   - uses: actions/checkout@main
   - uses: shaogme/cargo-cop@main
     with:
-      version: 0.3.3
+      version: 0.3.4
       from-source: true
   - run: cargo cop --workspace
 ```
@@ -168,7 +168,7 @@ Feature 选择根据所选 package 的 Cargo feature 定义计算，处理 defau
 | `unnecessary_pub_crate` | 只有当私有模块范围之外的引用或仍保留的 crate 可见 API 的可见类型接口需要时，item 或关联 item 才保留 `pub(crate)`。依赖会沿函数签名、约束、别名、可见字段、枚举 payload 和受支持的 foreign item 传递；函数体和私有字段不计入。遇到无法解析的语法或宏调用时会保守处理。 |
 | `child_public_free_functions` | 子模块中的独立函数必须保持私有。 |
 | `declaration_before_use` | 在适用的源码作用域中，具名声明必须先于对它的引用。 |
-| `parameter_limit` | 函数、方法和闭包的参数数量最多为 5 个。 |
+| `parameter_limit` | 函数、方法和闭包的参数数量最多为 5 个；带 `extern` 修饰符的函数项除外。extern 函数体内的闭包仍受限制。 |
 | `tuple_arity` | tuple 类型和表达式最多包含 2 个元素。 |
 | `no_inline_qualified_path` | 报告代码中以当前 target 可用的 crate 名（包括依赖及集成测试等 target 所链接的 package 自身库）或显式模块路径 `crate::`、`self::`、`super::` 为根的限定路径；使用前应导入所需名称。 |
 | `merge_common_prefix_imports` | 合并路径有共同前缀且可见性和有效 `cfg` 条件相同的导入；模块作用域中的导入不要求相邻。 |

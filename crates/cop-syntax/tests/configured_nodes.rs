@@ -385,7 +385,7 @@ fn parses_local_function_generics_parameters_and_body() {
         .find(|node| {
             node.kind() == SyntaxNodeKind::LocalItem
                 && node.item_syntax().is_some_and(|data| {
-                    matches!(data.kind(), ItemSyntaxKind::Function { name: Some(name) } if name == "local")
+                    matches!(data.kind(), ItemSyntaxKind::Function { name: Some(name), .. } if name == "local")
                 })
         })
         .expect("局部函数节点");

@@ -477,7 +477,9 @@ fn local_item_binding(item: &SyntaxNode) -> Option<(String, Option<Vec<String>>)
         | ItemSyntaxKind::Trait(Some(name))
         | ItemSyntaxKind::Constant(Some(name))
         | ItemSyntaxKind::Static(Some(name))
-        | ItemSyntaxKind::Function { name: Some(name) } => Some(name.as_str()),
+        | ItemSyntaxKind::Function {
+            name: Some(name), ..
+        } => Some(name.as_str()),
         _ => None,
     }?;
     Some((name.to_owned(), None))

@@ -408,7 +408,7 @@ fn parses_foreign_variadics_only_as_final_parameter_markers() {
     }));
     assert!(parsed.syntax_nodes().iter().any(|node| {
         node.item_syntax().is_some_and(|item| {
-            matches!(item.kind(), ItemSyntaxKind::Function { name: Some(name) } if name == "kept")
+            matches!(item.kind(), ItemSyntaxKind::Function { name: Some(name), .. } if name == "kept")
         })
     }));
     assert!(!parsed.syntax_nodes().iter().any(|node| {

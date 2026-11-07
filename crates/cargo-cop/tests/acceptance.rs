@@ -3690,6 +3690,55 @@ fn detects_syntax_limits_and_ignores_macro_and_literal_contents() {
 }
 
 #[test]
+fn exempts_extern_function_items_but_checks_nested_closures_and_foreign_declarations() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "src/lib.rs",
+        r#"extern fn rust_abi(a: u8, b: u8, c: u8, d: u8, e: u8, f: u8) {}
+
+extern "C" fn c_abi(a: u8, b: u8, c: u8, d: u8, e: u8, f: u8) {}
+
+unsafe extern "C" fn unsafe_c_abi(a: u8, b: u8, c: u8, d: u8, e: u8, f: u8) {}
+
+fn plain(a: u8, b: u8, c: u8, d: u8, e: u8, f: u8) {}
+
+unsafe fn unsafe_only(a: u8, b: u8, c: u8, d: u8, e: u8, f: u8) {}
+
+extern "C" fn with_closure(a: u8, b: u8, c: u8, d: u8, e: u8, f: u8) {
+    let _closure = |a, b, c, d, e, f| ();
+}
+
+struct Service;
+
+impl Service {
+    fn receiver_six(&self, a: u8, b: u8, c: u8, d: u8, e: u8) {}
+
+    extern fn rust_method(&self, a: u8, b: u8, c: u8, d: u8, e: u8) {}
+
+    extern "C" fn c_method(&self, a: u8, b: u8, c: u8, d: u8, e: u8) {}
+
+    unsafe extern "C" fn unsafe_c_method(&self, a: u8, b: u8, c: u8, d: u8, e: u8) {}
+}
+
+extern "C" {
+    fn foreign(a: u8, b: u8, c: u8, d: u8, e: u8, f: u8);
+}
+"#,
+    );
+
+    let output = fixture.run(&["--format", "json"]);
+    let diagnostics = rule_diagnostics(&output, "parameter_limit");
+    let lines = diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic["start"]["line"].as_u64().expect("诊断行号"))
+        .collect::<Vec<_>>();
+
+    assert_eq!(diagnostics.len(), 4, "{}", output.stdout);
+    assert_eq!(lines, [7, 9, 12, 18]);
+}
+
+#[test]
 fn reports_opaque_macro_input_without_evaluating_its_cfg_tokens() {
     let fixture = Fixture::new();
     fixture.write("Cargo.toml", &package_manifest("sample"));

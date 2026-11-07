@@ -156,6 +156,7 @@ pub enum ItemSyntaxKind {
     Static(Option<String>),
     Function {
         name: Option<String>,
+        has_extern_modifier: bool,
     },
     ExternBlock {
         unsafe_: bool,
@@ -585,6 +586,7 @@ impl ItemSyntaxData {
             }
             ItemKind::Function(function) => ItemSyntaxKind::Function {
                 name: function.name().map(str::to_owned),
+                has_extern_modifier: function.has_extern_modifier(),
             },
             ItemKind::Impl(_) => ItemSyntaxKind::Impl,
             ItemKind::Macro(invocation) => ItemSyntaxKind::Macro(invocation.clone()),

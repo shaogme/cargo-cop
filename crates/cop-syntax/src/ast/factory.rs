@@ -55,8 +55,8 @@ impl AstFactory {
         ImplItem::new()
     }
 
-    pub(crate) fn function(name: Option<String>) -> FunctionItem {
-        FunctionItem::new(name)
+    pub(crate) fn function(name: Option<String>, has_extern_modifier: bool) -> FunctionItem {
+        FunctionItem::new(name, has_extern_modifier)
     }
 
     pub(crate) fn parameter(

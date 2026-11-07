@@ -135,8 +135,11 @@ impl SyntaxRuleSet {
                         );
                     }
                 }
-                SyntaxShapeKind::FunctionParameters(parameter_count) => {
-                    if *parameter_count > 5 {
+                SyntaxShapeKind::FunctionParameters {
+                    parameter_count,
+                    has_extern_modifier,
+                } => {
+                    if *parameter_count > 5 && !has_extern_modifier {
                         adapter.push(
                             module,
                             diagnostics,

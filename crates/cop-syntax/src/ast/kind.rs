@@ -39,6 +39,7 @@ pub struct MacroDefinition {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct FunctionItem {
     name: Option<String>,
+    has_extern_modifier: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -161,12 +162,19 @@ impl ImplItem {
 }
 
 impl FunctionItem {
-    pub(crate) fn new(name: Option<String>) -> Self {
-        Self { name }
+    pub(crate) fn new(name: Option<String>, has_extern_modifier: bool) -> Self {
+        Self {
+            name,
+            has_extern_modifier,
+        }
     }
 
     pub fn name(&self) -> Option<&str> {
         self.name.as_deref()
+    }
+
+    pub(crate) fn has_extern_modifier(&self) -> bool {
+        self.has_extern_modifier
     }
 }
 

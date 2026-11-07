@@ -85,7 +85,10 @@ pub struct BlockScopeFact {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SyntaxShapeKind {
-    FunctionParameters(usize),
+    FunctionParameters {
+        parameter_count: usize,
+        has_extern_modifier: bool,
+    },
     ClosureParameters(Vec<ShapeParameterFact>),
     TupleArity(usize),
 }
@@ -376,7 +379,11 @@ impl SyntaxFactsCollector {
                     self.items_by_node.insert(node.id(), (scope_id, item_index));
                 }
             }
-            if matches!(item_data.kind(), ItemSyntaxKind::Function { .. }) {
+            if let ItemSyntaxKind::Function {
+                has_extern_modifier,
+                ..
+            } = item_data.kind()
+            {
                 let parameter_count = node
                     .children()
                     .iter()
@@ -390,7 +397,10 @@ impl SyntaxFactsCollector {
                     .count();
                 self.facts.shapes.push(SyntaxShapeFact {
                     bounds: node.start()..node.end(),
-                    kind: SyntaxShapeKind::FunctionParameters(parameter_count),
+                    kind: SyntaxShapeKind::FunctionParameters {
+                        parameter_count,
+                        has_extern_modifier: *has_extern_modifier,
+                    },
                 });
             }
         }
@@ -635,7 +645,7 @@ fn make_item_fact(module: &ModuleNode, node: &SyntaxNode, scope_id: usize) -> It
         ItemSyntaxKind::Trait(name) => (ItemKindFact::Trait, name.clone()),
         ItemSyntaxKind::Constant(name) => (ItemKindFact::Constant, name.clone()),
         ItemSyntaxKind::Static(name) => (ItemKindFact::Static, name.clone()),
-        ItemSyntaxKind::Function { name } => (ItemKindFact::Function, name.clone()),
+        ItemSyntaxKind::Function { name, .. } => (ItemKindFact::Function, name.clone()),
         ItemSyntaxKind::Impl => (ItemKindFact::Impl, None),
         _ => (ItemKindFact::Other, None),
     };

@@ -50,7 +50,9 @@ impl SymbolIndexSupport {
 
     pub(crate) fn associated_item_name(kind: &ItemSyntaxKind) -> Option<String> {
         match kind {
-            ItemSyntaxKind::Function { name: Some(name) }
+            ItemSyntaxKind::Function {
+                name: Some(name), ..
+            }
             | ItemSyntaxKind::TypeAlias(Some(name))
             | ItemSyntaxKind::Constant(Some(name))
             | ItemSyntaxKind::Static(Some(name)) => Some(name.clone()),
@@ -95,7 +97,7 @@ impl SymbolIndexSupport {
                 Some((name.as_ref()?.to_owned(), SymbolKind::Constant))
             }
             ItemSyntaxKind::Static(name) => Some((name.as_ref()?.to_owned(), SymbolKind::Static)),
-            ItemSyntaxKind::Function { name } => {
+            ItemSyntaxKind::Function { name, .. } => {
                 Some((name.as_ref()?.to_owned(), SymbolKind::Function))
             }
             _ => None,

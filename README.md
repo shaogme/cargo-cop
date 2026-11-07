@@ -56,7 +56,7 @@ steps:
   - uses: actions/checkout@main
   - uses: shaogme/cargo-cop@main
     with:
-      version: 0.3.3
+      version: 0.3.4
   - run: cargo cop --workspace
 ```
 
@@ -67,7 +67,7 @@ steps:
   - uses: actions/checkout@main
   - uses: shaogme/cargo-cop@main
     with:
-      version: 0.3.3
+      version: 0.3.4
       from-source: true
   - run: cargo cop --workspace
 ```
@@ -168,7 +168,7 @@ All rules are enabled by default and use `error` severity unless configured othe
 | `unnecessary_pub_crate` | A `pub(crate)` item or associated item is retained when an outside reference or a retained crate-visible API's visible type interface requires it. Dependencies propagate through signatures, constraints, aliases, visible fields, enum payloads, and supported foreign items; function bodies and private fields do not count. Unresolved syntax and macro invocations are handled conservatively. |
 | `child_public_free_functions` | Free functions in child modules must be private. |
 | `declaration_before_use` | A named declaration must precede references to it within the applicable source scope. |
-| `parameter_limit` | Functions, methods, and closures may have at most five parameters. |
+| `parameter_limit` | Functions, methods, and closures may have at most five parameters; function items with an `extern` modifier are exempt. Closures inside extern functions remain subject to the limit. |
 | `tuple_arity` | Tuple types and expressions may have at most two elements. |
 | `no_inline_qualified_path` | Report code paths rooted at a crate name available to the current target, including dependencies and the package library linked into targets such as integration tests; also report explicit `crate::`, `self::`, or `super::` roots. Import the required names before use. |
 | `merge_common_prefix_imports` | Merge imports that share a path prefix and have matching visibility and effective `cfg` conditions; module-scope imports need not be adjacent. |
