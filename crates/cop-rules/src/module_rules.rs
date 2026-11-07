@@ -1,6 +1,6 @@
 use cop_i18n::{t, PluralCount, RenderError};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
 };
 
@@ -22,6 +22,17 @@ struct ModuleLineCountKey {
     target_triple: String,
     namespace: Vec<String>,
     file_path: PathBuf,
+}
+
+fn has_direct_out_of_line_child(
+    modules: &[&ModuleNode],
+    parent_namespaces_by_context: &BTreeMap<usize, BTreeSet<Vec<String>>>,
+) -> bool {
+    modules.iter().any(|parent| {
+        parent_namespaces_by_context
+            .get(&parent.context_index())
+            .is_some_and(|namespaces| namespaces.contains(parent.namespace()))
+    })
 }
 
 fn check_item_spacing_items(
@@ -312,7 +323,14 @@ impl ModuleRuleSet {
         adapter: &RuleDiagnosticAdapter<'_>,
     ) -> Result<(), RenderError> {
         let mut modules_by_instance = BTreeMap::<ModuleLineCountKey, Vec<&ModuleNode>>::new();
+        let mut parent_namespaces_by_context = BTreeMap::<usize, BTreeSet<Vec<String>>>::new();
         for module in snapshot.modules() {
+            if !module.is_inline() && !module.is_order_only() {
+                parent_namespaces_by_context
+                    .entry(module.context_index())
+                    .or_default()
+                    .insert(module.parent_namespace().to_vec());
+            }
             if module.is_crate_root() || module.is_inline() || module.is_order_only() {
                 continue;
             }
@@ -340,7 +358,13 @@ impl ModuleRuleSet {
                 .facts()
                 .syntax_for_module(module)
                 .map_or(0, |syntax| syntax.code_line_count());
-            if (70..=800).contains(&line_count) {
+            let has_child = has_direct_out_of_line_child(modules, &parent_namespaces_by_context);
+            let violates_limit = if has_child {
+                line_count > 800
+            } else {
+                !(70..=800).contains(&line_count)
+            };
+            if !violates_limit {
                 continue;
             }
             let file_name = module
@@ -349,14 +373,15 @@ impl ModuleRuleSet {
                 .unwrap_or_else(|| Path::new("").as_os_str())
                 .to_string_lossy()
                 .into_owned();
+            let message = if has_child {
+                t!("rule.child_module_line_count_maximum", { file: file_name.as_str(), actual: line_count as i64, maximum: 800 })?
+            } else {
+                t!("rule.child_module_line_count", { file: file_name.as_str(), actual: line_count as i64, minimum: 70, maximum: 800 })?
+            };
             adapter.push(
                 module,
                 diagnostics,
-                RuleReport::new(
-                    RuleId::ChildModuleLineCount,
-                    t!("rule.child_module_line_count", { file: file_name.as_str(), actual: line_count as i64, minimum: 70, maximum: 800 })?,
-                    Some(0..0),
-                ),
+                RuleReport::new(RuleId::ChildModuleLineCount, message, Some(0..0)),
             );
         }
         Ok(())

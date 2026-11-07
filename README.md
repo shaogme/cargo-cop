@@ -56,7 +56,7 @@ steps:
   - uses: actions/checkout@main
   - uses: shaogme/cargo-cop@main
     with:
-      version: 0.3.2
+      version: 0.3.3
   - run: cargo cop --workspace
 ```
 
@@ -67,7 +67,7 @@ steps:
   - uses: actions/checkout@main
   - uses: shaogme/cargo-cop@main
     with:
-      version: 0.3.2
+      version: 0.3.3
       from-source: true
   - run: cargo cop --workspace
 ```
@@ -161,7 +161,7 @@ All rules are enabled by default and use `error` severity unless configured othe
 | `child_module_visibility` | Child modules are private by default. `pub` and `pub(crate)` are allowed only for modules containing nested modules, `use` items with private, `pub`, or `pub(crate)` visibility, `macro_rules!` definitions, type aliases, structs, enums, traits, unions, constants, or statics. |
 | `no_parent_path_attribute` | An external module's `#[path]` attribute must not contain a `..` path component, including paths nested in `cfg_attr`. |
 | `no_parent_private_dependency` | A child module must not import `super::*` or resolve a `super::`/`crate::` path to a private ancestor item. |
-| `child_module_line_count` | Each out-of-line child-module file must contain 70–800 effective code lines. Blank lines, comments, and `#[cfg(test)]` code are excluded. |
+| `child_module_line_count` | Each out-of-line child-module file may contain at most 800 effective code lines. Files without direct out-of-line child modules must also contain at least 70. Blank lines, comments, and `#[cfg(test)]` code are excluded. |
 | `impl_locality` | An inherent impl may target only a repository type defined in the same source file. Targets defined in another file, external types, and primitive types are reported. |
 | `trait_impl_locality` | For repository-defined structs, enums, unions, and aliases that resolve to those types, a trait impl must share the target definition's analysis context and module namespace. When the target is an external crate type or primitive, a locally defined trait's module is the ownership anchor. Structural targets such as references, pointers, tuples, slices, arrays, function pointers, and never types are skipped. With an external trait, an external crate type target has no repository ownership location and is reported. Unresolved trait, target, or alias ownership is reported as an analysis warning. |
 | `private_fields_for_behavior_types` | Fields of a struct, enum, or union with an impl block must be private. |

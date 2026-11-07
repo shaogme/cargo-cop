@@ -3513,6 +3513,134 @@ fn child_module_line_count_reports_only_outside_the_inclusive_bounds() {
 }
 
 #[test]
+fn child_module_line_count_drops_the_minimum_for_direct_external_children() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "src/lib.rs",
+        "mod below;\nmod boundary;\nmod upper;\nmod above;\nmod path_child;\n",
+    );
+    let write_parent = |name: &str, line_count: usize, declaration: &str| {
+        let parent = format!("{}{declaration}", code_lines_for_count(line_count - 1));
+        fixture.write(&format!("src/{name}.rs"), &parent);
+        fixture.write(&format!("src/{name}/child.rs"), &code_lines_for_count(70));
+    };
+    write_parent("below", 69, "mod child;\n");
+    write_parent("boundary", 70, "mod child;\n");
+    write_parent("upper", 800, "mod child;\n");
+    write_parent("above", 801, "mod child;\n");
+    let path_parent = format!(
+        "{}#[path = \"selected.rs\"]\nmod child;\n",
+        code_lines_for_count(68)
+    );
+    fixture.write("src/path_child.rs", &path_parent);
+    fixture.write("src/path_child/selected.rs", &code_lines_for_count(70));
+
+    let output = fixture.run(&["--format", "json", "--locale", "en-US"]);
+    let diagnostics = rule_diagnostics(&output, "child_module_line_count");
+
+    assert_eq!(diagnostics.len(), 1, "{}", output.stdout);
+    assert_eq!(diagnostics[0]["path"], "src/above.rs");
+    assert!(diagnostic_message(&diagnostics[0]).contains("at most 800"));
+
+    let chinese = fixture.run(&["--format", "json", "--locale", "zh-CN"]);
+    let chinese_diagnostics = rule_diagnostics(&chinese, "child_module_line_count");
+    assert_eq!(chinese_diagnostics.len(), 1, "{}", chinese.stdout);
+    assert!(diagnostic_message(&chinese_diagnostics[0]).contains("不得超过 800 行"));
+}
+
+#[test]
+fn child_module_line_count_requires_the_minimum_without_a_direct_external_child() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "src/lib.rs",
+        "mod inline_only;\nmod inline_descendant;\nmod cfg_disabled;\nmod missing;\nmod unknown_cfg;\n",
+    );
+    fixture.write(
+        "src/inline_only.rs",
+        &format!(
+            "{}mod inline {{ fn value() {{}} }}\n",
+            code_lines_for_count(68)
+        ),
+    );
+    fixture.write(
+        "src/inline_descendant.rs",
+        &format!("{}mod inline {{ mod child; }}\n", code_lines_for_count(68)),
+    );
+    fixture.write(
+        "src/inline_descendant/inline/child.rs",
+        &code_lines_for_count(70),
+    );
+    fixture.write(
+        "src/cfg_disabled.rs",
+        &format!("{}#[cfg(any())]\nmod child;\n", code_lines_for_count(69)),
+    );
+    fixture.write("src/cfg_disabled/child.rs", &code_lines_for_count(70));
+    fixture.write(
+        "src/missing.rs",
+        &format!("{}mod absent;\n", code_lines_for_count(68)),
+    );
+    fixture.write(
+        "src/unknown_cfg.rs",
+        &format!(
+            "{}#[cfg(maybe_child)]\nmod child;\n",
+            code_lines_for_count(67)
+        ),
+    );
+    fixture.write("src/unknown_cfg/child.rs", &code_lines_for_count(70));
+
+    let output = fixture.run(&["--format", "json"]);
+    let diagnostics = rule_diagnostics(&output, "child_module_line_count");
+
+    assert_eq!(diagnostics.len(), 4, "{}", output.stdout);
+    assert!(diagnostics.iter().all(|diagnostic| {
+        matches!(
+            diagnostic["path"].as_str(),
+            Some(
+                "src/inline_only.rs"
+                    | "src/inline_descendant.rs"
+                    | "src/cfg_disabled.rs"
+                    | "src/missing.rs"
+            )
+        ) && diagnostic_message(diagnostic).contains("between 70 and 800")
+    }));
+    assert!(output
+        .stdout
+        .contains("\"analysis_issue\":\"missing_module\""));
+}
+
+#[test]
+fn all_targets_uses_test_only_children_for_grouped_line_count_limits() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write("src/lib.rs", "mod small;\nmod large;\n");
+    fixture.write(
+        "src/small.rs",
+        &format!(
+            "{}#[cfg(test)]\nmod test_child;\n",
+            code_lines_for_count(69)
+        ),
+    );
+    fixture.write(
+        "src/large.rs",
+        &format!(
+            "{}#[cfg(test)]\nmod test_child;\n",
+            code_lines_for_count(801)
+        ),
+    );
+    fixture.write("src/small/test_child.rs", &code_lines_for_count(70));
+    fixture.write("src/large/test_child.rs", &code_lines_for_count(70));
+
+    let output = fixture.run(&["--format", "json", "--all-targets"]);
+    let diagnostics = rule_diagnostics(&output, "child_module_line_count");
+
+    assert_eq!(diagnostics.len(), 1, "{}", output.stdout);
+    assert_eq!(diagnostics[0]["path"], "src/large.rs");
+    assert!(diagnostic_message(&diagnostics[0]).contains("at most 800"));
+}
+
+#[test]
 fn excludes_false_cfg_items_from_child_module_line_counts() {
     let fixture = Fixture::new();
     fixture.write("Cargo.toml", &package_manifest("sample"));
