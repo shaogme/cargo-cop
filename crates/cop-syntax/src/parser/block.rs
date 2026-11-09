@@ -462,6 +462,9 @@ impl BlockParser {
         {
             return Some((index, "extern crate".to_owned()));
         }
+        if Recovery::extern_block_header(tokens, index).is_some() {
+            return Some((index, "extern block".to_owned()));
+        }
         while let Some(token) = tokens.get(index) {
             if matches!(token.kind(), TokenKind::EditionKeyword(value) if value == "async") {
                 index += 1;

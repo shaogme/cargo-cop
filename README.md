@@ -56,7 +56,7 @@ steps:
   - uses: actions/checkout@main
   - uses: shaogme/cargo-cop@main
     with:
-      version: 0.3.10
+      version: 0.3.11
   - run: cargo cop --workspace
 ```
 
@@ -67,7 +67,7 @@ steps:
   - uses: actions/checkout@main
   - uses: shaogme/cargo-cop@main
     with:
-      version: 0.3.10
+      version: 0.3.11
       from-source: true
   - run: cargo cop --workspace
 ```

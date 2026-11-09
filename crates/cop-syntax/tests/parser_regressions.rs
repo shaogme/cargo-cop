@@ -20,6 +20,115 @@ fn parse(source: &str, edition: &str) -> ParseOutput {
 }
 
 #[test]
+fn parses_unsafe_extern_block_inside_function_body() {
+    let source = r#"
+fn environ() {
+    unsafe extern "C" {
+        static mut environ: *const *const u8;
+    }
+}
+"#;
+    let parsed = parse(source, "2024");
+
+    assert_eq!(
+        parsed.coverage(),
+        CoverageStatus::Complete,
+        "{:?}",
+        parsed.issues()
+    );
+    assert!(parsed.issues().is_empty(), "{:?}", parsed.issues());
+    assert!(parsed.syntax_nodes().iter().any(|node| {
+        node.kind() == SyntaxNodeKind::LocalItem
+            && matches!(
+                node.item_syntax().map(|item| item.kind()),
+                Some(ItemSyntaxKind::ExternBlock {
+                    unsafe_: true,
+                    abi: Some(abi),
+                }) if abi == "C"
+            )
+    }));
+    assert!(parsed.syntax_nodes().iter().any(|node| {
+        matches!(
+            node.foreign_item_syntax().map(|item| item.kind()),
+            Some(ForeignItemSyntaxKind::Static { mutable: true, .. })
+        )
+    }));
+}
+
+#[test]
+fn classifies_safe_local_extern_blocks_and_keeps_edition_validation() {
+    let source = "fn inspect() { extern { static VALUE: u8; } }";
+    let parsed_2021 = parse(source, "2021");
+    let parsed_2024 = parse(source, "2024");
+    let extern_start = source.find("extern").expect("extern 块位置");
+
+    assert_eq!(parsed_2021.coverage(), CoverageStatus::Complete);
+    assert!(
+        parsed_2021.issues().is_empty(),
+        "{:?}",
+        parsed_2021.issues()
+    );
+    assert!(parsed_2021.syntax_nodes().iter().any(|node| {
+        node.kind() == SyntaxNodeKind::LocalItem
+            && matches!(
+                node.item_syntax().map(|item| item.kind()),
+                Some(ItemSyntaxKind::ExternBlock {
+                    unsafe_: false,
+                    abi: None,
+                })
+            )
+    }));
+
+    assert!(parsed_2024.syntax_nodes().iter().any(|node| {
+        node.kind() == SyntaxNodeKind::LocalItem
+            && matches!(
+                node.item_syntax().map(|item| item.kind()),
+                Some(ItemSyntaxKind::ExternBlock {
+                    unsafe_: false,
+                    abi: None,
+                })
+            )
+    }));
+    assert!(unexpected_issues(&parsed_2024)
+        .iter()
+        .any(|(start, _)| *start == extern_start));
+}
+
+#[test]
+fn classifies_local_extern_functions_as_functions() {
+    let source = r#"
+fn inspect() {
+    extern "C" fn safe_foreign() {}
+    unsafe extern "C" fn unsafe_foreign() {}
+}
+"#;
+    let parsed = parse(source, "2024");
+    let function_names = parsed
+        .syntax_nodes()
+        .iter()
+        .filter(|node| node.kind() == SyntaxNodeKind::LocalItem)
+        .filter_map(|node| node.item_syntax())
+        .filter_map(|item| match item.kind() {
+            ItemSyntaxKind::Function {
+                name: Some(name),
+                has_extern_modifier: true,
+            } => Some(name.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert!(parsed.issues().is_empty(), "{:?}", parsed.issues());
+    assert_eq!(function_names, vec!["safe_foreign", "unsafe_foreign"]);
+    assert!(!parsed.syntax_nodes().iter().any(|node| {
+        node.kind() == SyntaxNodeKind::LocalItem
+            && matches!(
+                node.item_syntax().map(|item| item.kind()),
+                Some(ItemSyntaxKind::ExternBlock { .. })
+            )
+    }));
+}
+
+#[test]
 fn parses_method_calls_after_tuple_field_access() {
     let source = "fn f() { tuple.0.extend_from_slice(bytes); }";
     let parsed = parse(source, "2021");
@@ -509,6 +618,29 @@ fn parses_foreign_variadics_only_as_final_parameter_markers() {
                 .parent()
                 .and_then(|id| parsed.node(id))
                 .is_some_and(|parent| parent.kind() == SyntaxNodeKind::Item)
+    }));
+}
+
+#[test]
+fn parses_mutable_static_in_unsafe_foreign_block_with_nested_raw_pointers() {
+    let source = "unsafe extern \"C\" { static mut environ: *const *const libc::c_char; }";
+    let parsed = parse(source, "2021");
+
+    assert_eq!(
+        parsed.coverage(),
+        CoverageStatus::Complete,
+        "{:?}",
+        parsed.issues()
+    );
+    assert!(parsed.issues().is_empty(), "{:?}", parsed.issues());
+    assert!(parsed.syntax_nodes().iter().any(|node| {
+        matches!(
+            node.foreign_item_syntax().map(|item| item.kind()),
+            Some(ForeignItemSyntaxKind::Static {
+                name: Some(name),
+                mutable: true,
+            }) if name == "environ"
+        )
     }));
 }
 
