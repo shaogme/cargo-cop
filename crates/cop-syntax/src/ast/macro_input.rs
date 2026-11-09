@@ -11,11 +11,72 @@ pub struct CfgCandidate {
     error_offset: Option<usize>,
 }
 
+/// Grammar shape used to parse a macro input after its identity is resolved.
+///
+/// This key describes syntax only; it does not identify a macro or prove that the
+/// invocation is valid Rust.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MacroProfileKey {
+    /// One required expression followed by optional format arguments.
+    Assert,
+    /// Two required expressions followed by optional format arguments.
+    AssertEq,
+    /// Two required expressions followed by optional format arguments.
+    AssertNe,
+    /// An expression, a pattern, and an optional guard expression.
+    Matches,
+    /// A format string followed by formatting arguments.
+    Format,
+    /// A formatting target, a format string, and formatting arguments.
+    Write,
+    /// The logging-style error format grammar.
+    Error,
+    /// A comma-separated expression list or repeated expression.
+    Vec,
+    /// One or two string-literal arguments.
+    Env,
+    /// The supported JSON-like object and array grammar.
+    Json,
+    /// The static-loader declaration grammar.
+    StaticLoader,
+}
+
+/// Binds a macro call's source range to an explicitly resolved grammar profile.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MacroProfileBinding {
+    call_bounds: Range<usize>,
+    profile: MacroProfileKey,
+}
+
+/// Describes how a macro input is represented in the syntax tree.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MacroInputStatus {
+    /// Retains a cfg predicate candidate for analysis-layer identity checks.
     CfgCandidate(CfgCandidate),
-    KnownProfile,
+    /// A caller resolved the macro identity and selected this grammar profile.
+    KnownProfile(MacroProfileKey),
+    /// The input remains a token tree because its identity or grammar is unsupported.
     Opaque,
+}
+
+impl MacroProfileBinding {
+    /// Create a binding for the full macro invocation range.
+    pub fn new(call_bounds: Range<usize>, profile: MacroProfileKey) -> Self {
+        Self {
+            call_bounds,
+            profile,
+        }
+    }
+
+    /// Return the full call range used to match this binding during parsing.
+    pub fn call_bounds(&self) -> Range<usize> {
+        self.call_bounds.clone()
+    }
+
+    /// Return the syntax profile selected for this call.
+    pub fn profile(&self) -> MacroProfileKey {
+        self.profile
+    }
 }
 
 impl CfgCandidate {

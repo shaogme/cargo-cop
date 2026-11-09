@@ -122,9 +122,7 @@ impl<'a> CfgEvaluator<'a> {
             return;
         }
         let name = meta.path().join("::");
-        if matches!(name.as_str(), "no_std" | "no_implicit_prelude")
-            && self.evaluate_guards(&context.guards) != CfgDecision::False
-        {
+        if self.evaluate_guards(&context.guards) != CfgDecision::False {
             context.effects.active_attributes.insert(name.clone());
         }
         if context.path_only && !matches!(name.as_str(), "cfg_attr" | "path") {

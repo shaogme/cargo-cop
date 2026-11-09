@@ -10,7 +10,7 @@ use crate::{
         StatementSyntaxKind, SyntaxNode, SyntaxNodeData, SyntaxNodeKind,
     },
     recovery::Recovery,
-    Delimiter, RustEdition, SourceFile, Token, TokenKind,
+    Delimiter, MacroProfileBinding, RustEdition, SourceFile, Token, TokenKind,
 };
 
 use super::{
@@ -37,6 +37,8 @@ pub(super) struct LocalItemInput<'a> {
     pub(super) attributes: Vec<Attribute>,
     pub(super) ast_nodes: &'a mut Vec<SyntaxNode>,
     pub(super) issues: &'a mut Vec<ParseIssue>,
+    pub(super) macro_profiles: &'a [MacroProfileBinding],
+    pub(super) defer_opaque_macro_diagnostics: bool,
 }
 
 pub(super) struct BlockInput<'a> {
@@ -46,6 +48,8 @@ pub(super) struct BlockInput<'a> {
     pub(super) start: usize,
     pub(super) end: usize,
     pub(super) parent: AstNodeId,
+    pub(super) macro_profiles: &'a [MacroProfileBinding],
+    pub(super) defer_opaque_macro_diagnostics: bool,
 }
 
 struct BlockParseContext<'a> {
@@ -54,6 +58,8 @@ struct BlockParseContext<'a> {
     edition: RustEdition,
     issues: &'a mut Vec<ParseIssue>,
     ast_nodes: &'a mut Vec<SyntaxNode>,
+    macro_profiles: &'a [MacroProfileBinding],
+    defer_opaque_macro_diagnostics: bool,
 }
 
 impl BlockParser {
@@ -69,6 +75,8 @@ impl BlockParser {
             start,
             end,
             parent,
+            macro_profiles,
+            defer_opaque_macro_diagnostics,
         } = input;
         let mut context = BlockParseContext {
             source,
@@ -76,6 +84,8 @@ impl BlockParser {
             edition,
             issues,
             ast_nodes,
+            macro_profiles,
+            defer_opaque_macro_diagnostics,
         };
         Self::parse_scope(&mut context, start..end, parent);
     }
@@ -195,6 +205,8 @@ impl BlockParser {
                     attributes,
                     ast_nodes: context.ast_nodes,
                     issues: context.issues,
+                    macro_profiles: context.macro_profiles,
+                    defer_opaque_macro_diagnostics: context.defer_opaque_macro_diagnostics,
                 });
                 cursor = if statement_end > start_index {
                     statement_end
@@ -310,6 +322,8 @@ impl BlockParser {
                             type_annotation: parsed.type_annotation.clone(),
                             ast_nodes: context.ast_nodes,
                             issues: context.issues,
+                            macro_profiles: context.macro_profiles,
+                            defer_opaque_macro_diagnostics: context.defer_opaque_macro_diagnostics,
                         });
                     }
                 } else if kind == SyntaxNodeKind::Statement {
@@ -323,6 +337,8 @@ impl BlockParser {
                         expression: parsed.expression_syntax.as_ref(),
                         ast_nodes: context.ast_nodes,
                         issues: context.issues,
+                        macro_profiles: context.macro_profiles,
+                        defer_opaque_macro_diagnostics: context.defer_opaque_macro_diagnostics,
                     });
                 }
                 if kind == SyntaxNodeKind::MatchArm {
@@ -336,6 +352,8 @@ impl BlockParser {
                         expression: parsed.expression_syntax.as_ref(),
                         ast_nodes: context.ast_nodes,
                         issues: context.issues,
+                        macro_profiles: context.macro_profiles,
+                        defer_opaque_macro_diagnostics: context.defer_opaque_macro_diagnostics,
                     });
                 }
                 let generated_start = context.ast_nodes.len();
@@ -348,6 +366,8 @@ impl BlockParser {
                             parent: node_id,
                             expression_tree: true,
                             edition: Some(context.edition),
+                            macro_profiles: context.macro_profiles,
+                            defer_opaque_macro_diagnostics: context.defer_opaque_macro_diagnostics,
                         },
                         context.ast_nodes,
                         context.issues,

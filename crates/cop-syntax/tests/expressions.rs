@@ -1,8 +1,8 @@
 use cop_syntax::{
     CoverageStatus, ExpressionBlockKind, ExpressionSyntax, ExpressionSyntaxKind,
-    ExpressionUnsupportedKind, MacroInputStatus, ParseIssueCode, ParseIssueKind, ParseOptions,
-    ParseOutput, RustParser, SourceFile, StatementSyntaxKind, SyntaxNodeKind, TypeSyntaxKind,
-    UnaryOperator,
+    ExpressionUnsupportedKind, MacroInputStatus, MacroProfileBinding, MacroProfileKey,
+    ParseIssueCode, ParseIssueKind, ParseOptions, ParseOutput, RustParser, SourceFile,
+    StatementSyntaxKind, SyntaxNodeKind, TypeSyntaxKind, UnaryOperator,
 };
 
 fn parse(source: SourceFile) -> ParseOutput {
@@ -19,6 +19,18 @@ fn expression_with_text<'a>(parsed: &'a ParseOutput, expected: &str) -> &'a Expr
             parsed.source().slice(bounds.start, bounds.end) == Some(expected)
         })
         .expect("源码范围对应的表达式语法节点")
+}
+
+fn macro_profile_statuses(parsed: &ParseOutput) -> Vec<(String, MacroInputStatus)> {
+    parsed
+        .syntax_nodes()
+        .iter()
+        .filter_map(|node| node.macro_invocation())
+        .filter_map(|invocation| {
+            let name = invocation.path().segments().last()?.name().to_owned();
+            Some((name, invocation.input().status().clone()))
+        })
+        .collect()
 }
 
 #[test]
@@ -273,7 +285,37 @@ fn inspect(value: Value) {
     let unknown = custom_dsl!({ opaque: value });
 }
 "#;
-    let parsed = parse(SourceFile::new("src/macro_profiles.rs", text));
+    let source = SourceFile::new("src/macro_profiles.rs", text);
+    let structural = RustParser::parse_structure(source.clone(), ParseOptions::default())
+        .expect("structural parse succeeds");
+    let bindings = structural
+        .syntax_nodes()
+        .iter()
+        .filter_map(|node| node.macro_invocation())
+        .filter_map(|invocation| {
+            let name = invocation.path().segments().last()?.name();
+            let profile = match name {
+                "assert" => MacroProfileKey::Assert,
+                "assert_eq" => MacroProfileKey::AssertEq,
+                "matches" => MacroProfileKey::Matches,
+                "format" => MacroProfileKey::Format,
+                "vec" => MacroProfileKey::Vec,
+                "env" => MacroProfileKey::Env,
+                "json" => MacroProfileKey::Json,
+                "static_loader" => MacroProfileKey::StaticLoader,
+                _ => return None,
+            };
+            Some(MacroProfileBinding::new(
+                invocation.start()..invocation.end(),
+                profile,
+            ))
+        })
+        .collect::<Vec<_>>();
+    let parsed = RustParser::parse(
+        source,
+        ParseOptions::default().with_macro_profiles(bindings),
+    )
+    .expect("profile parse succeeds");
     let macro_nodes = parsed
         .syntax_nodes()
         .iter()
@@ -282,7 +324,12 @@ fn inspect(value: Value) {
     let parsed_invocations = macro_nodes
         .iter()
         .filter_map(|node| node.macro_invocation())
-        .filter(|invocation| matches!(invocation.input().status(), MacroInputStatus::KnownProfile))
+        .filter(|invocation| {
+            matches!(
+                invocation.input().status(),
+                MacroInputStatus::KnownProfile(_)
+            )
+        })
         .count();
 
     assert_eq!(
@@ -326,6 +373,62 @@ fn inspect(value: Value) {
                     .is_some_and(|fragment| fragment == "size()")
         })
     }));
+}
+
+#[test]
+fn macro_profiles_require_resolved_standard_macro_identity() {
+    let text = r#"
+macro_rules! matches { ($($tokens:tt)*) => {}; }
+fn inspect(value: Option<i32>) {
+    matches!(value, Some(_));
+    custom::matches!(value, Some(_));
+}
+"#;
+    let parsed = parse(SourceFile::new("src/macro_name_resolution.rs", text));
+
+    assert_eq!(
+        macro_profile_statuses(&parsed),
+        vec![
+            ("matches".to_owned(), MacroInputStatus::Opaque),
+            ("matches".to_owned(), MacroInputStatus::Opaque),
+        ],
+        "同名的本地宏和非标准路径不能仅凭末段名称套用标准宏 profile"
+    );
+}
+
+#[test]
+fn standalone_parser_requires_explicit_macro_profile_bindings() {
+    let std_source = "fn inspect() { format!(\"{}\", 1); vec![1]; }";
+    let std_parsed = parse(SourceFile::new("src/std_macro_prelude.rs", std_source));
+    assert_eq!(
+        macro_profile_statuses(&std_parsed),
+        vec![
+            ("format".to_owned(), MacroInputStatus::Opaque),
+            ("vec".to_owned(), MacroInputStatus::Opaque),
+        ]
+    );
+
+    let no_std_source = r#"
+#![no_std]
+fn inspect(value: Option<i32>) {
+    matches!(value, Some(_));
+    format!("{}", value);
+    vec![value];
+}
+"#;
+    let no_std_parsed = parse(SourceFile::new(
+        "src/no_std_macro_prelude.rs",
+        no_std_source,
+    ));
+    assert_eq!(
+        macro_profile_statuses(&no_std_parsed),
+        vec![
+            ("matches".to_owned(), MacroInputStatus::Opaque),
+            ("format".to_owned(), MacroInputStatus::Opaque),
+            ("vec".to_owned(), MacroInputStatus::Opaque),
+        ],
+        "no_std 使用 core 宏 prelude，不会默认导入 format! 或 vec!"
+    );
 }
 
 #[test]

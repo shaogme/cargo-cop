@@ -15,7 +15,7 @@
 - 下方规则目录列出的源码规范。
 - 带稳定规则 ID 和源码位置的人类可读或 JSON 诊断。
 
-`cargo-cop` 使用自有词法分析器、解析器、模块分析和符号索引。解析和 cfg 配置完成后，`cop-analysis` 会为每个模块实例只枚举一次 AST 节点，并在同一轮收集符号与局部绑定、引用、API 声明范围、impl 所有者、覆盖状态和模块语法事实。遍历结束后再统一解析路径并构建 API 依赖等索引，生成不可变的 `AnalysisFacts`；语义规则与结构规则查询这些事实处理路径、作用域、导入、字段和语法形状。它不替代 `rustc` 或 Clippy，也不会编译被检查的项目；它不会执行 build script 或展开宏。因此，`include!`、可能声明模块的 item macro、未知 `cfg` 或尚不支持的 Rust 语法可能导致扫描结果为部分完成或不完整。将扫描结果用于 CI 门禁时，请检查报告中的状态。
+`cargo-cop` 使用自有词法分析器、解析器、模块分析和符号索引。它先完成结构解析，并按 target 配置模块和 `cfg`，再按模块实例解析一组保守支持的宏身份，只对显式绑定的宏 profile 重新解析。随后 `cop-analysis` 遍历最终 AST，收集符号与局部绑定、引用、API 声明范围、impl 所有者、覆盖状态和模块语法事实，再构建路径和 API 依赖索引并生成不可变的 `AnalysisFacts`。语义规则与结构规则查询这些事实处理路径、作用域、导入、字段和语法形状。独立使用 `cop-syntax` 时，解析器不会按宏路径末段名称推断 profile；调用方必须提供已解析身份对应的绑定。未知身份、不支持的 profile 或不符合 profile 语法的输入会保持 opaque，并可能使覆盖状态变为部分完成。分析器目前绑定受支持的标准宏身份，包括标准路径、显式导入和 crate 内重导出；尚未确认 owner 的第三方 profile 保持 opaque。工具不会展开宏，也不替代 `rustc` 或 Clippy；它不会编译被检查的项目或执行 build script。因此，`include!`、可能声明模块的 item macro、未知 `cfg` 或尚不支持的 Rust 语法可能导致扫描结果为部分完成或不完整。将扫描结果用于 CI 门禁时，请检查报告中的状态。
 
 ## 环境要求
 
@@ -56,7 +56,7 @@ steps:
   - uses: actions/checkout@main
   - uses: shaogme/cargo-cop@main
     with:
-      version: 0.3.11
+      version: 0.3.12
   - run: cargo cop --workspace
 ```
 
@@ -67,7 +67,7 @@ steps:
   - uses: actions/checkout@main
   - uses: shaogme/cargo-cop@main
     with:
-      version: 0.3.11
+      version: 0.3.12
       from-source: true
   - run: cargo cop --workspace
 ```

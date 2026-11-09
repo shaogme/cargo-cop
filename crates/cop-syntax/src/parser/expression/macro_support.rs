@@ -10,13 +10,13 @@ use crate::{
     },
     parser::{patterns::PatternParser, types::TypeParser},
     recovery::Recovery,
-    Delimiter, LiteralKind, SourceFile, Token, TokenKind,
+    Delimiter, LiteralKind, MacroProfileBinding, MacroProfileKey, SourceFile, Token, TokenKind,
 };
 
 use super::{
     pratt::PrattParser,
     tree::{EmitContext, ExpressionTree},
-    MacroInputRequest, PatternInput, SyntaxRequest,
+    MacroInputRequest, OpaqueMacroCallScan, PatternInput, SyntaxCollector, SyntaxRequest,
 };
 
 #[derive(Clone, Copy)]
@@ -64,8 +64,13 @@ impl MacroInputSupport {
             edition: Some(request.edition),
             ast_nodes,
             issues,
+            macro_profiles: request.macro_profiles,
+            defer_opaque_macro_diagnostics: request.defer_opaque_macro_diagnostics,
         };
+        let profile_key =
+            Self::profile_key(request.macro_profiles, invocation.start(), invocation.end());
         let profile = Self::profile(
+            profile_key,
             invocation.path(),
             &invocation.input().bounds(),
             context.tokens,
@@ -74,7 +79,10 @@ impl MacroInputSupport {
         let Some(fragments) = profile else {
             return false;
         };
-        let updated = invocation.with_input_status(context.tokens, MacroInputStatus::KnownProfile);
+        let updated = invocation.with_input_status(
+            context.tokens,
+            MacroInputStatus::KnownProfile(profile_key.expect("profile binding was resolved")),
+        );
         AstFactory::set_macro_invocation(context.ast_nodes, request.parent, updated);
         AstFactory::set_ast_node_coverage(
             context.ast_nodes,
@@ -128,7 +136,8 @@ impl MacroInputSupport {
             );
             return;
         }
-        let profile = Self::profile(path, input, context.tokens)
+        let profile_key = Self::profile_key(context.macro_profiles, bounds.start, bounds.end);
+        let profile = Self::profile(profile_key, path, input, context.tokens)
             .filter(|fragments| Self::validate_fragments(fragments, context));
         let Some(fragments) = profile else {
             Self::emit_opaque(path, bounds, input, parent, context);
@@ -139,7 +148,7 @@ impl MacroInputSupport {
             bounds.clone(),
             context.tokens,
             input.clone(),
-            MacroInputStatus::KnownProfile,
+            MacroInputStatus::KnownProfile(profile_key.expect("profile binding was resolved")),
         );
         let macro_id = AstFactory::push_data_node(
             context.ast_nodes,
@@ -194,13 +203,27 @@ impl MacroInputSupport {
             input.clone(),
             Vec::new(),
         );
-        AstFactory::push_ast_node(
+        let opaque_id = AstFactory::push_ast_node(
             context.ast_nodes,
             Some(input_id),
             SyntaxNodeKind::Opaque,
             input.clone(),
             Vec::new(),
         );
+        if context.defer_opaque_macro_diagnostics {
+            SyntaxCollector::collect_opaque_macro_calls(
+                OpaqueMacroCallScan {
+                    source: context.source,
+                    tokens: context.tokens,
+                    input,
+                    parent: opaque_id,
+                    edition: context.edition,
+                    macro_profiles: context.macro_profiles,
+                },
+                context.ast_nodes,
+                context.issues,
+            );
+        }
         TypeParser::emit_path_argument_macros(
             path,
             macro_id,
@@ -208,33 +231,46 @@ impl MacroInputSupport {
             context.ast_nodes,
             context.issues,
         );
-        context.issues.push(AstFactory::opaque_macro_issue(
-            input.clone(),
-            t!("syntax.macro_opaque"),
-        ));
+        if !context.defer_opaque_macro_diagnostics {
+            context.issues.push(AstFactory::opaque_macro_issue(
+                input.clone(),
+                t!("syntax.macro_opaque"),
+            ));
+        }
+    }
+
+    fn profile_key(
+        bindings: &[MacroProfileBinding],
+        call_start: usize,
+        call_end: usize,
+    ) -> Option<MacroProfileKey> {
+        bindings
+            .iter()
+            .find(|binding| binding.call_bounds() == (call_start..call_end))
+            .map(MacroProfileBinding::profile)
     }
 
     fn profile(
+        key: Option<MacroProfileKey>,
         path: &PathSyntax,
         input: &Range<usize>,
         tokens: &[Token],
     ) -> Option<Vec<MacroFragment>> {
-        let name = path.segments().last()?.name();
+        let _ = path.segments().last()?;
         let range = Self::input_token_range(tokens, input)?;
-        match name {
-            "assert" => Self::assert_profile(tokens, range, 1),
-            "assert_eq" | "assert_ne" => Self::assert_profile(tokens, range, 2),
-            "matches" => Self::matches_profile(tokens, range),
-            "format" | "panic" | "println" | "eprintln" => {
-                Self::format_profile(tokens, range, false)
+        match key? {
+            MacroProfileKey::Assert => Self::assert_profile(tokens, range, 1),
+            MacroProfileKey::AssertEq | MacroProfileKey::AssertNe => {
+                Self::assert_profile(tokens, range, 2)
             }
-            "write" | "writeln" => Self::format_profile(tokens, range, true),
-            "error" => Self::error_profile(tokens, range),
-            "vec" => Self::vec_profile(tokens, range),
-            "env" => Self::env_profile(tokens, range),
-            "json" => Self::json_profile(tokens, range),
-            "static_loader" => Self::static_loader_profile(tokens, range),
-            _ => None,
+            MacroProfileKey::Matches => Self::matches_profile(tokens, range),
+            MacroProfileKey::Format => Self::format_profile(tokens, range, false),
+            MacroProfileKey::Write => Self::format_profile(tokens, range, true),
+            MacroProfileKey::Error => Self::error_profile(tokens, range),
+            MacroProfileKey::Vec => Self::vec_profile(tokens, range),
+            MacroProfileKey::Env => Self::env_profile(tokens, range),
+            MacroProfileKey::Json => Self::json_profile(tokens, range),
+            MacroProfileKey::StaticLoader => Self::static_loader_profile(tokens, range),
         }
     }
 
@@ -612,6 +648,8 @@ impl MacroInputSupport {
                         parent,
                         expression_tree: true,
                         edition: context.edition,
+                        macro_profiles: context.macro_profiles,
+                        defer_opaque_macro_diagnostics: context.defer_opaque_macro_diagnostics,
                     };
                     ExpressionTree::collect_expression(request, context.ast_nodes, context.issues);
                 }

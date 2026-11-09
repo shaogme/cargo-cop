@@ -6,7 +6,7 @@ use crate::{
     },
     parser::types::{ParsedTypeInput, TypeParser},
     recovery::Recovery,
-    RustEdition, SourceFile, Token,
+    MacroProfileBinding, RustEdition, SourceFile, Token,
 };
 
 use super::{
@@ -24,6 +24,8 @@ pub(super) struct BlockPatternInput<'a> {
     pub(super) expression: Option<&'a ExpressionSyntax>,
     pub(super) ast_nodes: &'a mut Vec<SyntaxNode>,
     pub(super) issues: &'a mut Vec<ParseIssue>,
+    pub(super) macro_profiles: &'a [MacroProfileBinding],
+    pub(super) defer_opaque_macro_diagnostics: bool,
 }
 
 pub(super) struct LetPatternInput<'a> {
@@ -34,6 +36,8 @@ pub(super) struct LetPatternInput<'a> {
     pub(super) type_annotation: Option<ParsedTypeAnnotation>,
     pub(super) ast_nodes: &'a mut Vec<SyntaxNode>,
     pub(super) issues: &'a mut Vec<ParseIssue>,
+    pub(super) macro_profiles: &'a [MacroProfileBinding],
+    pub(super) defer_opaque_macro_diagnostics: bool,
 }
 
 pub(super) struct PatternCollector;
@@ -48,6 +52,8 @@ impl PatternCollector {
             type_annotation,
             ast_nodes,
             issues,
+            macro_profiles,
+            defer_opaque_macro_diagnostics,
         } = input;
         let pattern_bounds = Recovery::token_bounds(tokens, pattern);
         SyntaxCollector::push_pattern(
@@ -78,6 +84,8 @@ impl PatternCollector {
                     parent,
                     expression_tree: false,
                     edition: None,
+                    macro_profiles,
+                    defer_opaque_macro_diagnostics,
                 },
                 &mut *ast_nodes,
                 &mut *issues,
@@ -197,6 +205,8 @@ impl PatternCollector {
             expression: _,
             ast_nodes,
             issues,
+            macro_profiles,
+            defer_opaque_macro_diagnostics,
         } = input;
         let Some(arrow) = SyntaxCollector::top_level_token(tokens, start, end, "=>") else {
             return;
@@ -225,6 +235,8 @@ impl PatternCollector {
                 parent: pattern_id,
                 expression_tree: false,
                 edition: None,
+                macro_profiles,
+                defer_opaque_macro_diagnostics,
             },
             ast_nodes,
             issues,
@@ -238,6 +250,8 @@ impl PatternCollector {
                     parent,
                     expression_tree: true,
                     edition: Some(edition),
+                    macro_profiles,
+                    defer_opaque_macro_diagnostics,
                 },
                 ast_nodes,
                 issues,

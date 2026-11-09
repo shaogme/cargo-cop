@@ -24,7 +24,7 @@ use crate::{
         where_clause::{WhereClauseInput, WhereClauseParser},
     },
     recovery::Recovery,
-    Delimiter, RustEdition, SourceFile, Token, TokenKind,
+    Delimiter, MacroProfileBinding, RustEdition, SourceFile, Token, TokenKind,
 };
 
 use super::super::token_cursor::{AngleScanContext, CursorRange, TokenCursor};
@@ -36,6 +36,8 @@ pub(crate) struct ParserContext<'source, 'state> {
     pub(super) cursor: &'state mut usize,
     pub(super) issues: &'state mut Vec<ParseIssue>,
     pub(super) ast_nodes: &'state mut Vec<SyntaxNode>,
+    pub(super) macro_profiles: &'source [MacroProfileBinding],
+    pub(super) defer_opaque_macro_diagnostics: bool,
 }
 
 pub(super) struct ItemSyntaxParser;
@@ -111,6 +113,8 @@ impl ItemSyntaxParser {
             parent,
             ast_nodes: context.ast_nodes,
             issues: context.issues,
+            macro_profiles: context.macro_profiles,
+            defer_opaque_macro_diagnostics: context.defer_opaque_macro_diagnostics,
         })
     }
 
@@ -167,6 +171,8 @@ impl ItemSyntaxParser {
             allow_variadic,
             ast_nodes: context.ast_nodes,
             issues: context.issues,
+            macro_profiles: context.macro_profiles,
+            defer_opaque_macro_diagnostics: context.defer_opaque_macro_diagnostics,
         });
         let body_open = Recovery::body_open(context.tokens, parameter_close + 1);
         let signature_end = body_open
@@ -180,6 +186,8 @@ impl ItemSyntaxParser {
                 parent,
                 expression_tree: false,
                 edition: None,
+                macro_profiles: context.macro_profiles,
+                defer_opaque_macro_diagnostics: context.defer_opaque_macro_diagnostics,
             },
             context.ast_nodes,
             context.issues,
@@ -257,6 +265,8 @@ impl ItemSyntaxParser {
                         start: nodes_start,
                         end: close_index,
                         parent: body_id,
+                        macro_profiles: context.macro_profiles,
+                        defer_opaque_macro_diagnostics: context.defer_opaque_macro_diagnostics,
                     },
                     context.ast_nodes,
                     context.issues,

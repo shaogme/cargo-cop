@@ -13,7 +13,7 @@ use crate::{
         types::TypeParser,
     },
     recovery::Recovery,
-    RustEdition, SourceFile, Token, TokenKind,
+    MacroProfileBinding, RustEdition, SourceFile, Token, TokenKind,
 };
 
 use super::{
@@ -35,6 +35,8 @@ pub(super) struct EmitContext<'a> {
     pub(super) edition: Option<RustEdition>,
     pub(super) ast_nodes: &'a mut Vec<SyntaxNode>,
     pub(super) issues: &'a mut Vec<ParseIssue>,
+    pub(super) macro_profiles: &'a [MacroProfileBinding],
+    pub(super) defer_opaque_macro_diagnostics: bool,
 }
 
 impl ExpressionTree {
@@ -49,6 +51,8 @@ impl ExpressionTree {
             bounds,
             parent,
             edition,
+            macro_profiles,
+            defer_opaque_macro_diagnostics,
             ..
         } = request;
         let first = tokens.get(bounds.start)?;
@@ -93,6 +97,8 @@ impl ExpressionTree {
                     edition,
                     ast_nodes,
                     issues,
+                    macro_profiles,
+                    defer_opaque_macro_diagnostics,
                 };
                 Self::emit_kind_children(&expression, expression_node, &mut context);
             }
@@ -211,6 +217,8 @@ impl ExpressionTree {
             edition: None,
             ast_nodes,
             issues,
+            macro_profiles: &[],
+            defer_opaque_macro_diagnostics: false,
         };
         Some(Self::emit_pattern_syntax(&syntax, parent, &mut context))
     }
@@ -258,6 +266,8 @@ impl ExpressionTree {
             edition: None,
             ast_nodes,
             issues,
+            macro_profiles: &[],
+            defer_opaque_macro_diagnostics: false,
         };
         Self::emit_pattern_syntax(&syntax, parent, &mut context);
     }

@@ -1,7 +1,16 @@
+mod index;
+mod profile;
+
 use std::collections::BTreeSet;
 
-use cop_syntax::{
-    AstNodeId, ItemSyntaxKind, MacroInvocation, ParseOutput, SyntaxNode, SyntaxNodeKind,
+use cop_syntax::{AstNodeId, MacroInvocation, MacroProfileBinding, ParseOutput};
+
+pub(crate) use self::index::{MacroResolverCatalog, MacroResolverIndex};
+use crate::{
+    cfg_eval::CfgDecision,
+    macro_resolver::{index::IndexedMacroUseKind, profile::MacroProfileResolver},
+    module_graph::ModuleNode,
+    ConfiguredAst,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -14,8 +23,68 @@ pub(crate) enum MacroResolution {
 pub(crate) struct MacroResolver;
 
 impl MacroResolver {
+    pub(crate) fn profile_bindings(
+        instance_modules: &[&ModuleNode],
+        modules: &[ModuleNode],
+        catalog: &MacroResolverCatalog,
+        edition: &str,
+    ) -> Vec<MacroProfileBinding> {
+        MacroProfileResolver::profile_bindings(instance_modules, modules, catalog, edition)
+    }
+
+    pub(crate) fn has_macro_use_import_for_module(
+        index: &MacroResolverIndex,
+        configured_ast: &ConfiguredAst,
+        scope_id: AstNodeId,
+        child_start: usize,
+    ) -> bool {
+        index.scope(scope_id).is_some_and(|entries| {
+            entries.macro_use_items.iter().any(|item| {
+                let declaration_is_visible = match item.kind {
+                    IndexedMacroUseKind::ExternCrate => true,
+                    IndexedMacroUseKind::Module => item.start < child_start,
+                };
+                declaration_is_visible
+                    && Self::macro_use_item_is_active(configured_ast, item.node_id)
+            })
+        })
+    }
+
+    pub(crate) fn macro_definitions_before(
+        index: &MacroResolverIndex,
+        configured_ast: &ConfiguredAst,
+        scope_id: AstNodeId,
+        declaration_start: usize,
+    ) -> BTreeSet<String> {
+        index
+            .scope(scope_id)
+            .into_iter()
+            .flat_map(|entries| entries.definitions.iter())
+            .filter(|(_, definitions)| {
+                definitions.iter().any(|(start, node_id)| {
+                    *start < declaration_start
+                        && configured_ast.node(*node_id).is_none_or(|configured| {
+                            configured.availability_decision() != CfgDecision::False
+                        })
+                })
+            })
+            .map(|(name, _)| name.clone())
+            .collect()
+    }
+
+    fn macro_use_item_is_active(configured_ast: &ConfiguredAst, node_id: AstNodeId) -> bool {
+        configured_ast.node(node_id).is_some_and(|configured| {
+            configured.availability_decision() != CfgDecision::False
+                && configured
+                    .attribute_evaluation()
+                    .has_active_attribute("macro_use")
+        })
+    }
+
     pub(crate) fn resolve(
+        index: &MacroResolverIndex,
         output: &ParseOutput,
+        configured_ast: &ConfiguredAst,
         invocation_id: AstNodeId,
         invocation: &MacroInvocation,
     ) -> MacroResolution {
@@ -25,19 +94,20 @@ impl MacroResolver {
         let Some(invocation_node) = output.node(invocation_id) else {
             return MacroResolution::Ambiguous;
         };
-        let scopes = Self::ancestor_ids(output, invocation_node);
-        if output
-            .syntax_nodes()
-            .iter()
-            .any(|node| Self::shadows_cfg(node, &scopes, invocation.start()))
-        {
+        let scopes = index.scope_ids(invocation_node.id());
+        if index.inherited_macro_definitions().contains("cfg") {
             return MacroResolution::NonBuiltin;
         }
-        if output
-            .syntax_nodes()
-            .iter()
-            .any(|node| Self::may_import_cfg(output, node, &scopes))
-        {
+        if MacroProfileResolver::has_visible_macro_definition(
+            index,
+            configured_ast,
+            &scopes,
+            "cfg",
+            invocation.start(),
+        ) {
+            return MacroResolution::NonBuiltin;
+        }
+        if Self::may_import_cfg(index, configured_ast, &scopes, invocation.start()) {
             return MacroResolution::Ambiguous;
         }
         MacroResolution::BuiltinCfg
@@ -55,88 +125,54 @@ impl MacroResolver {
                 .is_some_and(|segment| segment.name() == "cfg" && segment.arguments().is_empty())
     }
 
-    fn ancestor_ids(output: &ParseOutput, node: &SyntaxNode) -> BTreeSet<AstNodeId> {
-        let mut ancestors = BTreeSet::new();
-        let mut current = Some(node.id());
-        while let Some(id) = current {
-            ancestors.insert(id);
-            current = output.node(id).and_then(SyntaxNode::parent);
-        }
-        ancestors
-    }
-
-    fn shadows_cfg(
-        node: &SyntaxNode,
+    fn may_import_cfg(
+        index: &MacroResolverIndex,
+        configured_ast: &ConfiguredAst,
         invocation_scopes: &BTreeSet<AstNodeId>,
         invocation_start: usize,
     ) -> bool {
-        let Some(ItemSyntaxKind::MacroDefinition(definition)) =
-            node.item_syntax().map(|item| item.kind())
-        else {
-            return false;
-        };
-        if definition.name() != "cfg" || definition.start() >= invocation_start {
-            return false;
-        }
-        definition
-            .scope()
-            .is_some_and(|scope| invocation_scopes.contains(&scope))
-    }
-
-    fn may_import_cfg(
-        output: &ParseOutput,
-        node: &SyntaxNode,
-        invocation_scopes: &BTreeSet<AstNodeId>,
-    ) -> bool {
-        if !Self::nearest_scope(output, node)
-            .is_some_and(|scope| invocation_scopes.contains(&scope))
-        {
-            return false;
-        }
-        if Self::may_import_cfg_via_macro_use(node) {
-            return true;
-        }
-        if node
-            .item_syntax()
-            .is_some_and(|item| matches!(item.kind(), ItemSyntaxKind::Use))
-            && node.use_tree().is_none()
-        {
-            return true;
-        }
-        let Some(tree) = node.use_tree() else {
-            return false;
-        };
-        tree.is_glob()
-            || tree.alias() == Some("cfg")
-            || tree.path().last().is_some_and(|segment| segment == "cfg")
-    }
-
-    fn may_import_cfg_via_macro_use(node: &SyntaxNode) -> bool {
-        let imports_macros = node.item_syntax().is_some_and(|item| {
-            matches!(
-                item.kind(),
-                ItemSyntaxKind::ExternCrate { .. } | ItemSyntaxKind::Module { .. }
-            )
-        });
-        imports_macros
-            && node.attributes().iter().any(|attribute| {
-                let path = attribute.meta().path();
-                path.len() == 1 && path.first().is_some_and(|name| name == "macro_use")
+        index.inherited_macro_use()
+            || invocation_scopes.iter().any(|scope| {
+                let Some(entries) = index.scope(*scope) else {
+                    return false;
+                };
+                let is_enabled = |node_id: AstNodeId| {
+                    configured_ast.node(node_id).is_none_or(|configured| {
+                        configured.availability_decision() != CfgDecision::False
+                    })
+                };
+                let has_macro_use = entries.macro_use_items.iter().any(|item| {
+                    let declaration_is_visible = match item.kind {
+                        IndexedMacroUseKind::ExternCrate => true,
+                        IndexedMacroUseKind::Module => item.start < invocation_start,
+                    };
+                    let active = configured_ast.node(item.node_id).is_some_and(|configured| {
+                        configured
+                            .attribute_evaluation()
+                            .has_active_attribute("macro_use")
+                    });
+                    declaration_is_visible && is_enabled(item.node_id) && active
+                });
+                let has_uncertain_use = entries
+                    .whole_uses
+                    .iter()
+                    .any(|node_id| is_enabled(*node_id))
+                    || entries
+                        .glob_uses
+                        .iter()
+                        .any(|usage| is_enabled(usage.node_id))
+                    || entries.uses.iter().any(|(import_name, uses)| {
+                        uses.iter().any(|usage| {
+                            is_enabled(usage.node_id)
+                                && (import_name == "cfg"
+                                    || usage
+                                        .path
+                                        .as_ref()
+                                        .and_then(|path| path.last())
+                                        .is_some_and(|name| name == "cfg"))
+                        })
+                    });
+                has_macro_use || has_uncertain_use
             })
-    }
-
-    fn nearest_scope(output: &ParseOutput, node: &SyntaxNode) -> Option<AstNodeId> {
-        let mut current = Some(node.id());
-        while let Some(id) = current {
-            let ancestor = output.node(id)?;
-            if matches!(
-                ancestor.kind(),
-                SyntaxNodeKind::Scope | SyntaxNodeKind::Crate
-            ) {
-                return Some(id);
-            }
-            current = ancestor.parent();
-        }
-        None
     }
 }

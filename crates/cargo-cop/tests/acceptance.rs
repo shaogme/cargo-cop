@@ -9,13 +9,15 @@ use std::{
 use serde_json::{from_str, json, Value};
 
 use cop_analysis::{
-    AnalysisRequest, CfgDecision, ConfiguredAstIssueKind, ExternalItemKind, ExternalItemSource,
-    PathResolutionKind, PathRootKind, ProjectAnalyzer, ReferenceKind,
+    AnalysisRequest, AnalysisSnapshot, CfgDecision, ConfiguredAstIssueKind, ExternalItemKind,
+    ExternalItemSource, ModuleNode, PathResolutionKind, PathRootKind, ProjectAnalyzer,
+    ReferenceKind,
 };
 use cop_cargo::{
     CargoDiscoveryRequest, CargoProjectLoader, CargoSelection, FeatureSelection, TargetSelector,
 };
 use cop_config::{ConfigLoader, ConfigRequest};
+use cop_syntax::{MacroInputStatus, MacroProfileKey};
 
 static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
 
@@ -115,6 +117,20 @@ fn package_manifest(name: &str) -> String {
     format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n")
 }
 
+fn analyze_fixture(fixture: &Fixture) -> AnalysisSnapshot {
+    let discovery =
+        CargoProjectLoader::discover(CargoDiscoveryRequest::new(fixture.root.join("Cargo.toml")))
+            .expect("Cargo metadata");
+    let project = TargetSelector::select(
+        discovery,
+        CargoSelection::new(FeatureSelection::new(Vec::new(), true, true))
+            .with_current_directory(fixture.root.clone()),
+    )
+    .expect("select package and target");
+    let package = project.packages().first().expect("selected package");
+    ProjectAnalyzer::analyze(AnalysisRequest::new(package)).expect("analyze selected package")
+}
+
 fn code_lines_for_count(line_count: usize) -> String {
     (0..line_count)
         .map(|index| format!("fn item_{index}() {{}}\n"))
@@ -145,6 +161,17 @@ fn rule_diagnostics(output: &RunOutput, rule_id: &str) -> Vec<Value> {
 
 fn diagnostic_message(diagnostic: &Value) -> &str {
     diagnostic["message"].as_str().expect("已渲染诊断消息")
+}
+
+fn diagnostic_excerpt<'a>(source: &'a str, diagnostic: &Value) -> &'a str {
+    let line = usize::try_from(diagnostic["start"]["line"].as_u64().expect("诊断起始行"))
+        .expect("诊断起始行范围");
+    let start_column = usize::try_from(diagnostic["start"]["column"].as_u64().expect("诊断起始列"))
+        .expect("诊断起始列范围");
+    let end_column = usize::try_from(diagnostic["end"]["column"].as_u64().expect("诊断结束列"))
+        .expect("诊断结束列范围");
+    let source_line = source.lines().nth(line - 1).expect("诊断对应源码行");
+    &source_line[start_column - 1..end_column - 1]
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -443,6 +470,41 @@ fn cfg_candidate_with_macro_use_module_stays_opaque() {
         .iter()
         .any(|diagnostic| diagnostic["analysis_issue"] == "unknown_cfg"));
     assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic["analysis_issue"] == "parser_coverage"
+            && message_contains_either(
+                diagnostic,
+                "Could not confirm this cfg! call",
+                "无法确认此 cfg! 调用",
+            )
+    }));
+}
+
+#[test]
+fn cfg_candidate_before_macro_use_module_declaration_is_evaluated() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "cargo-cop.toml",
+        "version = 4\n\n[rules.child_module_line_count]\nenabled = false\n\n[rules.out_of_line_modules_at_scope_start]\nenabled = false\n",
+    );
+    fixture.write(
+        "src/lib.rs",
+        "pub fn check() { let _ = cfg!(custom_mode); }\n#[macro_use]\nmod macros;\n",
+    );
+    fixture.write(
+        "src/macros.rs",
+        "macro_rules! cfg { ($($tokens:tt)*) => { false } }\n",
+    );
+
+    let output = fixture.run(&["--format", "json"]);
+    let report = from_str::<Value>(&output.stdout).expect("JSON 报告");
+    let diagnostics = report["diagnostics"].as_array().expect("诊断数组");
+
+    assert_eq!(output.status, 0, "{}", output.stdout);
+    assert!(diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic["analysis_issue"] == "unknown_cfg"));
+    assert!(!diagnostics.iter().any(|diagnostic| {
         diagnostic["analysis_issue"] == "parser_coverage"
             && message_contains_either(
                 diagnostic,
@@ -2677,6 +2739,1248 @@ fn reports_self_crate_qualified_paths_in_all_test_targets() {
     assert_eq!(
         reference.resolution().root().external_crate(),
         Some("typol_core")
+    );
+}
+
+#[test]
+fn reports_self_crate_paths_inside_nested_assert_matches_macros() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("dev-env-provider"));
+    fixture.write(
+        "src/lib.rs",
+        "pub enum ProtocolError { UnsupportedProtocol { found: u32, expected: u32 } }\n\npub enum ProtocolCodecError { Protocol { source: ProtocolError } }\n\npub fn decode_request(_: &[u8]) -> Result<(), ProtocolCodecError> { Ok(()) }\n",
+    );
+    let source = "fn control(_: dev_env_provider::ProtocolCodecError) {}\n\nfn rejects_a_wrong_version_as_a_typed_protocol_error() {\n    let bytes = [];\n    assert!(matches!(\n        dev_env_provider::decode_request(&bytes),\n        Err(dev_env_provider::ProtocolCodecError::Protocol {\n            source: dev_env_provider::ProtocolError::UnsupportedProtocol {\n                found: 2,\n                expected: 1,\n            },\n        })\n    ));\n}\n";
+    fixture.write("tests/protocol_decoder.rs", source);
+
+    let output = fixture.run(&["--all-targets", "--format", "json"]);
+    let diagnostics = rule_diagnostics(&output, "no_inline_qualified_path");
+
+    assert_eq!(output.status, 1, "{}", output.stdout);
+    assert_eq!(diagnostics.len(), 4, "{}", output.stdout);
+    let mut excerpts = diagnostics
+        .iter()
+        .map(|diagnostic| {
+            assert_eq!(diagnostic["path"], "tests/protocol_decoder.rs");
+            assert_eq!(diagnostic["target"], "protocol_decoder");
+            assert_eq!(diagnostic["target_kind"], json!(["test"]));
+            diagnostic_excerpt(source, diagnostic).to_owned()
+        })
+        .collect::<Vec<_>>();
+    let mut expected = [
+        "dev_env_provider::ProtocolCodecError",
+        "dev_env_provider::decode_request",
+        "dev_env_provider::ProtocolCodecError::Protocol",
+        "dev_env_provider::ProtocolError::UnsupportedProtocol",
+    ]
+    .map(str::to_owned);
+    excerpts.sort();
+    expected.sort();
+    assert_eq!(excerpts, expected, "{}", output.stdout);
+}
+
+#[test]
+fn resolves_imported_and_shadowed_paths_inside_known_macro_profiles() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "src/lib.rs",
+        "use std::mem as memory;\n\nmod core { pub enum Marker { Variant } }\n\npub fn check() {\n    assert_eq!(memory::size_of::<u8>(), 4);\n    assert!(matches!(core::Marker::Variant, core::Marker::Variant));\n}\n",
+    );
+
+    let output = fixture.run(&["--format", "json"]);
+    let discovery =
+        CargoProjectLoader::discover(CargoDiscoveryRequest::new(fixture.root.join("Cargo.toml")))
+            .expect("Cargo 元数据");
+    let project = TargetSelector::select(
+        discovery,
+        CargoSelection::new(FeatureSelection::new(Vec::new(), true, true))
+            .with_current_directory(fixture.root.clone()),
+    )
+    .expect("选择 package 与 target");
+    let package = project.packages().first().expect("选中的 package");
+    let snapshot = ProjectAnalyzer::analyze(AnalysisRequest::new(package)).expect("分析 target");
+    let module = snapshot
+        .modules()
+        .iter()
+        .find(|module| module.is_crate_root())
+        .expect("crate 根模块");
+    assert_eq!(output.status, 0, "{}", output.stdout);
+    assert!(!output.has_rule("no_inline_qualified_path"));
+    assert_eq!(
+        snapshot
+            .facts()
+            .references_for_module(module)
+            .filter(|reference| reference
+                .segments()
+                .iter()
+                .map(String::as_str)
+                .eq(["memory", "size_of"]))
+            .count(),
+        1
+    );
+    assert_eq!(
+        snapshot
+            .facts()
+            .references_for_module(module)
+            .filter(|reference| reference
+                .segments()
+                .iter()
+                .map(String::as_str)
+                .eq(["core", "Marker", "Variant"]))
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn analysis_binds_only_resolved_standard_macro_profiles() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    let source = r#"
+assert!(true);
+
+use std::assert_eq as compare;
+
+fn matches(_: bool) {}
+
+pub fn inspect(value: bool) {
+    compare!(value, true);
+    matches!(value, true);
+    custom::matches!(value, true);
+    let _ = json!({"key": value});
+    let _ = error!("value {}", value);
+    crate::exported::imported_match!(value, true);
+    wrapper::check!(value, true);
+}
+
+mod local_macro {
+    macro_rules! matches { ($value:expr, $pattern:pat) => {}; }
+
+    pub fn inspect(value: bool) {
+        matches!(value, true);
+        std::matches!(value, true);
+    }
+}
+
+#[macro_use]
+mod imported_macros {
+    macro_rules! format { ($($tokens:tt)*) => {}; }
+}
+
+mod exported_macros {
+    #[macro_export]
+    macro_rules! exported_matches { ($value:expr, $pattern:pat) => {}; }
+}
+
+pub fn inspect_imported_and_exported(value: bool) {
+    format!("{}", value);
+    crate::exported_matches!(value, true);
+}
+
+pub mod exported {
+    pub use std::matches as imported_match;
+}
+
+pub mod wrapper {
+    pub use crate::exported::imported_match as check;
+}
+
+mod glob_blocked {
+    use unknown_macros::*;
+
+    pub fn inspect() {
+        let _ = format!("value");
+    }
+}
+"#;
+    fixture.write("src/lib.rs", source);
+    let discovery =
+        CargoProjectLoader::discover(CargoDiscoveryRequest::new(fixture.root.join("Cargo.toml")))
+            .expect("Cargo metadata");
+    let project = TargetSelector::select(
+        discovery,
+        CargoSelection::new(FeatureSelection::new(Vec::new(), true, true))
+            .with_current_directory(fixture.root.clone()),
+    )
+    .expect("select package and target");
+    let package = project.packages().first().expect("selected package");
+    let snapshot = ProjectAnalyzer::analyze(AnalysisRequest::new(package)).expect("analyze");
+    let module = snapshot
+        .modules()
+        .iter()
+        .find(|module| module.is_crate_root())
+        .expect("crate root module");
+    let statuses = module
+        .parse_output()
+        .syntax_nodes()
+        .iter()
+        .filter_map(|node| node.macro_invocation())
+        .map(|invocation| {
+            let text = module
+                .parse_output()
+                .source()
+                .slice(invocation.start(), invocation.end())
+                .expect("macro call source range");
+            (text, invocation.input().status().clone())
+        })
+        .collect::<Vec<_>>();
+
+    assert!(statuses.iter().any(|(text, status)| {
+        text.starts_with("assert!(true)")
+            && status == &MacroInputStatus::KnownProfile(MacroProfileKey::Assert)
+    }));
+    assert!(statuses.iter().any(|(text, status)| {
+        text.starts_with("compare!")
+            && status == &MacroInputStatus::KnownProfile(MacroProfileKey::AssertEq)
+    }));
+    assert!(statuses.iter().any(|(text, status)| {
+        text.starts_with("matches!(value")
+            && status == &MacroInputStatus::KnownProfile(MacroProfileKey::Matches)
+    }));
+    assert!(statuses.iter().any(|(text, status)| {
+        text.starts_with("custom::matches!") && status == &MacroInputStatus::Opaque
+    }));
+    assert!(statuses.iter().any(|(text, status)| {
+        text.starts_with("json!") && status == &MacroInputStatus::Opaque
+    }));
+    assert!(statuses.iter().any(|(text, status)| {
+        text.starts_with("error!") && status == &MacroInputStatus::Opaque
+    }));
+    assert!(statuses.iter().any(|(text, status)| {
+        text.starts_with("matches!(value") && status == &MacroInputStatus::Opaque
+    }));
+    assert!(statuses.iter().any(|(text, status)| {
+        text.starts_with("std::matches!")
+            && status == &MacroInputStatus::KnownProfile(MacroProfileKey::Matches)
+    }));
+    assert!(statuses.iter().any(|(text, status)| {
+        text.starts_with("crate::exported::imported_match!")
+            && status == &MacroInputStatus::KnownProfile(MacroProfileKey::Matches)
+    }));
+    assert!(statuses.iter().any(|(text, status)| {
+        text.starts_with("wrapper::check!")
+            && status == &MacroInputStatus::KnownProfile(MacroProfileKey::Matches)
+    }));
+    assert!(statuses.iter().any(|(text, status)| {
+        text.starts_with("format!(\"value\")") && status == &MacroInputStatus::Opaque
+    }));
+    assert!(statuses.iter().any(|(text, status)| {
+        text.starts_with("format!(\"{}\"") && status == &MacroInputStatus::Opaque
+    }));
+    assert!(statuses.iter().any(|(text, status)| {
+        text.starts_with("crate::exported_matches!") && status == &MacroInputStatus::Opaque
+    }));
+}
+
+#[test]
+fn external_modules_inherit_macro_use_context_from_their_parent_modules() {
+    for import_kind in ["extern", "module"] {
+        let fixture = Fixture::new();
+        if import_kind == "extern" {
+            fixture.write(
+                "Cargo.toml",
+                &format!(
+                    "{}\n[dependencies]\nmacro_owner = {{ path = \"macro_owner\" }}\n",
+                    package_manifest("inherited_macro_use_sample")
+                ),
+            );
+            fixture.write(
+                "macro_owner/Cargo.toml",
+                "[package]\nname = \"macro_owner\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+            );
+            fixture.write(
+                "macro_owner/src/lib.rs",
+                "#[macro_export]\nmacro_rules! format { ($($input:tt)*) => { () }; }\n#[macro_export]\nmacro_rules! cfg { ($($input:tt)*) => { false }; }\n",
+            );
+            fixture.write(
+                "src/lib.rs",
+                "mod child;\n#[macro_use]\nextern crate macro_owner;\n",
+            );
+        } else {
+            fixture.write(
+                "Cargo.toml",
+                &package_manifest("inherited_macro_use_sample"),
+            );
+            fixture.write("src/lib.rs", "#[macro_use]\nmod macros;\nmod child;\n");
+            fixture.write(
+                "src/macros.rs",
+                "macro_rules! format { ($($input:tt)*) => { () }; }\nmacro_rules! cfg { ($($input:tt)*) => { false }; }\n",
+            );
+        }
+        fixture.write(
+            "src/child.rs",
+            "pub fn inspect() { let _ = format!(\"value\"); let _ = cfg!(custom_mode); }\n",
+        );
+
+        let snapshot = analyze_fixture(&fixture);
+        let child = snapshot
+            .modules()
+            .iter()
+            .find(|module| {
+                module
+                    .namespace()
+                    .last()
+                    .is_some_and(|name| name == "child")
+            })
+            .expect("external child module");
+        let format_status = child
+            .parse_output()
+            .syntax_nodes()
+            .iter()
+            .filter_map(|node| node.macro_invocation())
+            .find(|invocation| {
+                invocation
+                    .path()
+                    .segments()
+                    .last()
+                    .is_some_and(|segment| segment.name() == "format")
+            })
+            .map(|invocation| invocation.input().status().clone())
+            .expect("format invocation");
+
+        assert_eq!(format_status, MacroInputStatus::Opaque, "{import_kind}");
+        assert!(child
+            .configured_ast()
+            .issues()
+            .iter()
+            .any(|issue| issue.kind() == ConfiguredAstIssueKind::OpaqueCfgMacro));
+    }
+}
+
+#[test]
+fn external_modules_inherit_prior_textual_macro_definitions() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "Cargo.toml",
+        &package_manifest("textual_macro_scope_sample"),
+    );
+    fixture.write(
+        "src/lib.rs",
+        "macro_rules! format { ($($input:tt)*) => { () }; }\nmacro_rules! cfg { ($($input:tt)*) => { false }; }\nmod child;\n",
+    );
+    fixture.write(
+        "src/child.rs",
+        "pub fn inspect() { let _ = format!(\"value\"); let _ = cfg!(custom_mode); }\n",
+    );
+
+    let snapshot = analyze_fixture(&fixture);
+    let child = snapshot
+        .modules()
+        .iter()
+        .find(|module| {
+            module
+                .namespace()
+                .last()
+                .is_some_and(|name| name == "child")
+        })
+        .expect("external child module");
+    let statuses = child
+        .parse_output()
+        .syntax_nodes()
+        .iter()
+        .filter_map(|node| node.macro_invocation())
+        .map(|invocation| {
+            let text = child
+                .parse_output()
+                .source()
+                .slice(invocation.start(), invocation.end())
+                .expect("macro call source range");
+            (text, invocation.input().status().clone())
+        })
+        .collect::<Vec<_>>();
+
+    assert!(statuses.iter().any(|(text, status)| {
+        text.starts_with("format!") && status == &MacroInputStatus::Opaque
+    }));
+    assert!(child
+        .configured_ast()
+        .issues()
+        .iter()
+        .any(|issue| issue.kind() == ConfiguredAstIssueKind::OpaqueCfgMacro));
+}
+
+#[test]
+fn external_modules_do_not_inherit_textual_macros_declared_after_them() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("late_textual_macro_sample"));
+    fixture.write(
+        "src/lib.rs",
+        "mod child;\nmacro_rules! format { ($($input:tt)*) => { () }; }\n",
+    );
+    fixture.write(
+        "src/child.rs",
+        "pub fn inspect() { let _ = format!(\"value\"); }\n",
+    );
+
+    let snapshot = analyze_fixture(&fixture);
+    let child = snapshot
+        .modules()
+        .iter()
+        .find(|module| {
+            module
+                .namespace()
+                .last()
+                .is_some_and(|name| name == "child")
+        })
+        .expect("external child module");
+    let status = child
+        .parse_output()
+        .syntax_nodes()
+        .iter()
+        .filter_map(|node| node.macro_invocation())
+        .find(|invocation| {
+            invocation
+                .path()
+                .segments()
+                .last()
+                .is_some_and(|segment| segment.name() == "format")
+        })
+        .map(|invocation| invocation.input().status().clone())
+        .expect("format invocation");
+
+    assert_eq!(
+        status,
+        MacroInputStatus::KnownProfile(MacroProfileKey::Format)
+    );
+}
+
+#[test]
+fn resolves_external_macro_profiles_through_crate_root_aliases() {
+    for declaration in ["use serde_json as sj;", "extern crate serde_json as sj;"] {
+        let fixture = Fixture::new();
+        fixture.write(
+            "Cargo.toml",
+            &format!(
+                "{}\n[dependencies]\nserde_json = \"1\"\n",
+                package_manifest("macro_alias_sample")
+            ),
+        );
+        fixture.write(
+            "src/lib.rs",
+            &format!("{declaration}\npub fn inspect() {{ let _ = sj::json!({{\"key\": 1}}); }}\n"),
+        );
+
+        let snapshot = analyze_fixture(&fixture);
+        let module = snapshot
+            .modules()
+            .iter()
+            .find(|module| module.is_crate_root())
+            .expect("crate root module");
+        let status = module
+            .parse_output()
+            .syntax_nodes()
+            .iter()
+            .filter_map(|node| node.macro_invocation())
+            .find(|invocation| {
+                invocation
+                    .path()
+                    .segments()
+                    .last()
+                    .is_some_and(|segment| segment.name() == "json")
+            })
+            .map(|invocation| invocation.input().status().clone())
+            .expect("json invocation");
+
+        assert_eq!(
+            status,
+            MacroInputStatus::KnownProfile(MacroProfileKey::Json),
+            "{declaration}"
+        );
+    }
+}
+
+#[test]
+fn crate_root_aliases_respect_local_modules_and_unique_macro_identity() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "Cargo.toml",
+        &format!(
+            "{}\n[dependencies]\nserde_json = \"1\"\n",
+            package_manifest("macro_alias_shadow_sample")
+        ),
+    );
+    fixture.write(
+        "src/lib.rs",
+        r#"
+mod serde_json {
+    macro_rules! json { ($($input:tt)*) => { () }; }
+    pub(crate) use json;
+}
+
+use serde_json as sj;
+
+pub fn inspect() {
+    let _ = sj::json!({"key": 1});
+}
+"#,
+    );
+
+    let snapshot = analyze_fixture(&fixture);
+    let module = snapshot
+        .modules()
+        .iter()
+        .find(|module| module.is_crate_root())
+        .expect("crate root module");
+    let status = module
+        .parse_output()
+        .syntax_nodes()
+        .iter()
+        .filter_map(|node| node.macro_invocation())
+        .find(|invocation| {
+            invocation
+                .path()
+                .segments()
+                .last()
+                .is_some_and(|segment| segment.name() == "json")
+        })
+        .map(|invocation| invocation.input().status().clone())
+        .expect("json invocation");
+
+    assert_eq!(status, MacroInputStatus::Opaque);
+
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("macro_identity_ambiguity"));
+    fixture.write(
+        "src/lib.rs",
+        "use std::format as m;\nuse std::panic as m;\npub fn inspect() { let _ = m!(\"value\"); }\n",
+    );
+
+    let snapshot = analyze_fixture(&fixture);
+    let module = snapshot
+        .modules()
+        .iter()
+        .find(|module| module.is_crate_root())
+        .expect("crate root module");
+    let status = module
+        .parse_output()
+        .syntax_nodes()
+        .iter()
+        .filter_map(|node| node.macro_invocation())
+        .find(|invocation| {
+            invocation
+                .path()
+                .segments()
+                .last()
+                .is_some_and(|segment| segment.name() == "m")
+        })
+        .map(|invocation| invocation.input().status().clone())
+        .expect("ambiguous macro invocation");
+
+    assert_eq!(status, MacroInputStatus::Opaque);
+}
+
+#[test]
+fn type_items_shadow_external_macro_crate_roots() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "Cargo.toml",
+        &format!(
+            "{}\n[dependencies]\nserde_json = \"1\"\n",
+            package_manifest("macro_type_shadow_sample")
+        ),
+    );
+    fixture.write(
+        "src/lib.rs",
+        r#"
+mod struct_shadow {
+    struct serde_json;
+    pub fn inspect() { let _ = serde_json::json!({"key": 1}); }
+}
+mod enum_shadow {
+    enum serde_json { Variant }
+    pub fn inspect() { let _ = serde_json::json!({"key": 2}); }
+}
+mod union_shadow {
+    union serde_json { value: () }
+    pub fn inspect() { let _ = serde_json::json!({"key": 3}); }
+}
+mod trait_shadow {
+    trait serde_json {}
+    pub fn inspect() { let _ = serde_json::json!({"key": 4}); }
+}
+mod alias_shadow {
+    type serde_json = ();
+    pub fn inspect() { let _ = serde_json::json!({"key": 5}); }
+}
+"#,
+    );
+
+    let snapshot = analyze_fixture(&fixture);
+    let module = snapshot
+        .modules()
+        .iter()
+        .find(|module| module.is_crate_root())
+        .expect("crate root module");
+    let statuses = module
+        .parse_output()
+        .syntax_nodes()
+        .iter()
+        .filter_map(|node| node.macro_invocation())
+        .filter(|invocation| {
+            invocation
+                .path()
+                .segments()
+                .last()
+                .is_some_and(|segment| segment.name() == "json")
+        })
+        .map(|invocation| invocation.input().status().clone())
+        .collect::<Vec<_>>();
+
+    assert_eq!(statuses.len(), 5);
+    assert!(statuses
+        .iter()
+        .all(|status| status == &MacroInputStatus::Opaque));
+}
+
+#[test]
+fn macro_profile_resolution_handles_scope_cycles_and_uncertain_imports() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("macro_resolution_edges"));
+    fixture.write(
+        "src/lib.rs",
+        r#"
+mod a { pub use crate::b::matches; }
+mod b { pub use crate::a::matches; }
+
+pub mod other { pub struct Thing; }
+
+#[cfg(custom_cfg)]
+use crate::other::Thing;
+#[cfg(custom_cfg)]
+use std::assert_eq as maybe_matches;
+
+pub fn inspect(value: Option<u8>) {
+    let _ = format!("{:?}", value);
+    let _ = maybe_matches!(value, Some(_));
+    let _ = a::matches!(value, Some(_));
+    {
+        use std::assert_eq as matches;
+        let _ = matches!(value, Some(_));
+    }
+    let _ = matches!(value, Some(_));
+}
+"#,
+    );
+    let snapshot = analyze_fixture(&fixture);
+    let module = snapshot
+        .modules()
+        .iter()
+        .find(|module| module.is_crate_root())
+        .expect("crate root module");
+    let statuses = module
+        .parse_output()
+        .syntax_nodes()
+        .iter()
+        .filter_map(|node| node.macro_invocation())
+        .map(|invocation| {
+            let text = module
+                .parse_output()
+                .source()
+                .slice(invocation.start(), invocation.end())
+                .expect("macro call source range");
+            (text, invocation.input().status().clone())
+        })
+        .collect::<Vec<_>>();
+
+    assert!(statuses.iter().any(|(text, status)| {
+        text.starts_with("format!")
+            && status == &MacroInputStatus::KnownProfile(MacroProfileKey::Format)
+    }));
+    assert!(statuses.iter().any(|(text, status)| {
+        text.starts_with("maybe_matches!") && status == &MacroInputStatus::Opaque
+    }));
+    assert!(statuses.iter().any(|(text, status)| {
+        text.starts_with("a::matches!") && status == &MacroInputStatus::Opaque
+    }));
+    assert!(statuses.iter().any(|(text, status)| {
+        text.starts_with("matches!")
+            && status == &MacroInputStatus::KnownProfile(MacroProfileKey::AssertEq)
+    }));
+    assert!(statuses.iter().any(|(text, status)| {
+        text.starts_with("matches!")
+            && status == &MacroInputStatus::KnownProfile(MacroProfileKey::Matches)
+    }));
+}
+
+#[test]
+fn macro_profile_resolution_respects_no_std_and_cfg_disabled_cfg_shadows() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("macro_resolution_cfg"));
+    fixture.write(
+        "src/lib.rs",
+        r#"#![no_std]
+#[cfg(any())]
+macro_rules! cfg { ($($tokens:tt)*) => { false } }
+#[cfg(any())]
+use core::cfg as cfg;
+
+pub fn inspect(value: Option<u8>) {
+    let _ = std::matches!(value, Some(_));
+    let _ = cfg!(unix);
+}
+
+#[no_implicit_prelude]
+pub mod std_context {
+    extern crate std;
+
+    pub fn inspect(value: Option<u8>) {
+        let _ = std::matches!(value, Some(_));
+    }
+}
+"#,
+    );
+    let snapshot = analyze_fixture(&fixture);
+    let module = snapshot
+        .modules()
+        .iter()
+        .find(|module| module.is_crate_root())
+        .expect("crate root module");
+    let statuses = module
+        .parse_output()
+        .syntax_nodes()
+        .iter()
+        .filter_map(|node| node.macro_invocation())
+        .map(|invocation| {
+            let text = module
+                .parse_output()
+                .source()
+                .slice(invocation.start(), invocation.end())
+                .expect("macro call source range");
+            (text, invocation.input().status().clone())
+        })
+        .collect::<Vec<_>>();
+
+    assert!(statuses.iter().any(|(text, status)| {
+        text.starts_with("std::matches!") && status == &MacroInputStatus::Opaque
+    }));
+    assert!(snapshot.facts().cfg_macros().iter().any(|cfg_macro| {
+        module
+            .parse_output()
+            .source()
+            .slice(
+                cfg_macro.predicate_bounds().start,
+                cfg_macro.predicate_bounds().end,
+            )
+            .is_some_and(|predicate| predicate == "unix")
+    }));
+
+    let restricted = snapshot
+        .modules()
+        .iter()
+        .find(|module| {
+            module
+                .namespace()
+                .last()
+                .is_some_and(|name| name == "std_context")
+        })
+        .expect("module with explicit std import");
+    assert!(restricted
+        .parse_output()
+        .syntax_nodes()
+        .iter()
+        .filter_map(|node| node.macro_invocation())
+        .any(|invocation| {
+            invocation.input().status() == &MacroInputStatus::KnownProfile(MacroProfileKey::Matches)
+                && restricted
+                    .parse_output()
+                    .source()
+                    .slice(invocation.start(), invocation.end())
+                    .is_some_and(|text| text.starts_with("std::matches!"))
+        }));
+}
+
+#[test]
+fn no_std_accepts_explicitly_renamed_std_crate_for_macro_profiles() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("no_std_renamed_std_sample"));
+    fixture.write(
+        "src/lib.rs",
+        "#![no_std]\nextern crate std as runtime;\npub fn inspect(value: Option<u8>) { let _ = runtime::matches!(value, Some(_)); }\n",
+    );
+
+    let snapshot = analyze_fixture(&fixture);
+    let module = snapshot
+        .modules()
+        .iter()
+        .find(|module| module.is_crate_root())
+        .expect("crate root module");
+    let status = module
+        .parse_output()
+        .syntax_nodes()
+        .iter()
+        .filter_map(|node| node.macro_invocation())
+        .find(|invocation| {
+            invocation
+                .path()
+                .segments()
+                .first()
+                .is_some_and(|segment| segment.name() == "runtime")
+        })
+        .map(|invocation| invocation.input().status().clone())
+        .expect("renamed std macro invocation");
+
+    assert_eq!(
+        status,
+        MacroInputStatus::KnownProfile(MacroProfileKey::Matches)
+    );
+}
+
+#[test]
+fn analysis_binds_profiles_from_selected_external_macro_dependencies() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "Cargo.toml",
+        &format!(
+            "{}\n[dependencies]\nserde_json = \"1\"\nlog = \"0.4\"\n",
+            package_manifest("macro_dependency_sample")
+        ),
+    );
+    fixture.write(
+        "src/lib.rs",
+        "use serde_json::json as make_json;\nuse log::error as report_error;\n\npub fn inspect() {\n    let _ = serde_json::json!({\"key\": 1});\n    let _ = make_json!({\"key\": 2});\n    log::error!(\"value {}\", 3);\n    report_error!(\"value {}\", 4);\n}\n",
+    );
+    let snapshot = analyze_fixture(&fixture);
+    let module = snapshot
+        .modules()
+        .iter()
+        .find(|module| module.is_crate_root())
+        .expect("crate root module");
+    let statuses = module
+        .parse_output()
+        .syntax_nodes()
+        .iter()
+        .filter_map(|node| node.macro_invocation())
+        .map(|invocation| {
+            let text = module
+                .parse_output()
+                .source()
+                .slice(invocation.start(), invocation.end())
+                .expect("macro call source range");
+            (text, invocation.input().status().clone())
+        })
+        .collect::<Vec<_>>();
+
+    assert!(statuses.iter().any(|(text, status)| {
+        text.starts_with("serde_json::json!")
+            && status == &MacroInputStatus::KnownProfile(MacroProfileKey::Json)
+    }));
+    assert!(statuses.iter().any(|(text, status)| {
+        text.starts_with("make_json!")
+            && status == &MacroInputStatus::KnownProfile(MacroProfileKey::Json)
+    }));
+    assert!(statuses.iter().any(|(text, status)| {
+        text.starts_with("log::error!")
+            && status == &MacroInputStatus::KnownProfile(MacroProfileKey::Error)
+    }));
+    assert!(statuses.iter().any(|(text, status)| {
+        text.starts_with("report_error!")
+            && status == &MacroInputStatus::KnownProfile(MacroProfileKey::Error)
+    }));
+}
+
+#[test]
+fn macro_use_extern_crate_after_invocation_blocks_standard_macro_profiles() {
+    for attribute in ["#[macro_use]", "#[cfg_attr(unix, macro_use)]"] {
+        let fixture = Fixture::new();
+        fixture.write(
+            "Cargo.toml",
+            &format!(
+                "{}\n[dependencies]\nmacro_owner = {{ path = \"macro_owner\" }}\n",
+                package_manifest("late_macro_use_sample")
+            ),
+        );
+        fixture.write(
+            "macro_owner/Cargo.toml",
+            "[package]\nname = \"macro_owner\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        );
+        fixture.write(
+            "macro_owner/src/lib.rs",
+            "#[macro_export]\nmacro_rules! format { ($($input:tt)*) => { () }; }\n",
+        );
+        fixture.write(
+            "src/lib.rs",
+            &format!(
+                "pub fn inspect() {{ let _ = format!(\"value\"); }}\n{attribute}\nextern crate macro_owner;\n"
+            ),
+        );
+
+        let snapshot = analyze_fixture(&fixture);
+        let module = snapshot
+            .modules()
+            .iter()
+            .find(|module| module.is_crate_root())
+            .expect("crate root module");
+        let status = module
+            .parse_output()
+            .syntax_nodes()
+            .iter()
+            .filter_map(|node| node.macro_invocation())
+            .find(|invocation| {
+                invocation
+                    .path()
+                    .segments()
+                    .last()
+                    .is_some_and(|segment| segment.name() == "format")
+            })
+            .map(|invocation| invocation.input().status().clone())
+            .expect("format invocation");
+
+        assert_eq!(status, MacroInputStatus::Opaque, "{attribute}");
+    }
+}
+
+#[test]
+fn standard_env_macro_profiles_resolve_explicit_paths_and_aliases() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("std_env_macro_sample"));
+    fixture.write(
+        "src/lib.rs",
+        "use std::env as build_env;\npub fn inspect() { let _ = std::env!(\"APP_NAME\"); let _ = build_env!(\"APP_NAME\"); }\n",
+    );
+
+    let snapshot = analyze_fixture(&fixture);
+    let module = snapshot
+        .modules()
+        .iter()
+        .find(|module| module.is_crate_root())
+        .expect("crate root module");
+    let statuses = module
+        .parse_output()
+        .syntax_nodes()
+        .iter()
+        .filter_map(|node| node.macro_invocation())
+        .map(|invocation| {
+            let text = module
+                .parse_output()
+                .source()
+                .slice(invocation.start(), invocation.end())
+                .expect("macro call source range");
+            (text, invocation.input().status().clone())
+        })
+        .collect::<Vec<_>>();
+
+    assert!(statuses.iter().any(|(text, status)| {
+        text.starts_with("std::env!")
+            && status == &MacroInputStatus::KnownProfile(MacroProfileKey::Env)
+    }));
+    assert!(statuses.iter().any(|(text, status)| {
+        text.starts_with("build_env!")
+            && status == &MacroInputStatus::KnownProfile(MacroProfileKey::Env)
+    }));
+}
+
+#[test]
+fn no_implicit_prelude_keeps_edition_specific_standard_macros_available() {
+    let legacy_fixture = Fixture::new();
+    legacy_fixture.write(
+        "Cargo.toml",
+        "[package]\nname = \"legacy_macro_prelude\"\nversion = \"0.1.0\"\nedition = \"2015\"\n",
+    );
+    legacy_fixture.write(
+        "src/lib.rs",
+        "#[no_implicit_prelude]\nmod legacy { pub fn inspect() { let _ = format!(\"value\"); let _ = vec![1]; } }\n",
+    );
+    let legacy_snapshot = analyze_fixture(&legacy_fixture);
+    let legacy_module = legacy_snapshot
+        .modules()
+        .iter()
+        .find(|module| {
+            module
+                .namespace()
+                .last()
+                .is_some_and(|name| name == "legacy")
+        })
+        .expect("legacy module");
+    let legacy_statuses = legacy_module
+        .parse_output()
+        .syntax_nodes()
+        .iter()
+        .filter_map(|node| node.macro_invocation())
+        .map(|invocation| invocation.input().status())
+        .collect::<Vec<_>>();
+    assert!(legacy_statuses.contains(&&MacroInputStatus::KnownProfile(MacroProfileKey::Format)));
+    assert!(legacy_statuses.contains(&&MacroInputStatus::KnownProfile(MacroProfileKey::Vec)));
+
+    let modern_fixture = Fixture::new();
+    modern_fixture.write("Cargo.toml", &package_manifest("modern_macro_prelude"));
+    modern_fixture.write(
+        "src/lib.rs",
+        "#[no_implicit_prelude]\nmod restricted { pub fn inspect(value: bool) { assert!(value); panic!(\"failure\"); let _ = env!(\"APP_NAME\"); assert_eq!(value, true); let _ = format!(\"value\"); } }\n",
+    );
+    let modern_snapshot = analyze_fixture(&modern_fixture);
+    let modern_module = modern_snapshot
+        .modules()
+        .iter()
+        .find(|module| {
+            module
+                .namespace()
+                .last()
+                .is_some_and(|name| name == "restricted")
+        })
+        .expect("restricted module");
+    let statuses = modern_module
+        .parse_output()
+        .syntax_nodes()
+        .iter()
+        .filter_map(|node| node.macro_invocation())
+        .map(|invocation| {
+            (
+                invocation.path().segments().last().unwrap().name(),
+                invocation.input().status().clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert!(statuses.iter().any(|(name, status)| {
+        *name == "assert" && status == &MacroInputStatus::KnownProfile(MacroProfileKey::Assert)
+    }));
+    assert!(statuses.iter().any(|(name, status)| {
+        *name == "panic" && status == &MacroInputStatus::KnownProfile(MacroProfileKey::Format)
+    }));
+    assert!(statuses.iter().any(|(name, status)| {
+        *name == "env" && status == &MacroInputStatus::KnownProfile(MacroProfileKey::Env)
+    }));
+    assert!(statuses
+        .iter()
+        .any(|(name, status)| *name == "assert_eq" && status == &MacroInputStatus::Opaque));
+    assert!(statuses
+        .iter()
+        .any(|(name, status)| *name == "format" && status == &MacroInputStatus::Opaque));
+}
+
+#[test]
+fn analysis_uses_edition_and_prelude_context_for_macro_profiles() {
+    for edition in ["2015", "2018", "2021", "2024"] {
+        let fixture = Fixture::new();
+        fixture.write(
+            "Cargo.toml",
+            &format!(
+                "[package]\nname = \"edition_sample\"\nversion = \"0.1.0\"\nedition = \"{edition}\"\n"
+            ),
+        );
+        fixture.write(
+            "src/lib.rs",
+            "pub fn inspect(value: Option<u8>) { assert!(matches!(value, Some(_))); let _ = format!(\"{:?}\", value); let _ = vec![value]; }\n",
+        );
+        let snapshot = analyze_fixture(&fixture);
+        let module = snapshot
+            .modules()
+            .iter()
+            .find(|module| module.is_crate_root())
+            .expect("crate root module");
+        let statuses = module
+            .parse_output()
+            .syntax_nodes()
+            .iter()
+            .filter_map(|node| node.macro_invocation())
+            .map(|invocation| {
+                let text = module
+                    .parse_output()
+                    .source()
+                    .slice(invocation.start(), invocation.end())
+                    .expect("macro call source range");
+                (text, invocation.input().status().clone())
+            })
+            .collect::<Vec<_>>();
+        assert!(statuses.iter().any(|(text, status)| {
+            text.starts_with("assert!")
+                && status == &MacroInputStatus::KnownProfile(MacroProfileKey::Assert)
+        }));
+        assert!(statuses.iter().any(|(text, status)| {
+            text.starts_with("matches!")
+                && status == &MacroInputStatus::KnownProfile(MacroProfileKey::Matches)
+        }));
+        assert!(statuses.iter().any(|(text, status)| {
+            text.starts_with("format!")
+                && status == &MacroInputStatus::KnownProfile(MacroProfileKey::Format)
+        }));
+        assert!(statuses.iter().any(|(text, status)| {
+            text.starts_with("vec!")
+                && status == &MacroInputStatus::KnownProfile(MacroProfileKey::Vec)
+        }));
+    }
+
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("no_std_sample"));
+    fixture.write(
+        "src/lib.rs",
+        r#"#![no_std]
+#[cfg(any())]
+macro_rules! matches { ($($tokens:tt)*) => {}; }
+
+pub fn inspect(value: Option<u8>) {
+    matches!(value, Some(_));
+    let _ = format!("{:?}", value);
+    let _ = vec![value];
+}
+
+#[no_implicit_prelude]
+mod blocked {
+    pub fn inspect(value: Option<u8>) {
+        matches!(value, Some(_));
+        let _ = env!("APP_NAME");
+        core::matches!(value, Some(_));
+    }
+}
+"#,
+    );
+    let snapshot = analyze_fixture(&fixture);
+    let module = snapshot
+        .modules()
+        .iter()
+        .find(|module| module.is_crate_root())
+        .expect("crate root module");
+    let statuses = module
+        .parse_output()
+        .syntax_nodes()
+        .iter()
+        .filter_map(|node| node.macro_invocation())
+        .map(|invocation| {
+            let text = module
+                .parse_output()
+                .source()
+                .slice(invocation.start(), invocation.end())
+                .expect("macro call source range");
+            (text, invocation.input().status().clone())
+        })
+        .collect::<Vec<_>>();
+    assert!(statuses.iter().any(|(text, status)| {
+        text.starts_with("matches!(value")
+            && status == &MacroInputStatus::KnownProfile(MacroProfileKey::Matches)
+    }));
+    assert!(statuses.iter().any(|(text, status)| {
+        text.starts_with("format!") && status == &MacroInputStatus::Opaque
+    }));
+    assert!(statuses
+        .iter()
+        .any(|(text, status)| { text.starts_with("vec!") && status == &MacroInputStatus::Opaque }));
+    assert!(statuses.iter().any(|(text, status)| {
+        text.starts_with("matches!(value") && status == &MacroInputStatus::Opaque
+    }));
+    assert!(statuses.iter().any(|(text, status)| {
+        text.starts_with("env!") && status == &MacroInputStatus::KnownProfile(MacroProfileKey::Env)
+    }));
+    assert!(statuses.iter().any(|(text, status)| {
+        text.starts_with("core::matches!")
+            && status == &MacroInputStatus::KnownProfile(MacroProfileKey::Matches)
+    }));
+}
+
+#[test]
+fn macro_profiles_are_isolated_per_shared_module_instance() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("shared_module_sample"));
+    fixture.write(
+        "src/lib.rs",
+        "#[path = \"shared.rs\"] mod std_context;\n\n#[no_implicit_prelude]\n#[path = \"shared.rs\"] mod no_implicit_context;\n",
+    );
+    fixture.write(
+        "src/shared.rs",
+        "pub fn inspect() { let _ = format!(\"value\"); }\n",
+    );
+    let snapshot = analyze_fixture(&fixture);
+    let std_module = snapshot
+        .modules()
+        .iter()
+        .find(|module| {
+            module
+                .namespace()
+                .last()
+                .is_some_and(|name| name == "std_context")
+        })
+        .expect("std-prelude module instance");
+    let restricted_module = snapshot
+        .modules()
+        .iter()
+        .find(|module| {
+            module
+                .namespace()
+                .last()
+                .is_some_and(|name| name == "no_implicit_context")
+        })
+        .expect("no_implicit_prelude module instance");
+    let status_for = |module: &ModuleNode| {
+        module
+            .parse_output()
+            .syntax_nodes()
+            .iter()
+            .filter_map(|node| node.macro_invocation())
+            .find(|invocation| {
+                invocation
+                    .path()
+                    .segments()
+                    .last()
+                    .is_some_and(|segment| segment.name() == "format")
+            })
+            .map(|invocation| invocation.input().status().clone())
+            .expect("format! invocation")
+    };
+
+    assert_eq!(std_module.file_path(), restricted_module.file_path());
+    assert_eq!(
+        status_for(std_module),
+        MacroInputStatus::KnownProfile(MacroProfileKey::Format)
+    );
+    assert_eq!(status_for(restricted_module), MacroInputStatus::Opaque);
+}
+
+#[test]
+fn keeps_opaque_cfg_and_profile_fallback_inputs_out_of_path_references() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "src/lib.rs",
+        "mod model { pub struct Marker; }\n\nfn inspect() {\n    custom_dsl!({ crate::model::Marker });\n    assert!(crate::model::Marker + , true);\n    let _ = cfg!(crate::model::Marker);\n    let _ = cfg!(target_os = \"linux\");\n}\n",
+    );
+
+    let output = fixture.run(&["--format", "json"]);
+    let discovery =
+        CargoProjectLoader::discover(CargoDiscoveryRequest::new(fixture.root.join("Cargo.toml")))
+            .expect("Cargo 元数据");
+    let project = TargetSelector::select(
+        discovery,
+        CargoSelection::new(FeatureSelection::new(Vec::new(), true, true))
+            .with_current_directory(fixture.root.clone()),
+    )
+    .expect("选择 package 与 target");
+    let package = project.packages().first().expect("选中的 package");
+    let snapshot = ProjectAnalyzer::analyze(AnalysisRequest::new(package)).expect("分析 target");
+    let module = snapshot
+        .modules()
+        .iter()
+        .find(|module| module.is_crate_root())
+        .expect("crate 根模块");
+    assert_eq!(output.status, 2, "{}", output.stdout);
+    assert!(output.stdout.contains("\"status\":\"incomplete\""));
+    assert!(output
+        .stdout
+        .contains("\"analysis_issue\":\"parser_coverage\""));
+    assert!(!output.has_rule("no_inline_qualified_path"));
+    assert!(!snapshot
+        .facts()
+        .references_for_module(module)
+        .any(|reference| {
+            reference.segments().len() >= 3
+                && reference
+                    .segments()
+                    .iter()
+                    .take(3)
+                    .map(String::as_str)
+                    .eq(["crate", "model", "Marker"])
+        }));
+    assert!(!snapshot.facts().cfg_macros().is_empty());
+    assert_eq!(
+        snapshot
+            .facts()
+            .references_for_module(module)
+            .filter(|reference| reference.kind() == ReferenceKind::Macro
+                && reference
+                    .segments()
+                    .iter()
+                    .map(String::as_str)
+                    .eq(["custom_dsl"]))
+            .count(),
+        1
     );
 }
 

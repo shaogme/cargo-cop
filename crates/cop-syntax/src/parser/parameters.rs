@@ -7,7 +7,7 @@ use crate::{
         SyntaxNodeKind,
     },
     recovery::Recovery,
-    Delimiter, SourceFile, Token, TokenKind,
+    Delimiter, MacroProfileBinding, SourceFile, Token, TokenKind,
 };
 
 use super::{
@@ -28,6 +28,8 @@ pub(super) struct ParameterInput<'a> {
     pub(super) allow_variadic: bool,
     pub(super) ast_nodes: &'a mut Vec<SyntaxNode>,
     pub(super) issues: &'a mut Vec<ParseIssue>,
+    pub(super) macro_profiles: &'a [MacroProfileBinding],
+    pub(super) defer_opaque_macro_diagnostics: bool,
 }
 
 impl ParameterParser {
@@ -105,6 +107,8 @@ impl ParameterParser {
             allow_variadic,
             ast_nodes,
             issues,
+            macro_profiles,
+            defer_opaque_macro_diagnostics,
         } = input;
         let ranges = Recovery::split_top_level(tokens, start, end, ",", AngleScanContext::Header)
             .unwrap_or_else(|| {
@@ -190,6 +194,8 @@ impl ParameterParser {
                         parent: parameter_id,
                         expression_tree: false,
                         edition: None,
+                        macro_profiles,
+                        defer_opaque_macro_diagnostics,
                     },
                     ast_nodes,
                     issues,

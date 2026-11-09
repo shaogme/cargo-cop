@@ -8,7 +8,7 @@ use self::declaration::{ItemSyntaxParser, ParserContext};
 use super::{
     attributes::AttributeParser,
     block::LocalItemInput,
-    expression::{ImplHeaderInput, MacroInputRequest, SyntaxCollector},
+    expression::{ImplHeaderInput, MacroInputRequest, OpaqueMacroCallScan, SyntaxCollector},
     generic_parameters::{GenericParameterInput, GenericParameterParser},
     token_cursor::{AngleScanContext, CursorRange, TokenCursor},
     types::{TypeInput, TypeParser},
@@ -21,7 +21,7 @@ use crate::{
         ParseIssueKind, SyntaxNode, SyntaxNodeData, SyntaxNodeKind, TraitItem, Visibility,
     },
     recovery::Recovery,
-    Delimiter, RustEdition, SourceFile, Token, TokenKind,
+    Delimiter, MacroProfileBinding, RustEdition, SourceFile, Token, TokenKind,
 };
 
 pub(super) struct ScopeItems {
@@ -35,6 +35,8 @@ pub(super) struct ParserInput<'a> {
     pub(super) cursor: usize,
     pub(super) issues: Vec<ParseIssue>,
     pub(super) ast_nodes: Vec<SyntaxNode>,
+    pub(super) macro_profiles: &'a [MacroProfileBinding],
+    pub(super) defer_opaque_macro_diagnostics: bool,
 }
 
 pub(super) struct Parser<'a> {
@@ -44,6 +46,8 @@ pub(super) struct Parser<'a> {
     cursor: usize,
     issues: Vec<ParseIssue>,
     ast_nodes: Vec<SyntaxNode>,
+    macro_profiles: &'a [MacroProfileBinding],
+    defer_opaque_macro_diagnostics: bool,
 }
 
 impl<'a> Parser<'a> {
@@ -55,6 +59,8 @@ impl<'a> Parser<'a> {
             cursor: input.cursor,
             issues: input.issues,
             ast_nodes: input.ast_nodes,
+            macro_profiles: input.macro_profiles,
+            defer_opaque_macro_diagnostics: input.defer_opaque_macro_diagnostics,
         }
     }
 
@@ -70,6 +76,8 @@ impl<'a> Parser<'a> {
             cursor: &mut self.cursor,
             issues: &mut self.issues,
             ast_nodes: &mut self.ast_nodes,
+            macro_profiles: self.macro_profiles,
+            defer_opaque_macro_diagnostics: self.defer_opaque_macro_diagnostics,
         }
     }
 
@@ -139,6 +147,8 @@ impl<'a> Parser<'a> {
             attributes,
             ast_nodes,
             issues,
+            macro_profiles,
+            defer_opaque_macro_diagnostics,
         } = input;
         let mut parser = Self::new(ParserInput {
             source,
@@ -147,6 +157,8 @@ impl<'a> Parser<'a> {
             cursor: start,
             issues: mem::take(issues),
             ast_nodes: mem::take(ast_nodes),
+            macro_profiles,
+            defer_opaque_macro_diagnostics,
         });
         parser.parse_item(attributes, parent, true);
         let end = parser.cursor;
@@ -314,6 +326,8 @@ impl<'a> Parser<'a> {
                     tokens: self.tokens,
                     parent: node_id,
                     edition: self.edition,
+                    macro_profiles: self.macro_profiles,
+                    defer_opaque_macro_diagnostics: self.defer_opaque_macro_diagnostics,
                 },
                 invocation,
                 &mut self.ast_nodes,
@@ -328,17 +342,33 @@ impl<'a> Parser<'a> {
                     input.clone(),
                     Vec::new(),
                 );
-                AstFactory::push_ast_node(
+                let opaque_id = AstFactory::push_ast_node(
                     &mut self.ast_nodes,
                     Some(input_id),
                     SyntaxNodeKind::Opaque,
                     input.clone(),
                     Vec::new(),
                 );
-                self.issues.push(AstFactory::opaque_macro_issue(
-                    input,
-                    t!("syntax.macro_opaque"),
-                ));
+                if self.defer_opaque_macro_diagnostics {
+                    SyntaxCollector::collect_opaque_macro_calls(
+                        OpaqueMacroCallScan {
+                            source: self.source,
+                            tokens: self.tokens,
+                            input: &input,
+                            parent: opaque_id,
+                            edition: Some(self.edition),
+                            macro_profiles: self.macro_profiles,
+                        },
+                        &mut self.ast_nodes,
+                        &mut self.issues,
+                    );
+                }
+                if !self.defer_opaque_macro_diagnostics {
+                    self.issues.push(AstFactory::opaque_macro_issue(
+                        input,
+                        t!("syntax.macro_opaque"),
+                    ));
+                }
             }
         } else if let ItemKind::MacroDefinition(definition) = item.kind() {
             AstFactory::push_ast_node(

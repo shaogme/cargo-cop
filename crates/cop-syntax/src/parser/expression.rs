@@ -17,7 +17,7 @@ use crate::{
         SyntaxNodeData, SyntaxNodeKind,
     },
     recovery::Recovery,
-    RustEdition, SourceFile, Token, TokenKind,
+    MacroProfileBinding, RustEdition, SourceFile, Token, TokenKind,
 };
 
 use super::{
@@ -36,6 +36,8 @@ pub(super) struct SyntaxRequest<'a> {
     pub(super) parent: AstNodeId,
     pub(super) expression_tree: bool,
     pub(super) edition: Option<RustEdition>,
+    pub(super) macro_profiles: &'a [MacroProfileBinding],
+    pub(super) defer_opaque_macro_diagnostics: bool,
 }
 
 pub(super) struct MacroInputRequest<'a> {
@@ -43,6 +45,17 @@ pub(super) struct MacroInputRequest<'a> {
     pub(super) tokens: &'a [Token],
     pub(super) parent: AstNodeId,
     pub(super) edition: RustEdition,
+    pub(super) macro_profiles: &'a [MacroProfileBinding],
+    pub(super) defer_opaque_macro_diagnostics: bool,
+}
+
+pub(super) struct OpaqueMacroCallScan<'a> {
+    pub(super) source: &'a SourceFile,
+    pub(super) tokens: &'a [Token],
+    pub(super) input: &'a Range<usize>,
+    pub(super) parent: AstNodeId,
+    pub(super) edition: Option<RustEdition>,
+    pub(super) macro_profiles: &'a [MacroProfileBinding],
 }
 
 pub(super) struct ImplHeaderInput<'a> {
@@ -72,6 +85,47 @@ pub(super) struct ParameterPatternInput<'a> {
 }
 
 impl SyntaxCollector {
+    pub(super) fn collect_opaque_macro_calls(
+        request: OpaqueMacroCallScan<'_>,
+        ast_nodes: &mut Vec<SyntaxNode>,
+        issues: &mut Vec<ParseIssue>,
+    ) {
+        let Some(start) = request
+            .tokens
+            .iter()
+            .position(|token| token.start() == request.input.start)
+        else {
+            return;
+        };
+        let Some(end) = request
+            .tokens
+            .iter()
+            .enumerate()
+            .skip(start)
+            .find(|(_, token)| token.end() == request.input.end)
+            .map(|(index, _)| index + 1)
+        else {
+            return;
+        };
+        if end <= start + 1 {
+            return;
+        }
+        Self::collect_nested_macro_calls(
+            SyntaxRequest {
+                source: request.source,
+                tokens: request.tokens,
+                bounds: start + 1..end - 1,
+                parent: request.parent,
+                expression_tree: false,
+                edition: request.edition,
+                macro_profiles: request.macro_profiles,
+                defer_opaque_macro_diagnostics: true,
+            },
+            ast_nodes,
+            issues,
+        );
+    }
+
     pub(super) fn collect_item_macro_input(
         request: MacroInputRequest<'_>,
         invocation: &MacroInvocation,
@@ -254,16 +308,34 @@ impl SyntaxCollector {
         Self::group_end(tokens, group_index, tokens.len())
     }
 
-    fn collect_macros(
+    pub(super) fn collect_macros(
         request: SyntaxRequest<'_>,
         ast_nodes: &mut Vec<SyntaxNode>,
         issues: &mut Vec<ParseIssue>,
+    ) {
+        Self::collect_macro_calls(request, ast_nodes, issues, false);
+    }
+
+    fn collect_nested_macro_calls(
+        request: SyntaxRequest<'_>,
+        ast_nodes: &mut Vec<SyntaxNode>,
+        issues: &mut Vec<ParseIssue>,
+    ) {
+        Self::collect_macro_calls(request, ast_nodes, issues, true);
+    }
+
+    fn collect_macro_calls(
+        request: SyntaxRequest<'_>,
+        ast_nodes: &mut Vec<SyntaxNode>,
+        issues: &mut Vec<ParseIssue>,
+        include_macro_inputs: bool,
     ) {
         let SyntaxRequest {
             source,
             tokens,
             bounds,
             parent,
+            defer_opaque_macro_diagnostics,
             ..
         } = request;
         let mut index = bounds.start;
@@ -315,11 +387,17 @@ impl SyntaxCollector {
                             opaque.clone(),
                             Vec::new(),
                         );
-                        issues.push(AstFactory::opaque_macro_issue(
-                            opaque,
-                            t!("syntax.macro_opaque"),
-                        ));
-                        index = group_end + 1;
+                        if !defer_opaque_macro_diagnostics {
+                            issues.push(AstFactory::opaque_macro_issue(
+                                opaque,
+                                t!("syntax.macro_opaque"),
+                            ));
+                        }
+                        index = if include_macro_inputs {
+                            next + 1
+                        } else {
+                            group_end + 1
+                        };
                         continue;
                     }
                 }

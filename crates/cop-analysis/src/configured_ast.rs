@@ -2,6 +2,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     ops::Range,
     slice::from_ref,
+    sync::Arc,
 };
 
 use cop_cargo::TargetContext;
@@ -12,7 +13,7 @@ use cop_syntax::{
 
 use crate::{
     cfg_eval::{AttributeEffects, CfgDecision, CfgEvaluator},
-    macro_resolver::{MacroResolution, MacroResolver},
+    macro_resolver::{MacroResolution, MacroResolver, MacroResolverIndex},
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -110,6 +111,7 @@ pub struct ConfiguredAst {
     issues: Vec<ConfiguredAstIssue>,
     cfg_macros: Vec<ConfiguredCfgMacro>,
     unresolved_cfg_macro_ranges: Vec<Range<usize>>,
+    macro_resolver_index: Arc<MacroResolverIndex>,
 }
 
 impl ConfiguredNode {
@@ -321,13 +323,17 @@ impl ConfiguredAst {
         output: &ParseOutput,
         target: &TargetContext,
         inherited_condition: Option<&str>,
+        inherited_macro_use: bool,
+        inherited_macro_definitions: BTreeSet<String>,
     ) -> Self {
         let evaluator = CfgEvaluator::new(target);
         let inherited_decision = inherited_condition.map_or(CfgDecision::True, |condition| {
             evaluator.evaluate_condition(condition)
         });
         let mut projected = Self::default();
+        let mut macro_resolver_index = MacroResolverIndex::default();
         for node in output.syntax_nodes() {
+            macro_resolver_index.add_node(output, node);
             let parent_inside_macro_input = node
                 .parent()
                 .and_then(|parent| projected.node(parent))
@@ -387,56 +393,6 @@ impl ConfiguredAst {
                         });
                     }
                 }
-                if let Some(invocation) = node.macro_invocation() {
-                    if let MacroInputStatus::CfgCandidate(candidate) = invocation.input().status() {
-                        match MacroResolver::resolve(output, node.id(), invocation) {
-                            MacroResolution::BuiltinCfg => {
-                                if let Some(predicate) = candidate.predicate() {
-                                    let decision = evaluator.evaluate_expression(predicate);
-                                    let predicate_bounds = candidate.predicate_bounds();
-                                    projected.cfg_macros.push(ConfiguredCfgMacro {
-                                        ast_node_id: node.id(),
-                                        predicate: predicate.clone(),
-                                        predicate_bounds: predicate_bounds.clone(),
-                                        decision,
-                                    });
-                                    if decision == CfgDecision::Unknown {
-                                        node_issues.push(ConfiguredAstIssue {
-                                            ast_node_id: node.id(),
-                                            kind: ConfiguredAstIssueKind::UnknownCfg,
-                                            start: predicate_bounds.start,
-                                            end: predicate_bounds.end,
-                                            condition: Some(predicate.normalized()),
-                                            effective_condition: parent_condition.clone(),
-                                        });
-                                    }
-                                } else {
-                                    let bounds = candidate.predicate_bounds();
-                                    node_issues.push(ConfiguredAstIssue {
-                                        ast_node_id: node.id(),
-                                        kind: ConfiguredAstIssueKind::MalformedCfgExpression,
-                                        start: bounds.start,
-                                        end: bounds.end,
-                                        condition: None,
-                                        effective_condition: parent_condition.clone(),
-                                    });
-                                }
-                            }
-                            MacroResolution::NonBuiltin | MacroResolution::Ambiguous => {
-                                let bounds = invocation.start()..invocation.end();
-                                projected.unresolved_cfg_macro_ranges.push(bounds.clone());
-                                node_issues.push(ConfiguredAstIssue {
-                                    ast_node_id: node.id(),
-                                    kind: ConfiguredAstIssueKind::OpaqueCfgMacro,
-                                    start: bounds.start,
-                                    end: bounds.end,
-                                    condition: None,
-                                    effective_condition: parent_condition.clone(),
-                                });
-                            }
-                        }
-                    }
-                }
             }
             projected.issues.extend(node_issues.iter().cloned());
             let index = projected.nodes.len();
@@ -456,6 +412,92 @@ impl ConfiguredAst {
                 attribute_evaluation: ConfiguredAttributeEvaluation::from_effects(&effects),
                 issues: node_issues,
             });
+        }
+        macro_resolver_index.set_inherited_macro_use(inherited_macro_use);
+        macro_resolver_index.set_inherited_macro_definitions(inherited_macro_definitions);
+        projected.macro_resolver_index = Arc::new(macro_resolver_index);
+        let macro_invocation_ids = projected
+            .macro_resolver_index()
+            .macro_invocations()
+            .to_vec();
+        for invocation_id in macro_invocation_ids {
+            let Some(node) = output.node(invocation_id) else {
+                continue;
+            };
+            let Some(invocation) = node.macro_invocation() else {
+                continue;
+            };
+            let MacroInputStatus::CfgCandidate(candidate) = invocation.input().status() else {
+                continue;
+            };
+            if projected
+                .node(invocation_id)
+                .is_none_or(|configured| configured.availability_decision() == CfgDecision::False)
+            {
+                continue;
+            }
+            let parent_condition = projected
+                .node(invocation_id)
+                .and_then(ConfiguredNode::parent)
+                .and_then(|parent| projected.node(parent))
+                .and_then(ConfiguredNode::availability_condition)
+                .map(str::to_owned);
+            let issue = match MacroResolver::resolve(
+                projected.macro_resolver_index(),
+                output,
+                &projected,
+                invocation_id,
+                invocation,
+            ) {
+                MacroResolution::BuiltinCfg => {
+                    if let Some(predicate) = candidate.predicate() {
+                        let decision = evaluator.evaluate_expression(predicate);
+                        let predicate_bounds = candidate.predicate_bounds();
+                        projected.cfg_macros.push(ConfiguredCfgMacro {
+                            ast_node_id: invocation_id,
+                            predicate: predicate.clone(),
+                            predicate_bounds: predicate_bounds.clone(),
+                            decision,
+                        });
+                        (decision == CfgDecision::Unknown).then(|| ConfiguredAstIssue {
+                            ast_node_id: invocation_id,
+                            kind: ConfiguredAstIssueKind::UnknownCfg,
+                            start: predicate_bounds.start,
+                            end: predicate_bounds.end,
+                            condition: Some(predicate.normalized()),
+                            effective_condition: parent_condition,
+                        })
+                    } else {
+                        let bounds = candidate.predicate_bounds();
+                        Some(ConfiguredAstIssue {
+                            ast_node_id: invocation_id,
+                            kind: ConfiguredAstIssueKind::MalformedCfgExpression,
+                            start: bounds.start,
+                            end: bounds.end,
+                            condition: None,
+                            effective_condition: parent_condition,
+                        })
+                    }
+                }
+                MacroResolution::NonBuiltin | MacroResolution::Ambiguous => {
+                    let bounds = invocation.start()..invocation.end();
+                    projected.unresolved_cfg_macro_ranges.push(bounds.clone());
+                    Some(ConfiguredAstIssue {
+                        ast_node_id: invocation_id,
+                        kind: ConfiguredAstIssueKind::OpaqueCfgMacro,
+                        start: bounds.start,
+                        end: bounds.end,
+                        condition: None,
+                        effective_condition: parent_condition,
+                    })
+                }
+            };
+            if let Some(issue) = issue {
+                projected.issues.push(issue.clone());
+                if let Some(index) = projected.by_id.get(&invocation_id).copied() {
+                    projected.nodes[index].issues.push(issue);
+                }
+            }
         }
         projected.cfg_macros.sort_by(|left, right| {
             left.predicate_bounds
@@ -563,6 +605,10 @@ impl ConfiguredAst {
 
     pub fn node(&self, id: AstNodeId) -> Option<&ConfiguredNode> {
         self.by_id.get(&id).and_then(|index| self.nodes.get(*index))
+    }
+
+    pub(crate) fn macro_resolver_index(&self) -> &Arc<MacroResolverIndex> {
+        &self.macro_resolver_index
     }
 
     pub fn node_for_kind_range(

@@ -1,9 +1,9 @@
+mod issue_reporter;
 mod lint_attributes;
 mod macro_scan;
 mod scope;
 
 use std::{
-    borrow::Cow,
     collections::{BTreeMap, BTreeSet},
     fs,
     io::ErrorKind,
@@ -12,21 +12,26 @@ use std::{
     sync::Arc,
 };
 
-use cop_cargo::{SelectedPackage, TargetContext};
+use cop_cargo::{DependencyKind, SelectedPackage, TargetContext};
 use cop_i18n::{t, RenderError};
-use cop_model::{AnalysisIssueKind, Diagnostic, Severity, SourceSpan, ToolErrorKind};
+use cop_model::{AnalysisIssueKind, Diagnostic, Severity, SourceSpan};
 use cop_syntax::{
-    AstNodeId, Attribute, CoverageStatus, ItemSyntaxKind, ParseIssueCode, ParseOptions,
-    ParseOutput, RustParser, SourceFile, SyntaxNode, SyntaxNodeKind,
+    AstNodeId, Attribute, ItemSyntaxKind, ParseOptions, ParseOutput, RustParser, SourceFile,
+    SyntaxNode, SyntaxNodeKind,
 };
 
 pub use self::lint_attributes::ConfiguredAttribute;
 use self::{
+    issue_reporter::GraphIssueReporter,
     lint_attributes::LintAttributeCollector,
     macro_scan::MacroScanner,
     scope::{IssueRequest, ModulePathRequest, ModuleScope, ModuleVisit, ScopeSupport},
 };
-use crate::{cfg_eval::CfgDecision, ConfiguredAst, ConfiguredAstIssueKind};
+use crate::{
+    cfg_eval::{CfgDecision, CfgEvaluator},
+    macro_resolver::{MacroResolver, MacroResolverCatalog},
+    ConfiguredAst,
+};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ModuleNode {
@@ -43,8 +48,13 @@ pub struct ModuleNode {
     parent_namespace: Vec<String>,
     declared_at: Option<SourceSpan>,
     cfg_condition: Option<String>,
+    source_cfg_condition: Option<String>,
     no_std: bool,
     no_implicit_prelude: bool,
+    macro_use_context: bool,
+    inherited_macro_definitions: BTreeSet<String>,
+    source_instance: usize,
+    macro_dependency_packages: BTreeMap<String, String>,
     crate_root: bool,
     inline: bool,
     order_only: bool,
@@ -60,45 +70,58 @@ pub(crate) struct ModuleGraph {
     diagnostics: Vec<Diagnostic>,
 }
 
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-struct ParseIssueKey {
-    path: PathBuf,
-    start: usize,
-    end: usize,
-}
-
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-struct UnknownIssueKey {
-    path: PathBuf,
-    start: usize,
-    end: usize,
-    condition: String,
-}
-
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-struct MalformedIssueKey {
-    path: PathBuf,
-    start: usize,
-    end: usize,
-}
-
-struct ConfiguredIssueDetails {
-    kind: AnalysisIssueKind,
-    severity: Severity,
-    message: Cow<'static, str>,
-}
-
 struct GraphBuilder<'a> {
     package: &'a SelectedPackage,
     target: &'a TargetContext,
     context_index: usize,
     nodes: Vec<ModuleNode>,
-    diagnostics: Vec<Diagnostic>,
+    issues: GraphIssueReporter<'a>,
+    macro_dependency_packages: BTreeMap<String, String>,
     parsed: BTreeMap<PathBuf, Arc<ParseOutput>>,
-    reported_parse: BTreeSet<ParseIssueKey>,
-    reported_unknown: BTreeSet<UnknownIssueKey>,
-    reported_malformed: BTreeSet<MalformedIssueKey>,
+    configured: BTreeMap<usize, ConfiguredAst>,
     active_files: BTreeSet<PathBuf>,
+    next_source_instance: usize,
+}
+
+struct PreviousScope {
+    kind: SyntaxNodeKind,
+    bounds: Range<usize>,
+}
+
+fn macro_dependency_packages(
+    package: &SelectedPackage,
+    target: &TargetContext,
+) -> BTreeMap<String, String> {
+    let evaluator = CfgEvaluator::new(target);
+    let build_script = target.kind().iter().any(|kind| kind == "custom-build");
+    package
+        .dependencies()
+        .dependencies()
+        .iter()
+        .filter(|dependency| {
+            let active_kind = match dependency.kind() {
+                DependencyKind::Normal => !build_script,
+                DependencyKind::Development => target.cfg_test(),
+                DependencyKind::Build => build_script,
+                DependencyKind::Other(_) => false,
+            };
+            active_kind
+                && (!dependency.is_optional()
+                    || target
+                        .features()
+                        .activated_dependencies()
+                        .contains(dependency.dependency_key()))
+                && dependency.target_condition().is_none_or(|condition| {
+                    evaluator.dependency_condition(condition) == CfgDecision::True
+                })
+        })
+        .map(|dependency| {
+            (
+                dependency.rust_name().to_owned(),
+                dependency.package_name().to_owned(),
+            )
+        })
+        .collect()
 }
 
 impl ModuleNode {
@@ -160,6 +183,20 @@ impl ModuleNode {
 
     pub(crate) fn no_implicit_prelude(&self) -> bool {
         self.no_implicit_prelude
+    }
+
+    pub(crate) fn macro_use_context(&self) -> bool {
+        self.macro_use_context
+    }
+
+    pub(crate) fn source_instance(&self) -> usize {
+        self.source_instance
+    }
+
+    pub(crate) fn macro_dependency_package(&self, crate_name: &str) -> Option<&str> {
+        self.macro_dependency_packages
+            .get(crate_name)
+            .map(String::as_str)
     }
 
     pub fn is_crate_root(&self) -> bool {
@@ -240,12 +277,12 @@ impl ModuleGraph {
             target,
             context_index,
             nodes: Vec::new(),
-            diagnostics: Vec::new(),
+            issues: GraphIssueReporter::new(package, target),
+            macro_dependency_packages: macro_dependency_packages(package, target),
             parsed: BTreeMap::new(),
-            reported_parse: BTreeSet::new(),
-            reported_unknown: BTreeSet::new(),
-            reported_malformed: BTreeSet::new(),
+            configured: BTreeMap::new(),
             active_files: BTreeSet::new(),
+            next_source_instance: 1,
         }
         .build()
     }
@@ -261,7 +298,7 @@ impl GraphBuilder<'_> {
         let Some(source) = self.load_source(root.clone())? else {
             return Ok(ModuleGraph {
                 nodes: self.nodes,
-                diagnostics: self.diagnostics,
+                diagnostics: self.issues.into_diagnostics(),
             });
         };
         let root_scope_id = source
@@ -283,21 +320,36 @@ impl GraphBuilder<'_> {
             is_inline: false,
             active: true,
             no_implicit_prelude: false,
+            macro_use_context: false,
+            inherited_macro_definitions: BTreeSet::new(),
+            source_instance: 0,
             scope_id: root_scope_id,
             source,
         };
         self.active_files.insert(root);
         self.walk_scope(root_scope)?;
+        self.finalize_macro_profiles()?;
         Ok(ModuleGraph {
             nodes: self.nodes,
-            diagnostics: self.diagnostics,
+            diagnostics: self.issues.into_diagnostics(),
         })
     }
 
     fn walk_scope(&mut self, mut scope: ModuleScope) -> Result<(), RenderError> {
         let source = scope.source.clone();
-        let configured_ast =
-            ConfiguredAst::project(&source, self.target, scope.source_cfg_condition.as_deref());
+        let configured_ast = self
+            .configured
+            .entry(scope.source_instance)
+            .or_insert_with(|| {
+                ConfiguredAst::project(
+                    &source,
+                    self.target,
+                    scope.source_cfg_condition.as_deref(),
+                    scope.macro_use_context,
+                    scope.inherited_macro_definitions.clone(),
+                )
+            })
+            .clone();
         let Some(scope_node) = source.node(scope.scope_id) else {
             return Ok(());
         };
@@ -316,8 +368,10 @@ impl GraphBuilder<'_> {
             .node(scope_node.id())
             .is_some_and(|node| node.availability_decision() != CfgDecision::False);
         scope.cfg_condition = scope_condition;
-        self.report_parse_issues(&scope.file_path, &source, &configured_ast)?;
-        self.report_configured_ast_issues(&scope, &configured_ast)?;
+        self.issues
+            .report_parse_issues(&scope.file_path, &source, &configured_ast)?;
+        self.issues
+            .report_configured_ast_issues(&scope, &configured_ast)?;
         for item in ScopeSupport::scope_children(&source, scope.scope_id) {
             let Some(item_data) = item.item_syntax() else {
                 continue;
@@ -336,6 +390,7 @@ impl GraphBuilder<'_> {
                     if *inline {
                         self.visit_module(ModuleVisit {
                             scope: &scope,
+                            configured_ast: &configured_ast,
                             item,
                             name,
                             inline: *inline,
@@ -351,6 +406,7 @@ impl GraphBuilder<'_> {
                     if *inline {
                         self.visit_module(ModuleVisit {
                             scope: &scope,
+                            configured_ast: &configured_ast,
                             item,
                             name,
                             inline: *inline,
@@ -362,7 +418,7 @@ impl GraphBuilder<'_> {
                 continue;
             }
             for invocation in MacroScanner::include_invocations(item, &source, &configured_ast) {
-                self.report(IssueRequest {
+                self.issues.report(IssueRequest {
                     kind: AnalysisIssueKind::DynamicInput,
                     severity: Severity::Warning,
                     message: t!("analysis.include_dynamic_input")?,
@@ -377,6 +433,7 @@ impl GraphBuilder<'_> {
             if let ItemSyntaxKind::Module { name, inline } = item_data.kind() {
                 self.visit_module(ModuleVisit {
                     scope: &scope,
+                    configured_ast: &configured_ast,
                     item,
                     name,
                     inline: *inline,
@@ -395,7 +452,7 @@ impl GraphBuilder<'_> {
                 } else {
                     AnalysisIssueKind::MacroGeneratedModule
                 };
-                self.report(IssueRequest {
+                self.issues.report(IssueRequest {
                     kind: issue_kind,
                     severity: Severity::Warning,
                     message: t!("analysis.macro_generated_module", { name: macro_name })?,
@@ -428,8 +485,13 @@ impl GraphBuilder<'_> {
             namespace: scope.namespace,
             declared_at: scope.declared_at,
             cfg_condition: scope.cfg_condition,
+            source_cfg_condition: scope.source_cfg_condition,
             no_std,
             no_implicit_prelude: scope.no_implicit_prelude,
+            macro_use_context: scope.macro_use_context,
+            inherited_macro_definitions: scope.inherited_macro_definitions,
+            source_instance: scope.source_instance,
+            macro_dependency_packages: self.macro_dependency_packages.clone(),
             crate_root: scope.is_root,
             inline: scope.is_inline,
             order_only: !scope.active,
@@ -445,12 +507,27 @@ impl GraphBuilder<'_> {
     fn visit_module(&mut self, visit: ModuleVisit<'_>) -> Result<(), RenderError> {
         let ModuleVisit {
             scope,
+            configured_ast,
             item,
             name,
             inline,
             effects,
             effective_condition,
         } = visit;
+        let macro_use_context = scope.macro_use_context
+            || MacroResolver::has_macro_use_import_for_module(
+                configured_ast.macro_resolver_index(),
+                configured_ast,
+                scope.scope_id,
+                item.start(),
+            );
+        let mut inherited_macro_definitions = scope.inherited_macro_definitions.clone();
+        inherited_macro_definitions.extend(MacroResolver::macro_definitions_before(
+            configured_ast.macro_resolver_index(),
+            configured_ast,
+            scope.scope_id,
+            item.start(),
+        ));
         let mut namespace = scope.namespace.clone();
         namespace.push(name.to_owned());
         let declared_at = scope.source.source().span(item.start(), item.end()).ok();
@@ -481,6 +558,9 @@ impl GraphBuilder<'_> {
                 active: scope.active && effects.decision() != Some(CfgDecision::False),
                 no_implicit_prelude: scope.no_implicit_prelude
                     || effects.has_active_attribute("no_implicit_prelude"),
+                macro_use_context,
+                inherited_macro_definitions,
+                source_instance: scope.source_instance,
                 scope_id: inline_scope.id(),
                 source: scope.source.clone(),
             })?;
@@ -499,7 +579,7 @@ impl GraphBuilder<'_> {
             return Ok(());
         };
         if self.active_files.contains(&path) {
-            self.report(IssueRequest {
+            self.issues.report(IssueRequest {
                 kind: AnalysisIssueKind::ModuleCycle,
                 severity: Severity::Error,
                 message: t!("analysis.module_cycle", { name: name })?,
@@ -514,6 +594,8 @@ impl GraphBuilder<'_> {
             self.active_files.remove(&path);
             return Ok(());
         };
+        let source_instance = self.next_source_instance;
+        self.next_source_instance += 1;
         let source_cfg_condition = cfg_condition.clone();
         self.walk_scope(ModuleScope {
             file_path: path.clone(),
@@ -529,6 +611,9 @@ impl GraphBuilder<'_> {
             active: true,
             no_implicit_prelude: scope.no_implicit_prelude
                 || effects.has_active_attribute("no_implicit_prelude"),
+            macro_use_context,
+            inherited_macro_definitions,
+            source_instance,
             scope_id: source
                 .syntax_nodes()
                 .iter()
@@ -538,6 +623,105 @@ impl GraphBuilder<'_> {
             source,
         })?;
         self.active_files.remove(&path);
+        Ok(())
+    }
+
+    fn finalize_macro_profiles(&mut self) -> Result<(), RenderError> {
+        let catalog = MacroResolverCatalog::new(&self.nodes);
+        let mut instances = BTreeMap::<usize, Vec<usize>>::new();
+        for (index, module) in self.nodes.iter().enumerate() {
+            instances
+                .entry(module.source_instance)
+                .or_default()
+                .push(index);
+        }
+        let instance_bindings = instances
+            .iter()
+            .map(|(instance, indices)| {
+                let instance_modules = indices
+                    .iter()
+                    .map(|index| &self.nodes[*index])
+                    .collect::<Vec<_>>();
+                let bindings = MacroResolver::profile_bindings(
+                    &instance_modules,
+                    &self.nodes,
+                    &catalog,
+                    self.target.edition(),
+                );
+                (*instance, bindings)
+            })
+            .collect::<BTreeMap<_, _>>();
+        for indices in instances.values() {
+            let first = &self.nodes[indices[0]];
+            let source = first.source.source().clone();
+            let bindings = instance_bindings
+                .get(&first.source_instance)
+                .cloned()
+                .unwrap_or_default();
+            let output = Arc::new(RustParser::parse(
+                source,
+                ParseOptions::new(self.target.edition()).with_macro_profiles(bindings),
+            )?);
+            let configured_ast = ConfiguredAst::project(
+                &output,
+                self.target,
+                first.source_cfg_condition.as_deref(),
+                first.macro_use_context,
+                first.inherited_macro_definitions.clone(),
+            );
+            self.configured
+                .insert(first.source_instance, configured_ast.clone());
+            for index in indices {
+                let previous_scope = self.nodes[*index]
+                    .source
+                    .node(self.nodes[*index].scope_id)
+                    .map(|node| PreviousScope {
+                        kind: node.kind(),
+                        bounds: node.start()..node.end(),
+                    });
+                let scope_id = previous_scope
+                    .and_then(|previous| {
+                        output
+                            .syntax_nodes()
+                            .iter()
+                            .find(|node| {
+                                node.kind() == previous.kind
+                                    && (node.start()..node.end()) == previous.bounds
+                            })
+                            .map(SyntaxNode::id)
+                    })
+                    .unwrap_or(self.nodes[*index].scope_id);
+                let file_path = self.nodes[*index].file_path.clone();
+                let module_scope = ModuleScope {
+                    file_path: file_path.clone(),
+                    module_dir: file_path.parent().unwrap_or(Path::new(".")).to_path_buf(),
+                    namespace: self.nodes[*index].namespace.clone(),
+                    inline_path: Vec::new(),
+                    declared_at: self.nodes[*index].declared_at.clone(),
+                    cfg_condition: self.nodes[*index].cfg_condition.clone(),
+                    source_cfg_condition: self.nodes[*index].source_cfg_condition.clone(),
+                    is_root: self.nodes[*index].crate_root,
+                    source_is_root: self.nodes[*index].crate_root,
+                    is_inline: self.nodes[*index].inline,
+                    active: !self.nodes[*index].order_only,
+                    no_implicit_prelude: self.nodes[*index].no_implicit_prelude,
+                    macro_use_context: self.nodes[*index].macro_use_context,
+                    inherited_macro_definitions: self.nodes[*index]
+                        .inherited_macro_definitions
+                        .clone(),
+                    source_instance: self.nodes[*index].source_instance,
+                    scope_id,
+                    source: output.clone(),
+                };
+                self.nodes[*index].scope_id = scope_id;
+                self.nodes[*index].source = output.clone();
+                self.nodes[*index].configured_ast = configured_ast.clone();
+                self.issues
+                    .report_parse_issues(&file_path, &output, &configured_ast)?;
+                self.issues
+                    .report_configured_ast_issues(&module_scope, &configured_ast)?;
+            }
+        }
         Ok(())
     }
 
@@ -558,7 +742,7 @@ impl GraphBuilder<'_> {
             if exists {
                 return Ok(Some(candidate));
             }
-            self.report(IssueRequest {
+            self.issues.report(IssueRequest {
                 kind: AnalysisIssueKind::MissingModule,
                 severity: Severity::Error,
                 message: t!("analysis.path_module_missing")?,
@@ -578,7 +762,7 @@ impl GraphBuilder<'_> {
         };
         let path = match (first_exists, second_exists) {
             (true, true) => {
-                self.report(IssueRequest {
+                self.issues.report(IssueRequest {
                     kind: AnalysisIssueKind::AmbiguousModule,
                     severity: Severity::Error,
                     message: t!("analysis.module_layout_ambiguous", { name: request.name })?,
@@ -591,7 +775,7 @@ impl GraphBuilder<'_> {
             (true, false) => Some(ScopeSupport::normalize_path(&first)),
             (false, true) => Some(ScopeSupport::normalize_path(&second)),
             (false, false) => {
-                self.report(IssueRequest {
+                self.issues.report(IssueRequest {
                     kind: AnalysisIssueKind::MissingModule,
                     severity: Severity::Error,
                     message: t!("analysis.module_missing", { name: request.name })?,
@@ -614,22 +798,14 @@ impl GraphBuilder<'_> {
         let text = match fs::read_to_string(&path) {
             Ok(text) => text,
             Err(error) => {
-                self.diagnostics.push(
-                    Diagnostic::tool(
-                        ToolErrorKind::Io,
-                        t!("analysis.module_source_read_error", { path: path_display.as_str() })?,
-                    )
-                    .with_package(self.package.name())
-                    .with_package_manifest_path(self.package.manifest_path())
-                    .with_target(self.target.name())
-                    .with_target_kind(self.target.kind().to_vec())
-                    .with_target_triple(self.target.target_triple())
-                    .with_detail(error.to_string()),
+                self.issues.report_tool_io(
+                    t!("analysis.module_source_read_error", { path: path_display.as_str() })?,
+                    &error,
                 );
                 return Ok(None);
             }
         };
-        let output = Arc::new(RustParser::parse(
+        let output = Arc::new(RustParser::parse_structure(
             SourceFile::new(path.clone(), text),
             ParseOptions::new(self.target.edition()),
         )?);
@@ -643,179 +819,12 @@ impl GraphBuilder<'_> {
             Ok(metadata) => Ok(Some(metadata.is_file())),
             Err(error) if error.kind() == ErrorKind::NotFound => Ok(Some(false)),
             Err(error) => {
-                self.diagnostics.push(
-                    Diagnostic::tool(
-                        ToolErrorKind::Io,
-                        t!("analysis.module_file_metadata_error", { path: path_display.as_str() })?,
-                    )
-                    .with_package(self.package.name())
-                    .with_package_manifest_path(self.package.manifest_path())
-                    .with_target(self.target.name())
-                    .with_target_kind(self.target.kind().to_vec())
-                    .with_target_triple(self.target.target_triple())
-                    .with_detail(error.to_string()),
+                self.issues.report_tool_io(
+                    t!("analysis.module_file_metadata_error", { path: path_display.as_str() })?,
+                    &error,
                 );
                 Ok(None)
             }
         }
-    }
-
-    fn report_parse_issues(
-        &mut self,
-        path: &Path,
-        output: &ParseOutput,
-        configured_ast: &ConfiguredAst,
-    ) -> Result<(), RenderError> {
-        if output.coverage() == CoverageStatus::Complete {
-            return Ok(());
-        }
-        for issue in output.issues() {
-            if !configured_ast.is_issue_enabled(issue) {
-                continue;
-            }
-            if issue.code() == ParseIssueCode::OpaqueMacroInput
-                && output.syntax_nodes().iter().any(|node| {
-                    node.kind() == SyntaxNodeKind::Macro
-                        && node.start() <= issue.start()
-                        && issue.end() <= node.end()
-                        && node.macro_invocation().is_some_and(|invocation| {
-                            invocation
-                                .path()
-                                .segments()
-                                .last()
-                                .is_some_and(|segment| segment.name() == "include")
-                        })
-                })
-            {
-                continue;
-            }
-            let key = ParseIssueKey {
-                path: path.to_path_buf(),
-                start: issue.start(),
-                end: issue.end(),
-            };
-            if !self.reported_parse.insert(key) {
-                continue;
-            }
-            self.report(IssueRequest {
-                kind: AnalysisIssueKind::ParserCoverage,
-                severity: match issue.code() {
-                    ParseIssueCode::UnsupportedSyntax(_) | ParseIssueCode::OpaqueMacroInput => {
-                        Severity::Warning
-                    }
-                    ParseIssueCode::LexicalError
-                    | ParseIssueCode::UnexpectedToken
-                    | ParseIssueCode::UnexpectedEof
-                    | ParseIssueCode::UnclosedDelimiter
-                    | ParseIssueCode::InvalidAttribute
-                    | ParseIssueCode::UnsupportedEdition => Severity::Error,
-                },
-                message: issue.message_cow()?,
-                span: output.source().span(issue.start(), issue.end()).ok(),
-                namespace: None,
-                cfg_condition: None,
-            });
-        }
-        Ok(())
-    }
-
-    fn report_configured_ast_issues(
-        &mut self,
-        scope: &ModuleScope,
-        configured_ast: &ConfiguredAst,
-    ) -> Result<(), RenderError> {
-        for issue in configured_ast.issues() {
-            if !ScopeSupport::issue_belongs_to_scope(scope, issue) {
-                continue;
-            }
-            let kind = match issue.kind() {
-                ConfiguredAstIssueKind::UnknownCfg => {
-                    let condition = issue.condition().unwrap_or_default();
-                    if !self.reported_unknown.insert(UnknownIssueKey {
-                        path: scope.file_path.clone(),
-                        start: issue.start(),
-                        end: issue.end(),
-                        condition: condition.to_owned(),
-                    }) {
-                        continue;
-                    }
-                    ConfiguredIssueDetails {
-                        kind: AnalysisIssueKind::UnknownCfg,
-                        severity: Severity::Warning,
-                        message: t!("analysis.unknown_cfg", { condition: condition })?,
-                    }
-                }
-                ConfiguredAstIssueKind::MalformedAttribute => {
-                    if !self.reported_malformed.insert(MalformedIssueKey {
-                        path: scope.file_path.clone(),
-                        start: issue.start(),
-                        end: issue.end(),
-                    }) {
-                        continue;
-                    }
-                    ConfiguredIssueDetails {
-                        kind: AnalysisIssueKind::ParserCoverage,
-                        severity: Severity::Error,
-                        message: t!("analysis.malformed_cfg_attribute")?,
-                    }
-                }
-                ConfiguredAstIssueKind::MalformedCfgExpression => {
-                    if !self.reported_malformed.insert(MalformedIssueKey {
-                        path: scope.file_path.clone(),
-                        start: issue.start(),
-                        end: issue.end(),
-                    }) {
-                        continue;
-                    }
-                    ConfiguredIssueDetails {
-                        kind: AnalysisIssueKind::ParserCoverage,
-                        severity: Severity::Error,
-                        message: t!("analysis.malformed_cfg_expression")?,
-                    }
-                }
-                ConfiguredAstIssueKind::OpaqueCfgMacro => {
-                    if !self.reported_parse.insert(ParseIssueKey {
-                        path: scope.file_path.clone(),
-                        start: issue.start(),
-                        end: issue.end(),
-                    }) {
-                        continue;
-                    }
-                    ConfiguredIssueDetails {
-                        kind: AnalysisIssueKind::ParserCoverage,
-                        severity: Severity::Warning,
-                        message: t!("analysis.cfg_macro_identity_unknown")?,
-                    }
-                }
-            };
-            self.report(IssueRequest {
-                kind: kind.kind,
-                severity: kind.severity,
-                message: kind.message,
-                span: scope.source.source().span(issue.start(), issue.end()).ok(),
-                namespace: Some(ScopeSupport::module_namespace(&scope.namespace)),
-                cfg_condition: issue.effective_condition().map(str::to_owned),
-            });
-        }
-        Ok(())
-    }
-
-    fn report(&mut self, issue: IssueRequest) {
-        let mut diagnostic = Diagnostic::analysis(issue.kind, issue.severity, issue.message)
-            .with_package(self.package.name())
-            .with_package_manifest_path(self.package.manifest_path())
-            .with_target(self.target.name())
-            .with_target_kind(self.target.kind().to_vec())
-            .with_target_triple(self.target.target_triple());
-        if let Some(span) = issue.span {
-            diagnostic = diagnostic.with_span(span);
-        }
-        if let Some(namespace) = issue.namespace {
-            diagnostic = diagnostic.with_namespace(namespace);
-        }
-        if let Some(condition) = issue.cfg_condition {
-            diagnostic = diagnostic.with_cfg_condition(condition);
-        }
-        self.diagnostics.push(diagnostic);
     }
 }

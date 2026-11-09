@@ -2,8 +2,8 @@ use std::{collections::BTreeMap, ops::Range};
 
 use cop_syntax::{
     AstNodeId, ExpressionSyntax, ExpressionSyntaxKind, GenericArgumentSyntax, ItemSyntaxKind,
-    PathSyntax, PatternSyntax, PatternSyntaxKind, SyntaxNode, SyntaxNodeKind, TraitBoundKind,
-    TraitBoundSyntax, TypeSyntax, TypeSyntaxKind, WherePredicateKind,
+    MacroInputStatus, PathSyntax, PatternSyntax, PatternSyntaxKind, SyntaxNode, SyntaxNodeKind,
+    TraitBoundKind, TraitBoundSyntax, TypeSyntax, TypeSyntaxKind, WherePredicateKind,
 };
 
 use crate::{CfgDecision, ModuleNode};
@@ -28,6 +28,16 @@ pub(super) struct RawReference {
     pub(super) glob: bool,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TypedSyntaxOwnership {
+    CurrentFragment,
+    Ancestor,
+    KnownMacroFragment,
+    OpaqueMacroInput,
+    CfgCandidateInput,
+    UnresolvedMacroInput,
+}
+
 #[derive(Clone, Debug, Default)]
 pub(super) struct SyntaxFactCollector {
     references: Vec<RawReference>,
@@ -49,7 +59,10 @@ impl SyntaxFactCollector {
         {
             return;
         }
-        if !has_typed_ancestor(module, node) {
+        if matches!(
+            typed_syntax_ownership(module, node),
+            TypedSyntaxOwnership::CurrentFragment | TypedSyntaxOwnership::KnownMacroFragment
+        ) {
             if let Some(expression) = node.expression_syntax() {
                 collect_expression_paths(expression, &mut self.references);
             }
@@ -174,27 +187,45 @@ impl SyntaxFactCollector {
     }
 }
 
-fn has_typed_ancestor(module: &ModuleNode, node: &SyntaxNode) -> bool {
+fn typed_syntax_ownership(module: &ModuleNode, node: &SyntaxNode) -> TypedSyntaxOwnership {
     let output = module.parse_output();
     let node_bounds = node.start()..node.end();
     let mut current = node.parent();
     while let Some(id) = current {
         let Some(ancestor) = output.node(id) else {
-            return false;
+            return TypedSyntaxOwnership::UnresolvedMacroInput;
         };
+        if ancestor.kind() == SyntaxNodeKind::MacroInput {
+            let status = ancestor
+                .parent()
+                .and_then(|parent| output.node(parent))
+                .and_then(SyntaxNode::macro_invocation)
+                .map(|invocation| invocation.input().status());
+            return match status {
+                Some(MacroInputStatus::KnownProfile(_)) => TypedSyntaxOwnership::KnownMacroFragment,
+                Some(MacroInputStatus::Opaque) => TypedSyntaxOwnership::OpaqueMacroInput,
+                Some(MacroInputStatus::CfgCandidate(_)) => TypedSyntaxOwnership::CfgCandidateInput,
+                None => TypedSyntaxOwnership::UnresolvedMacroInput,
+            };
+        }
         let has_typed_data = ancestor.expression_syntax().is_some()
             || ancestor.type_syntax().is_some()
             || ancestor.pattern_syntax().is_some()
             || ancestor.generic_parameter_syntax().is_some()
             || ancestor.where_predicate_syntax().is_some();
         if has_typed_data && ancestor.start() <= node.start() && node.end() <= ancestor.end() {
-            return !ancestor
+            return if ancestor
                 .expression_syntax()
-                .is_some_and(|expression| expression_body_omits_paths(expression, &node_bounds));
+                .is_some_and(|expression| expression_body_omits_paths(expression, &node_bounds))
+            {
+                TypedSyntaxOwnership::CurrentFragment
+            } else {
+                TypedSyntaxOwnership::Ancestor
+            };
         }
         current = ancestor.parent();
     }
-    false
+    TypedSyntaxOwnership::CurrentFragment
 }
 
 fn expression_body_omits_paths(expression: &ExpressionSyntax, node_bounds: &Range<usize>) -> bool {

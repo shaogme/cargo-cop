@@ -15,7 +15,7 @@ use crate::{
         SyntaxNodeData, SyntaxNodeKind,
     },
     recovery::Recovery,
-    Delimiter, SourceFile, Token, TokenKind,
+    Delimiter, MacroProfileBinding, SourceFile, Token, TokenKind,
 };
 
 pub(super) struct DeclarationParser;
@@ -27,6 +27,8 @@ pub(super) struct DeclarationInput<'a> {
     pub(super) parent: AstNodeId,
     pub(super) ast_nodes: &'a mut Vec<SyntaxNode>,
     pub(super) issues: &'a mut Vec<ParseIssue>,
+    pub(super) macro_profiles: &'a [MacroProfileBinding],
+    pub(super) defer_opaque_macro_diagnostics: bool,
 }
 
 struct DeclarationContext<'a> {
@@ -34,6 +36,8 @@ struct DeclarationContext<'a> {
     tokens: &'a [Token],
     ast_nodes: &'a mut Vec<SyntaxNode>,
     issues: &'a mut Vec<ParseIssue>,
+    macro_profiles: &'a [MacroProfileBinding],
+    defer_opaque_macro_diagnostics: bool,
 }
 
 impl DeclarationParser {
@@ -45,12 +49,16 @@ impl DeclarationParser {
             parent,
             ast_nodes,
             issues,
+            macro_profiles,
+            defer_opaque_macro_diagnostics,
         } = input;
         let mut context = DeclarationContext {
             source,
             tokens,
             ast_nodes,
             issues,
+            macro_profiles,
+            defer_opaque_macro_diagnostics,
         };
         let keyword = context
             .tokens
@@ -88,6 +96,8 @@ impl DeclarationParser {
                     parent,
                     expression_tree: false,
                     edition: None,
+                    macro_profiles: context.macro_profiles,
+                    defer_opaque_macro_diagnostics: context.defer_opaque_macro_diagnostics,
                 },
                 context.ast_nodes,
                 context.issues,
@@ -112,6 +122,8 @@ impl DeclarationParser {
                     parent,
                     expression_tree: false,
                     edition: None,
+                    macro_profiles: context.macro_profiles,
+                    defer_opaque_macro_diagnostics: context.defer_opaque_macro_diagnostics,
                 },
                 context.ast_nodes,
                 context.issues,
@@ -126,6 +138,8 @@ impl DeclarationParser {
                 parent,
                 expression_tree: false,
                 edition: None,
+                macro_profiles: context.macro_profiles,
+                defer_opaque_macro_diagnostics: context.defer_opaque_macro_diagnostics,
             },
             context.ast_nodes,
             context.issues,
@@ -152,6 +166,8 @@ impl DeclarationParser {
                     parent,
                     expression_tree: false,
                     edition: None,
+                    macro_profiles: context.macro_profiles,
+                    defer_opaque_macro_diagnostics: context.defer_opaque_macro_diagnostics,
                 },
                 context.ast_nodes,
                 context.issues,
@@ -166,6 +182,8 @@ impl DeclarationParser {
                 parent,
                 expression_tree: false,
                 edition: None,
+                macro_profiles: context.macro_profiles,
+                defer_opaque_macro_diagnostics: context.defer_opaque_macro_diagnostics,
             },
             context.ast_nodes,
             context.issues,
@@ -241,6 +259,8 @@ impl DeclarationParser {
                         parent: variant_id,
                         expression_tree: false,
                         edition: None,
+                        macro_profiles: context.macro_profiles,
+                        defer_opaque_macro_diagnostics: context.defer_opaque_macro_diagnostics,
                     },
                     context.ast_nodes,
                     context.issues,
@@ -337,6 +357,8 @@ impl DeclarationParser {
                         parent: field_id,
                         expression_tree: false,
                         edition: None,
+                        macro_profiles: context.macro_profiles,
+                        defer_opaque_macro_diagnostics: context.defer_opaque_macro_diagnostics,
                     },
                     context.ast_nodes,
                     context.issues,

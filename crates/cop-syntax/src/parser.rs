@@ -16,25 +16,37 @@ use cop_i18n::{t, RenderError};
 
 use crate::{
     ast::{
-        AstFactory, AstNodeId, AttributeMeta, AttributeMetaKind, ParseIssue, ParseIssueKind,
-        ParseOutput, ParseOutputParts, SyntaxNode, SyntaxNodeKind,
+        AstFactory, AstNodeId, AttributeMeta, AttributeMetaKind, ParseIssue, ParseIssueCode,
+        ParseIssueKind, ParseOutput, ParseOutputParts, SyntaxNode, SyntaxNodeKind,
     },
     recovery::Recovery,
-    RustEdition, RustLexer, SourceFile,
+    MacroProfileBinding, RustEdition, RustLexer, SourceFile,
 };
 
 use self::items::{Parser, ParserInput};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// Controls syntax parsing and supplies any identities resolved by a caller.
+///
+/// Without bindings, macro inputs are retained as opaque token trees.
 pub struct ParseOptions {
     edition: String,
+    macro_profiles: Vec<MacroProfileBinding>,
 }
 
 impl ParseOptions {
+    /// Create parser options for a Rust edition.
     pub fn new(edition: impl Into<String>) -> Self {
         Self {
             edition: edition.into(),
+            macro_profiles: Vec::new(),
         }
+    }
+
+    /// Attach identity-resolved macro profiles to the calls at these source ranges.
+    pub fn with_macro_profiles(mut self, bindings: Vec<MacroProfileBinding>) -> Self {
+        self.macro_profiles = bindings;
+        self
     }
 
     pub fn edition(&self) -> &str {
@@ -55,7 +67,27 @@ impl Default for ParseOptions {
 pub struct RustParser;
 
 impl RustParser {
+    /// Parse a source file, applying only the explicitly supplied macro profiles.
     pub fn parse(source: SourceFile, options: ParseOptions) -> Result<ParseOutput, RenderError> {
+        Self::parse_with_diagnostic_policy(source, options, false)
+    }
+
+    /// Parse module structure before macro identities are available.
+    ///
+    /// Macro inputs stay opaque and their final coverage diagnostics are deferred until a
+    /// caller reparses with identity-resolved profile bindings.
+    pub fn parse_structure(
+        source: SourceFile,
+        options: ParseOptions,
+    ) -> Result<ParseOutput, RenderError> {
+        Self::parse_with_diagnostic_policy(source, options.with_macro_profiles(Vec::new()), true)
+    }
+
+    fn parse_with_diagnostic_policy(
+        source: SourceFile,
+        options: ParseOptions,
+        defer_opaque_macro_diagnostics: bool,
+    ) -> Result<ParseOutput, RenderError> {
         let edition = options.rust_edition();
         let lexed = RustLexer::lex_for_edition(&source, edition)?;
         let mut issues = lexed
@@ -79,6 +111,8 @@ impl RustParser {
                 cursor: 0,
                 issues,
                 ast_nodes,
+                macro_profiles: &options.macro_profiles,
+                defer_opaque_macro_diagnostics,
             });
             let scope = parser.parse_items(false, root_id);
             let (parsed_nodes, parsed_issues) = parser.into_parts();
@@ -97,6 +131,9 @@ impl RustParser {
             Self::record_unsafe_attribute_issues(&ast_nodes, &mut issues);
         }
         issues.extend(Recovery::delimiter_issues(lexed.tokens()));
+        if defer_opaque_macro_diagnostics {
+            issues.retain(|issue| issue.code() != ParseIssueCode::OpaqueMacroInput);
+        }
         issues.sort_by(|left, right| {
             left.start()
                 .cmp(&right.start())

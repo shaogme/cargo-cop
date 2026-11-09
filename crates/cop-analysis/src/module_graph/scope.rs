@@ -1,5 +1,6 @@
 use std::{
     borrow::Cow,
+    collections::BTreeSet,
     fs::canonicalize,
     path::{Path, PathBuf},
     sync::Arc,
@@ -9,7 +10,7 @@ use cop_model::{AnalysisIssueKind, Severity, SourceSpan};
 use cop_syntax::{AstNodeId, ItemSyntaxKind, ParseOutput, SyntaxNode, SyntaxNodeKind};
 
 use super::lint_attributes::ConfiguredAttribute;
-use crate::{ConfiguredAstIssue, ConfiguredAttributeEvaluation};
+use crate::{ConfiguredAst, ConfiguredAstIssue, ConfiguredAttributeEvaluation};
 
 pub(super) struct ModuleScope {
     pub(super) file_path: PathBuf,
@@ -24,12 +25,16 @@ pub(super) struct ModuleScope {
     pub(super) is_inline: bool,
     pub(super) active: bool,
     pub(super) no_implicit_prelude: bool,
+    pub(super) macro_use_context: bool,
+    pub(super) inherited_macro_definitions: BTreeSet<String>,
+    pub(super) source_instance: usize,
     pub(super) scope_id: AstNodeId,
     pub(super) source: Arc<ParseOutput>,
 }
 
 pub(super) struct ModuleVisit<'a> {
     pub(super) scope: &'a ModuleScope,
+    pub(super) configured_ast: &'a ConfiguredAst,
     pub(super) item: &'a SyntaxNode,
     pub(super) name: &'a str,
     pub(super) inline: bool,

@@ -15,12 +15,12 @@ pub use ast::{
     ForeignFunctionSafety, ForeignItemSyntaxData, ForeignItemSyntaxKind,
     FunctionTraitArgumentsSyntax, GenericArgumentSyntax, GenericParameterKind,
     GenericParameterSyntax, ImplSyntaxData, ItemSyntaxData, ItemSyntaxKind, MacroDefinition,
-    MacroInput, MacroInputStatus, MacroInvocation, MacroTokenTree, ParseIssue, ParseIssueCode,
-    ParseIssueKind, ParseOutput, PathSegmentSyntax, PathSyntax, PatternFieldSyntax, PatternSyntax,
-    PatternSyntaxKind, StatementSyntaxKind, SyntaxNode, SyntaxNodeData, SyntaxNodeKind,
-    TraitBoundKind, TraitBoundSyntax, TypeSyntax, TypeSyntaxKind, UnaryOperator,
-    UnsupportedConstructKind, UseTreeSyntaxData, Visibility, VisibilityKind, WhereClauseSyntax,
-    WherePredicateKind, WherePredicateSyntax,
+    MacroInput, MacroInputStatus, MacroInvocation, MacroProfileBinding, MacroProfileKey,
+    MacroTokenTree, ParseIssue, ParseIssueCode, ParseIssueKind, ParseOutput, PathSegmentSyntax,
+    PathSyntax, PatternFieldSyntax, PatternSyntax, PatternSyntaxKind, StatementSyntaxKind,
+    SyntaxNode, SyntaxNodeData, SyntaxNodeKind, TraitBoundKind, TraitBoundSyntax, TypeSyntax,
+    TypeSyntaxKind, UnaryOperator, UnsupportedConstructKind, UseTreeSyntaxData, Visibility,
+    VisibilityKind, WhereClauseSyntax, WherePredicateKind, WherePredicateSyntax,
 };
 pub use lexer::{
     Delimiter, LexIssue, LexOutput, LiteralKind, RustEdition, RustLexer, Token, TokenKind, Trivia,

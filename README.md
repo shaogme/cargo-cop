@@ -15,7 +15,7 @@ The project provides 23 configurable rules, human-readable and JSON reports, and
 - Source conventions represented by the rule catalog below.
 - Human-readable or JSON diagnostics, with stable rule IDs and source locations.
 
-`cargo-cop` uses its own lexer, parser, module analysis, and symbol index. After parsing and `cfg` configuration, `cop-analysis` enumerates each module instance's AST nodes once, collecting symbols and local bindings, references, API declaration ranges, impl ownership, coverage regions, and module syntax facts in the same pass. It resolves paths and builds API dependency indexes after the pass, then exposes them through an immutable `AnalysisFacts` snapshot. Semantic and structural rules query these facts for path resolution, item scopes, imports, fields, and syntax shapes. It is not a replacement for `rustc` or Clippy and does not compile the checked project. It does not execute build scripts or expand macros. An `include!`, an item macro that may declare modules, an unknown `cfg`, or unsupported Rust syntax can therefore produce a partial or incomplete scan result. Check the reported status when using the result as a CI gate.
+`cargo-cop` uses its own lexer, parser, module analysis, and symbol index. It first parses structure and configures modules and `cfg` for each target, then resolves a conservative set of supported macro identities per module instance and reparses only explicitly bound macro profiles. `cop-analysis` enumerates the resulting AST to collect symbols and local bindings, references, API declaration ranges, impl ownership, coverage regions, and module syntax facts before building path and API dependency indexes in an immutable `AnalysisFacts` snapshot. Semantic and structural rules query these facts for path resolution, item scopes, imports, fields, and syntax shapes. The standalone `cop-syntax` parser does not infer a profile from a macro's final path segment; callers must provide identity-resolved bindings. Unknown identities, unsupported profiles, and profile inputs the parser cannot recognize remain opaque and can make coverage partial. The analyzer currently binds supported standard macro identities, including explicit standard paths, imports, and crate re-exports; third-party profiles without a confirmed owner remain opaque. Macro inputs are never expanded. The tool is not a replacement for `rustc` or Clippy and does not compile the checked project or execute build scripts. An `include!`, an item macro that may declare modules, an unknown `cfg`, or unsupported Rust syntax can therefore produce a partial or incomplete scan result. Check the reported status when using the result as a CI gate.
 
 ## Requirements
 
@@ -56,7 +56,7 @@ steps:
   - uses: actions/checkout@main
   - uses: shaogme/cargo-cop@main
     with:
-      version: 0.3.11
+      version: 0.3.12
   - run: cargo cop --workspace
 ```
 
@@ -67,7 +67,7 @@ steps:
   - uses: actions/checkout@main
   - uses: shaogme/cargo-cop@main
     with:
-      version: 0.3.11
+      version: 0.3.12
       from-source: true
   - run: cargo cop --workspace
 ```
