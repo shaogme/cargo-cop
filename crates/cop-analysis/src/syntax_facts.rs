@@ -1,7 +1,8 @@
 use std::{collections::BTreeMap, ops::Range};
 
 use cop_syntax::{
-    AstNodeId, ExpressionSyntaxKind, ItemSyntaxKind, SyntaxNode, SyntaxNodeKind, VisibilityKind,
+    AstNodeId, ExpressionSyntaxKind, ItemSyntaxKind, ParseOutput, SyntaxNode, SyntaxNodeKind,
+    VisibilityKind,
 };
 
 use crate::{CfgDecision, ModuleNode, SymbolVisibility};
@@ -72,6 +73,7 @@ pub struct ShapeParameterFact {
 pub struct BlockItemFact {
     bounds: Range<usize>,
     condition: Option<String>,
+    enabled: bool,
     use_tree: bool,
     supported: bool,
     nested_cfg_ranges: Vec<Range<usize>>,
@@ -234,6 +236,10 @@ impl BlockItemFact {
 
     pub fn condition(&self) -> Option<&str> {
         self.condition.as_deref()
+    }
+
+    pub fn is_enabled(&self) -> bool {
+        self.enabled
     }
 
     pub fn is_use_tree(&self) -> bool {
@@ -437,14 +443,9 @@ impl SyntaxFactsCollector {
                 .children()
                 .iter()
                 .filter_map(|id| output.node(*id))
-                .filter(|child| node_is_enabled(module, child))
+                .filter(|child| node_is_enabled(module, child) || is_use_statement(output, child))
                 .map(|child| {
-                    let use_tree = child.kind() == SyntaxNodeKind::Statement
-                        && child.children().iter().any(|id| {
-                            output
-                                .node(*id)
-                                .is_some_and(|tree| tree.kind() == SyntaxNodeKind::UseTree)
-                        });
+                    let use_tree = is_use_statement(output, child);
                     (
                         child.id(),
                         BlockItemFact {
@@ -454,6 +455,7 @@ impl SyntaxFactsCollector {
                                 .node(child.id())
                                 .and_then(|configured| configured.availability_condition())
                                 .map(str::to_owned),
+                            enabled: node_is_enabled(module, child),
                             use_tree,
                             supported: use_tree
                                 && module.configured_ast().is_supported_range(
@@ -754,6 +756,15 @@ fn inside_function(module: &ModuleNode, node: &SyntaxNode) -> bool {
         current = ancestor.parent();
     }
     false
+}
+
+fn is_use_statement(output: &ParseOutput, node: &SyntaxNode) -> bool {
+    node.kind() == SyntaxNodeKind::Statement
+        && node.children().iter().any(|id| {
+            output
+                .node(*id)
+                .is_some_and(|tree| tree.kind() == SyntaxNodeKind::UseTree)
+        })
 }
 
 fn node_is_enabled(module: &ModuleNode, node: &SyntaxNode) -> bool {

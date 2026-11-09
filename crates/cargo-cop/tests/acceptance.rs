@@ -17,6 +17,7 @@ use cop_cargo::{
     CargoDiscoveryRequest, CargoProjectLoader, CargoSelection, FeatureSelection, TargetSelector,
 };
 use cop_config::{ConfigLoader, ConfigRequest};
+use cop_model::{AnalysisIssueKind, DiagnosticKind};
 use cop_syntax::{MacroInputStatus, MacroProfileKey};
 
 static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
@@ -36,6 +37,12 @@ struct ExpectedPathDiagnostic {
     start_column: usize,
     end_column: usize,
     expected_path: &'static str,
+}
+
+struct ModulePathExpectation {
+    parent: &'static str,
+    child: &'static str,
+    path: &'static str,
 }
 
 struct VisibilityExcerpt<'a> {
@@ -2382,8 +2389,7 @@ fn stops_recursive_module_file_cycles_without_losing_sibling_contexts() {
         "src/lib.rs",
         "#[path = \"a.rs\"] mod first;\n#[path = \"a.rs\"] mod second;\n",
     );
-    fixture.write("src/a.rs", "#[path = \"../a.rs\"] mod nested;\n");
-    fs::create_dir_all(fixture.root.join("src/a")).expect("创建循环模块的相对目录");
+    fixture.write("src/a.rs", "#[path = \"../src/a.rs\"] mod nested;\n");
 
     let output = fixture.run(&["--format", "json"]);
 
@@ -6036,7 +6042,56 @@ fn activates_renamed_optional_dependencies_only_when_requested() {
 }
 
 #[test]
-fn resolves_cfg_attr_paths_from_the_out_of_line_module_directory() {
+fn resolves_path_attributes_relative_to_the_current_source_file() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write("src/lib.rs", "mod parent;\n");
+    fixture.write("src/parent.rs", "#[path = \"a.rs\"] mod child;\n");
+    fixture.write("src/a.rs", "fn source_file_sibling() {}\n");
+    fixture.write("src/parent/a.rs", "fn module_directory_child() {}\n");
+
+    let snapshot = analyze_fixture(&fixture);
+    let child = snapshot
+        .modules()
+        .iter()
+        .find(|module| module.namespace() == ["parent", "child"])
+        .expect("path 属性指定的子模块");
+
+    assert_eq!(child.file_path(), fixture.root.join("src/a.rs"));
+}
+
+#[test]
+fn resolves_root_path_attributes_from_a_custom_root_file() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "Cargo.toml",
+        &format!(
+            "{}\n[lib]\npath = \"src/custom_root.rs\"\n",
+            package_manifest("sample")
+        ),
+    );
+    fixture.write(
+        "src/custom_root.rs",
+        "#[path = \"selected.rs\"] mod child;\n",
+    );
+    fixture.write("src/selected.rs", "fn selected_from_root_directory() {}\n");
+    fixture.write(
+        "src/custom_root/selected.rs",
+        "fn legacy_root_directory() {}\n",
+    );
+
+    let snapshot = analyze_fixture(&fixture);
+    let child = snapshot
+        .modules()
+        .iter()
+        .find(|module| module.namespace() == ["child"])
+        .expect("自定义 crate root 的 path 模块");
+
+    assert_eq!(child.file_path(), fixture.root.join("src/selected.rs"));
+}
+
+#[test]
+fn resolves_cfg_attr_paths_from_the_source_file_directory() {
     let fixture = Fixture::new();
     fixture.write(
         "Cargo.toml",
@@ -6047,27 +6102,219 @@ fn resolves_cfg_attr_paths_from_the_out_of_line_module_directory() {
         "src/outer.rs",
         "#[cfg_attr(feature = \"selected\", path = \"children/selected.rs\" /* 忽略注释中的分隔符 / Delimiters in this comment are ignored, ) */)]\nmod logical;\n",
     );
-    fixture.write("src/outer/logical.rs", "pub fn default_path() {}\n");
-    fixture.write(
-        "src/outer/children/selected.rs",
-        "pub fn selected_path() {}\n",
-    );
+    fixture.write("src/logical.rs", "pub fn default_path() {}\n");
+    fixture.write("src/outer/logical.rs", "pub fn legacy_path() {}\n");
+    fixture.write("src/children/selected.rs", "pub fn selected_path() {}\n");
 
     let default_path = fixture.run(&["--format", "json"]);
     let selected_path = fixture.run(&["--format", "json", "--features", "selected"]);
     assert_eq!(default_path.status, 1, "{}", default_path.stderr);
-    assert!(default_path.stdout.contains("src/outer/logical.rs"));
+    assert!(default_path.stdout.contains("src/logical.rs"));
+    assert!(!default_path.stdout.contains("src/outer/logical.rs"));
     assert!(default_path.stdout.contains("crate::outer::logical"));
     assert_eq!(
         selected_path.status, 1,
         "{} {}",
         selected_path.stderr, selected_path.stdout
     );
-    assert!(selected_path
-        .stdout
-        .contains("src/outer/children/selected.rs"));
+    assert!(selected_path.stdout.contains("src/children/selected.rs"));
     assert!(selected_path.stdout.contains("crate::outer::logical"));
     assert!(!selected_path.stdout.contains("missing_module"));
+}
+
+#[test]
+fn resolves_inline_path_modules_from_the_declared_directory() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "src/lib.rs",
+        "#[path = \"thread_files\"] mod thread { #[path = \"tls.rs\"] mod local_data; mod child; }\n#[cfg_attr(all(), path = \"configured_files\")] mod configured { mod child; }\n",
+    );
+    fixture.write("src/thread_files/tls.rs", "fn selected_tls() {}\n");
+    fixture.write("src/thread_files/child.rs", "fn selected_child() {}\n");
+    fixture.write("src/thread/tls.rs", "fn legacy_tls() {}\n");
+    fixture.write("src/thread/child.rs", "fn legacy_child() {}\n");
+    fixture.write(
+        "src/configured_files/child.rs",
+        "fn selected_configured_child() {}\n",
+    );
+    fixture.write(
+        "src/configured/child.rs",
+        "fn legacy_configured_child() {}\n",
+    );
+
+    let snapshot = analyze_fixture(&fixture);
+    let local_data = snapshot
+        .modules()
+        .iter()
+        .find(|module| module.namespace() == ["thread", "local_data"])
+        .expect("inline path 中的显式外部模块");
+    let child = snapshot
+        .modules()
+        .iter()
+        .find(|module| module.namespace() == ["thread", "child"])
+        .expect("inline path 中的默认外部模块");
+    let configured_child = snapshot
+        .modules()
+        .iter()
+        .find(|module| module.namespace() == ["configured", "child"])
+        .expect("cfg_attr inline path 中的默认外部模块");
+
+    assert_eq!(
+        local_data.file_path(),
+        fixture.root.join("src/thread_files/tls.rs")
+    );
+    assert_eq!(
+        child.file_path(),
+        fixture.root.join("src/thread_files/child.rs")
+    );
+    assert_eq!(
+        configured_child.file_path(),
+        fixture.root.join("src/configured_files/child.rs")
+    );
+}
+
+#[test]
+fn resolves_inline_block_path_from_a_regular_source_file_module_directory() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write("src/lib.rs", "mod regular;\n");
+    fixture.write(
+        "src/regular.rs",
+        "mod inner { #[path = \"selected.rs\"] mod leaf; }\n",
+    );
+    fixture.write(
+        "src/regular/inner/selected.rs",
+        "fn selected_from_inline_module_directory() {}\n",
+    );
+    fixture.write(
+        "src/regular/selected.rs",
+        "fn legacy_source_file_directory() {}\n",
+    );
+    fixture.write(
+        "src/regular/inner/leaf/selected.rs",
+        "fn legacy_leaf_module_directory() {}\n",
+    );
+
+    let snapshot = analyze_fixture(&fixture);
+    let leaf = snapshot
+        .modules()
+        .iter()
+        .find(|module| module.namespace() == ["regular", "inner", "leaf"])
+        .expect("普通 .rs 文件中 inline 块内的显式 path 模块");
+
+    assert_eq!(
+        leaf.file_path(),
+        fixture.root.join("src/regular/inner/selected.rs")
+    );
+}
+
+#[test]
+fn resolves_default_module_directories_from_each_module_source_kind() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write("src/lib.rs", "mod regular;\nmod grouped;\n#[path = \"named.rs\"] mod logical;\n#[path = \"same.rs\"] mod same;\n");
+    fixture.write("src/regular.rs", "mod child;\nmod inline { mod nested; }\n");
+    fixture.write("src/regular/child.rs", "fn regular_child() {}\n");
+    fixture.write("src/regular/inline/nested.rs", "fn inline_child() {}\n");
+    fixture.write("src/grouped/mod.rs", "mod child;\n");
+    fixture.write("src/grouped/child.rs", "fn grouped_child() {}\n");
+    fixture.write(
+        "src/grouped/grouped/child.rs",
+        "fn legacy_grouped_child() {}\n",
+    );
+    fixture.write("src/named.rs", "mod child;\n");
+    fixture.write("src/same.rs", "mod child;\n");
+    fixture.write("src/child.rs", "fn path_loaded_child() {}\n");
+    fixture.write("src/logical/child.rs", "fn legacy_logical_child() {}\n");
+    fixture.write("src/same/child.rs", "fn legacy_same_child() {}\n");
+
+    let snapshot = analyze_fixture(&fixture);
+    let expected = [
+        ModulePathExpectation {
+            parent: "regular",
+            child: "child",
+            path: "src/regular/child.rs",
+        },
+        ModulePathExpectation {
+            parent: "regular",
+            child: "inline::nested",
+            path: "src/regular/inline/nested.rs",
+        },
+        ModulePathExpectation {
+            parent: "grouped",
+            child: "child",
+            path: "src/grouped/child.rs",
+        },
+        ModulePathExpectation {
+            parent: "logical",
+            child: "child",
+            path: "src/child.rs",
+        },
+        ModulePathExpectation {
+            parent: "same",
+            child: "child",
+            path: "src/child.rs",
+        },
+    ];
+    for expectation in expected {
+        let namespace = format!("{}::{}", expectation.parent, expectation.child);
+        let module = snapshot
+            .modules()
+            .iter()
+            .find(|module| module.namespace().join("::") == namespace)
+            .unwrap_or_else(|| panic!("模块 {namespace}"));
+        assert_eq!(module.file_path(), fixture.root.join(expectation.path));
+    }
+}
+
+#[test]
+fn unknown_inline_path_does_not_guess_but_absolute_paths_restore_context() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    let absolute_file = fixture.root.join("absolute/selected.rs");
+    let absolute_file_literal = format!("{absolute_file:?}");
+    fixture.write(
+        "src/lib.rs",
+        &format!(
+            "#[cfg_attr(mystery_path, path = \"unknown_dir\")] mod dynamic {{ mod guessed; #[path = {absolute_file_literal}] mod recovered; }}\n"
+        ),
+    );
+    fixture.write("src/unknown_dir/guessed.rs", "fn guessed_from_path() {}\n");
+    fixture.write("src/dynamic/guessed.rs", "fn guessed_from_name() {}\n");
+    fixture.write("absolute/selected.rs", "mod restored;\n");
+    fixture.write(
+        "absolute/restored.rs",
+        "fn restored_from_absolute_path() {}\n",
+    );
+
+    let snapshot = analyze_fixture(&fixture);
+    assert!(snapshot.status().is_partial());
+    assert!(snapshot
+        .modules()
+        .iter()
+        .any(|module| module.namespace() == ["dynamic"]));
+    assert!(snapshot
+        .modules()
+        .iter()
+        .any(|module| module.namespace() == ["dynamic", "recovered"]
+            && module.file_path() == absolute_file));
+    assert!(snapshot
+        .modules()
+        .iter()
+        .any(|module| module.namespace() == ["dynamic", "recovered", "restored"]));
+    assert!(!snapshot
+        .modules()
+        .iter()
+        .any(|module| module.namespace() == ["dynamic", "guessed"]));
+    assert!(!snapshot.diagnostics().iter().any(|diagnostic| matches!(
+        diagnostic.kind(),
+        DiagnosticKind::Analysis(AnalysisIssueKind::MissingModule)
+    )));
+    assert!(snapshot.diagnostics().iter().any(|diagnostic| matches!(
+        diagnostic.kind(),
+        DiagnosticKind::Analysis(AnalysisIssueKind::UnknownCfg)
+    )));
 }
 
 #[test]
@@ -7114,6 +7361,96 @@ fn separates_cfg_import_groups_from_unconditional_imports() {
     let separated = fixture.run(&["--format", "json", "--features", "enabled,other"]);
     assert_eq!(separated.status, 0, "{}", separated.stdout);
     assert!(!separated.has_rule("cfg_use_group_spacing"));
+}
+
+#[test]
+fn skips_spacing_checks_across_target_disabled_import_groups() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "src/lib.rs",
+        "#[cfg(any(target_os = \"linux\", target_os = \"android\"))]\nuse std::fmt::Debug;\n\n#[cfg(target_os = \"windows\")]\nuse std::fmt::Display;\n\nuse std::fmt::Write;\n",
+    );
+
+    let output = fixture.run(&["--format", "json", "--target", "x86_64-unknown-linux-gnu"]);
+
+    assert_eq!(output.status, 0, "{}", output.stdout);
+    assert!(!output.has_rule("cfg_use_group_spacing"));
+}
+
+#[test]
+fn skips_block_spacing_checks_across_target_disabled_import_groups() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "src/lib.rs",
+        "fn body() {\n    #[cfg(any(target_os = \"linux\", target_os = \"android\"))]\n    use std::fmt::Debug;\n\n    #[cfg(target_os = \"windows\")]\n    use std::fmt::Display;\n\n    use std::fmt::Write;\n}\n",
+    );
+
+    let output = fixture.run(&["--format", "json", "--target", "x86_64-unknown-linux-gnu"]);
+
+    assert_eq!(output.status, 0, "{}", output.stdout);
+    assert!(!output.has_rule("cfg_use_group_spacing"));
+}
+
+#[test]
+fn checks_block_cfg_import_spacing_without_disabled_boundaries() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    for (separator, expected_count) in [("", 1), ("\n", 0), ("\n\n", 1)] {
+        fixture.write(
+            "src/lib.rs",
+            &format!(
+                "fn body() {{\n    #[cfg(target_os = \"linux\")]\n    use std::fmt::Debug;{separator}\n    use std::fmt::Display;\n}}\n"
+            ),
+        );
+
+        let output = fixture.run(&["--format", "json", "--target", "x86_64-unknown-linux-gnu"]);
+        let diagnostics = rule_diagnostics(&output, "cfg_use_group_spacing");
+
+        assert_eq!(diagnostics.len(), expected_count, "{}", output.stdout);
+        if separator == "\n\n" {
+            assert!(diagnostic_message(&diagnostics[0]).contains("found 2 blank lines"));
+        }
+    }
+}
+
+#[test]
+fn reports_repeated_available_cfg_import_groups() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "Cargo.toml",
+        "[package]\nname = \"sample\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[features]\nalpha = []\nbeta = []\n",
+    );
+    fixture.write(
+        "src/lib.rs",
+        "#[cfg(feature = \"alpha\")]\nuse std::fmt::Debug;\n\n#[cfg(feature = \"beta\")]\nuse std::fmt::Display;\n\n#[cfg(feature = \"alpha\")]\nuse std::fmt::Write;\n\nfn body() {\n    #[cfg(feature = \"alpha\")]\n    use std::path::Path;\n\n    #[cfg(feature = \"beta\")]\n    use std::path::PathBuf;\n\n    #[cfg(feature = \"alpha\")]\n    use std::path::Component;\n}\n",
+    );
+
+    let output = fixture.run(&["--format", "json", "--features", "alpha,beta"]);
+    let split_diagnostics = rule_diagnostics(&output, "cfg_use_group_spacing")
+        .into_iter()
+        .filter(|diagnostic| {
+            diagnostic_message(diagnostic).contains("is split by another import group")
+        })
+        .count();
+
+    assert_eq!(split_diagnostics, 2, "{}", output.stdout);
+}
+
+#[test]
+fn ignores_target_disabled_imports_when_checking_cfg_group_splits() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "src/lib.rs",
+        "#[cfg(target_os = \"linux\")]\nuse std::fmt::Debug;\n\n#[cfg(target_os = \"windows\")]\nuse std::fmt::Display;\n\n#[cfg(target_os = \"linux\")]\nuse core::cmp::Eq;\n\nfn body() {\n    #[cfg(target_os = \"linux\")]\n    use std::path::Path;\n\n    #[cfg(target_os = \"windows\")]\n    use std::path::PathBuf;\n\n    #[cfg(target_os = \"linux\")]\n    use core::marker::Copy;\n}\n",
+    );
+
+    let output = fixture.run(&["--format", "json", "--target", "x86_64-unknown-linux-gnu"]);
+
+    assert_eq!(output.status, 0, "{}", output.stdout);
+    assert!(!output.has_rule("cfg_use_group_spacing"));
 }
 
 #[test]

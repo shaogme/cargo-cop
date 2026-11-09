@@ -5,6 +5,7 @@ use std::{
 
 use cop_analysis::{AnalysisFacts, CfgCondition, CfgDecision, ItemFact, ItemKindFact, ModuleNode};
 use cop_config::ResolvedConfig;
+use cop_i18n::{t, PluralCount, RenderError};
 use cop_model::{Diagnostic, RuleId, SourceSpan};
 use cop_syntax::{ParseOutput, TriviaKind};
 
@@ -27,6 +28,13 @@ pub(super) struct UseLeaf {
     pub(super) condition: Option<String>,
 }
 
+pub(super) struct CfgImportSpacingFact {
+    bounds: Range<usize>,
+    condition: Option<String>,
+    enabled: bool,
+    use_item: bool,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SpacingDefinitionKind {
     Struct,
@@ -41,6 +49,22 @@ enum SpacingDefinitionKind {
 }
 
 pub(super) struct SyntaxSupport;
+
+impl CfgImportSpacingFact {
+    pub(super) fn new(
+        bounds: Range<usize>,
+        condition: Option<String>,
+        enabled: bool,
+        use_item: bool,
+    ) -> Self {
+        Self {
+            bounds,
+            condition,
+            enabled,
+            use_item,
+        }
+    }
+}
 
 impl SyntaxSupport {
     pub(super) fn conditions_may_coexist_all(conditions: &[Option<&str>]) -> bool {
@@ -209,6 +233,48 @@ impl SyntaxSupport {
             | (SpacingDefinitionKind::TypeAlias, SpacingDefinitionKind::TypeAlias) => 0..=1,
             _ => 1..=1,
         })
+    }
+
+    pub(super) fn check_cfg_import_spacing(
+        output: &ParseOutput,
+        facts: &[CfgImportSpacingFact],
+        module: &ModuleNode,
+        diagnostics: &mut Vec<Diagnostic>,
+        adapter: &RuleDiagnosticAdapter<'_>,
+    ) -> Result<(), RenderError> {
+        let mut previous: Option<(Range<usize>, String)> = None;
+        for fact in facts {
+            if !fact.use_item {
+                if fact.enabled {
+                    previous = None;
+                }
+                continue;
+            }
+            if !fact.enabled {
+                previous = None;
+                continue;
+            }
+            let condition = fact.condition.as_deref().unwrap_or("all()").to_owned();
+            if let Some((previous_bounds, previous_condition)) = &previous {
+                if previous_condition != &condition {
+                    let blank_lines =
+                        Self::blank_lines_between(output, previous_bounds.end, fact.bounds.start);
+                    if blank_lines != 1 {
+                        adapter.push(
+                            module,
+                            diagnostics,
+                            RuleReport::new(
+                                RuleId::CfgUseGroupSpacing,
+                                t!("rule.cfg_use_group_spacing", { empty_lines: PluralCount::new((blank_lines as i64) as u64) })?,
+                                Some(fact.bounds.clone()),
+                            ),
+                        );
+                    }
+                }
+            }
+            previous = Some((fact.bounds.clone(), condition));
+        }
+        Ok(())
     }
 
     pub(super) fn use_facts(

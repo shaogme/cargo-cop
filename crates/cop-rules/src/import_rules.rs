@@ -1,6 +1,6 @@
 mod block_imports;
 
-use cop_i18n::{t, PluralCount, RenderError};
+use cop_i18n::{t, RenderError};
 use std::{collections::BTreeSet, ops::Range};
 
 use cop_analysis::{
@@ -10,7 +10,9 @@ use cop_config::ResolvedConfig;
 use cop_model::{Diagnostic, RuleId};
 use cop_syntax::ParseOutput;
 
-use crate::support::{RuleDiagnosticAdapter, RuleReport, SyntaxSupport, UseLeaf};
+use crate::support::{
+    CfgImportSpacingFact, RuleDiagnosticAdapter, RuleReport, SyntaxSupport, UseLeaf,
+};
 
 pub(super) struct ImportRuleSet;
 
@@ -261,11 +263,34 @@ impl ImportRuleSet {
         else {
             return Ok(());
         };
-        let mut previous: Option<(&ItemFact, String)> = None;
+        let spacing_facts = scope
+            .items()
+            .iter()
+            .map(|item| {
+                CfgImportSpacingFact::new(
+                    item.bounds(),
+                    item.condition().map(str::to_owned),
+                    item.is_enabled(),
+                    matches!(item.kind(), ItemKindFact::Use),
+                )
+            })
+            .collect::<Vec<_>>();
+        SyntaxSupport::check_cfg_import_spacing(
+            output,
+            &spacing_facts,
+            module,
+            diagnostics,
+            adapter,
+        )?;
+
+        let mut previous: Option<String> = None;
         let mut completed_groups = BTreeSet::new();
-        for item in scope.items().iter().filter(|item| item.is_enabled()) {
+        for item in scope.items() {
+            if !item.is_enabled() {
+                continue;
+            }
             if !matches!(item.kind(), ItemKindFact::Use) {
-                if let Some((_, previous_condition)) = previous.take() {
+                if let Some(previous_condition) = previous.take() {
                     completed_groups.insert(previous_condition);
                 }
                 continue;
@@ -282,8 +307,8 @@ impl ImportRuleSet {
                     ),
                 );
             }
-            if let Some((previous_item, previous_condition)) = previous {
-                if previous_condition != condition {
+            if let Some(previous_condition) = previous.as_ref() {
+                if previous_condition != &condition {
                     if completed_groups.contains(&condition) {
                         adapter.push(
                             module,
@@ -295,26 +320,10 @@ impl ImportRuleSet {
                             ),
                         );
                     }
-                    completed_groups.insert(previous_condition);
-                    let blank_lines = SyntaxSupport::blank_lines_between(
-                        output,
-                        previous_item.bounds().end,
-                        item.bounds().start,
-                    );
-                    if blank_lines != 1 {
-                        adapter.push(
-                            module,
-                            diagnostics,
-                            RuleReport::new(
-                                RuleId::CfgUseGroupSpacing,
-                                t!("rule.cfg_use_group_spacing", { empty_lines: PluralCount::new((blank_lines as i64) as u64) })?,
-                                Some(item.bounds()),
-                            ),
-                        );
-                    }
+                    completed_groups.insert(previous_condition.clone());
                 }
             }
-            previous = Some((item, condition));
+            previous = Some(condition);
         }
         Ok(())
     }

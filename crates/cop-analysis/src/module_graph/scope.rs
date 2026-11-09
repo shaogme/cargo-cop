@@ -2,6 +2,7 @@ use std::{
     borrow::Cow,
     collections::BTreeSet,
     fs::canonicalize,
+    ops::Range,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -12,16 +13,24 @@ use cop_syntax::{AstNodeId, ItemSyntaxKind, ParseOutput, SyntaxNode, SyntaxNodeK
 use super::lint_attributes::ConfiguredAttribute;
 use crate::{ConfiguredAst, ConfiguredAstIssue, ConfiguredAttributeEvaluation};
 
-pub(super) struct ModuleScope {
+pub(super) struct ResolvedModule {
     pub(super) file_path: PathBuf,
     pub(super) module_dir: PathBuf,
+}
+
+pub(super) struct PreviousScope {
+    pub(super) kind: SyntaxNodeKind,
+    pub(super) bounds: Range<usize>,
+}
+
+pub(super) struct ModuleScope {
+    pub(super) file_path: PathBuf,
+    pub(super) module_dir: Option<PathBuf>,
     pub(super) namespace: Vec<String>,
-    pub(super) inline_path: Vec<String>,
     pub(super) declared_at: Option<SourceSpan>,
     pub(super) cfg_condition: Option<String>,
     pub(super) source_cfg_condition: Option<String>,
     pub(super) is_root: bool,
-    pub(super) source_is_root: bool,
     pub(super) is_inline: bool,
     pub(super) active: bool,
     pub(super) no_implicit_prelude: bool,
@@ -159,23 +168,19 @@ impl ScopeSupport {
             .unwrap_or_else(|_| path.to_path_buf())
     }
 
-    pub(super) fn path_attribute_base(scope: &ModuleScope) -> PathBuf {
-        let mut base = scope
-            .file_path
-            .parent()
-            .unwrap_or(Path::new("."))
-            .to_path_buf();
-        if !scope.source_is_root
-            && scope
-                .file_path
-                .file_name()
-                .is_some_and(|name| name.to_string_lossy() != "mod.rs")
-        {
-            if let Some(stem) = scope.file_path.file_stem() {
-                base.push(stem);
-            }
+    pub(super) fn path_attribute_base(scope: &ModuleScope) -> Option<&Path> {
+        if scope.is_inline {
+            scope.module_dir.as_deref()
+        } else {
+            scope.file_path.parent()
         }
-        base.extend(scope.inline_path.iter());
-        base
+    }
+
+    pub(super) fn resolve_path_attribute(scope: &ModuleScope, path: &str) -> Option<PathBuf> {
+        let path = Path::new(path);
+        if path.is_absolute() {
+            return Some(Self::normalize_path(path));
+        }
+        Self::path_attribute_base(scope).map(|base| Self::normalize_path(&base.join(path)))
     }
 }

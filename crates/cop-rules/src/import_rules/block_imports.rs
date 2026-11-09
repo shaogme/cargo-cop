@@ -1,4 +1,4 @@
-use cop_i18n::{t, PluralCount, RenderError};
+use cop_i18n::{t, RenderError};
 use std::{collections::BTreeSet, ops::Range};
 
 use cop_analysis::{AnalysisSnapshot, BlockScopeFact, ModuleNode};
@@ -6,11 +6,13 @@ use cop_model::{Diagnostic, RuleId};
 
 use cop_syntax::ParseOutput;
 
-use crate::support::{RuleDiagnosticAdapter, RuleReport, SyntaxSupport, UseLeaf};
+use crate::support::{
+    CfgImportSpacingFact, RuleDiagnosticAdapter, RuleReport, SyntaxSupport, UseLeaf,
+};
 
 struct BlockImportRecord {
     bounds: Range<usize>,
-    condition: Option<String>,
+    condition: String,
     leaves: Vec<UseLeaf>,
 }
 
@@ -56,13 +58,24 @@ impl BlockScopeCheck<'_, '_> {
     ) -> Result<(), RenderError> {
         let mut preceding_non_imports = Vec::new();
         let mut imports = Vec::new();
+        let mut spacing_facts = Vec::new();
         for item in scope.items() {
             let condition = item.condition().map(str::to_owned);
             if !item.is_use_tree() {
                 preceding_non_imports.push(condition);
+                spacing_facts.push(CfgImportSpacingFact::new(
+                    item.bounds(),
+                    item.condition().map(str::to_owned),
+                    item.is_enabled(),
+                    false,
+                ));
                 continue;
             }
             let bounds = item.bounds();
+            if !item.is_enabled() {
+                spacing_facts.push(CfgImportSpacingFact::new(bounds, condition, false, true));
+                continue;
+            }
             use_tree_ranges.push(bounds.clone());
             if let Some(cfg_range) = item.nested_cfg_ranges().first() {
                 self.adapter.push(
@@ -89,16 +102,37 @@ impl BlockScopeCheck<'_, '_> {
                     ),
                 );
             }
-            if import_is_at_scope_start && item.is_supported() {
-                if let Some(import) =
-                    parse_block_import(self.snapshot, self.module, bounds, condition)
-                {
-                    imports.push(import);
-                }
+            let import = if import_is_at_scope_start && item.is_supported() {
+                parse_block_import(
+                    self.snapshot,
+                    self.module,
+                    bounds.clone(),
+                    condition.clone(),
+                )
+            } else {
+                None
+            };
+            if let Some(import) = import {
+                spacing_facts.push(CfgImportSpacingFact::new(
+                    import.bounds.clone(),
+                    Some(import.condition.clone()),
+                    true,
+                    true,
+                ));
+                imports.push(import);
+            } else {
+                spacing_facts.push(CfgImportSpacingFact::new(bounds, condition, true, false));
             }
         }
         check_block_common_prefixes(&imports, self.module, self.diagnostics, self.adapter)?;
-        check_block_cfg_spacing(&imports, self.module, self.diagnostics, self.adapter)?;
+        check_block_cfg_group_splits(&imports, self.module, self.diagnostics, self.adapter)?;
+        SyntaxSupport::check_cfg_import_spacing(
+            self.module.parse_output(),
+            &spacing_facts,
+            self.module,
+            self.diagnostics,
+            self.adapter,
+        )?;
         Ok(())
     }
 }
@@ -121,7 +155,7 @@ fn parse_block_import(
     .unwrap_or_else(|| "all()".to_owned());
     Some(BlockImportRecord {
         bounds,
-        condition: Some(condition),
+        condition,
         leaves,
     })
 }
@@ -134,11 +168,9 @@ fn check_block_common_prefixes(
 ) -> Result<(), RenderError> {
     for current_index in 1..imports.len() {
         let current = &imports[current_index];
-        let Some(condition) = current.condition.as_ref() else {
-            continue;
-        };
+        let condition = &current.condition;
         for previous in &imports[..current_index] {
-            if previous.condition.as_ref() != Some(condition) {
+            if previous.condition != *condition {
                 continue;
             }
             let Some(prefix) =
@@ -161,7 +193,7 @@ fn check_block_common_prefixes(
     Ok(())
 }
 
-fn check_block_cfg_spacing(
+fn check_block_cfg_group_splits(
     imports: &[BlockImportRecord],
     module: &ModuleNode,
     diagnostics: &mut Vec<Diagnostic>,
@@ -170,11 +202,7 @@ fn check_block_cfg_spacing(
     let mut previous: Option<&BlockImportRecord> = None;
     let mut completed_groups = BTreeSet::new();
     for import in imports {
-        let Some(condition) = import.condition.as_ref() else {
-            previous = None;
-            completed_groups.clear();
-            continue;
-        };
+        let condition = &import.condition;
         if previous.is_none() && completed_groups.contains(condition) {
             adapter.push(
                 module,
@@ -187,7 +215,7 @@ fn check_block_cfg_spacing(
             );
         }
         if let Some(previous_import) = previous {
-            let previous_condition = previous_import.condition.as_ref().unwrap_or(condition);
+            let previous_condition = &previous_import.condition;
             if previous_condition != condition {
                 if completed_groups.contains(condition) {
                     adapter.push(
@@ -201,22 +229,6 @@ fn check_block_cfg_spacing(
                     );
                 }
                 completed_groups.insert(previous_condition.clone());
-                let blank_lines = SyntaxSupport::blank_lines_between(
-                    module.parse_output(),
-                    previous_import.bounds.end,
-                    import.bounds.start,
-                );
-                if blank_lines != 1 {
-                    adapter.push(
-                        module,
-                        diagnostics,
-                        RuleReport::new(
-                            RuleId::CfgUseGroupSpacing,
-                            t!("rule.cfg_use_group_spacing", { empty_lines: PluralCount::new((blank_lines as i64) as u64) })?,
-                            Some(import.bounds.clone()),
-                        ),
-                    );
-                }
             }
         }
         previous = Some(import);
