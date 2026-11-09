@@ -106,6 +106,30 @@ fn keeps_decimal_float_forms_and_trailing_dot_member_boundaries() {
 }
 
 #[test]
+fn separates_chained_tuple_indices_from_float_and_range_tokens() {
+    let source = SourceFile::new(
+        "src/lib.rs",
+        "self.0.0 tuple.0.1.2 self . /* gap */ 0 . // gap\n 1 1.0.1 1..2 1...2 1.25 1.25e-3 1.0f64 1. 1.e3",
+    );
+    let lexed = RustLexer::lex(&source).expect("catalog messages render");
+    let token_texts = lexed
+        .tokens()
+        .iter()
+        .map(|token| token.text(&source))
+        .collect::<Vec<_>>();
+
+    assert!(lexed.issues().is_empty());
+    assert_eq!(
+        token_texts,
+        vec![
+            "self", ".", "0", ".", "0", "tuple", ".", "0", ".", "1", ".", "2", "self", ".", "0",
+            ".", "1", "1.0", ".", "1", "1", "..", "2", "1", "...", "2", "1.25", "1.25e-3",
+            "1.0f64", "1.", "1", ".", "e3",
+        ]
+    );
+}
+
+#[test]
 fn reports_unicode_columns_and_unclosed_lexical_constructs() {
     let source = SourceFile::new("src/lib.rs", "// 🧭\nfn ready() {}\n");
     let function_offset = source.text().find("fn ready").expect("函数位置");

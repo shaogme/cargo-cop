@@ -642,6 +642,12 @@ impl Scanner<'_> {
         if self.current_character() != Some('.') || self.peek_character(1) == Some('.') {
             return false;
         }
+        if matches!(
+            self.tokens.last().map(Token::kind),
+            Some(TokenKind::Punctuation(punctuation)) if punctuation == "."
+        ) {
+            return false;
+        }
         match self.peek_character(1) {
             Some(character) => !is_identifier_start(character),
             None => true,

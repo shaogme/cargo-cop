@@ -34,6 +34,69 @@ fn parses_method_calls_after_tuple_field_access() {
 }
 
 #[test]
+fn parses_chained_tuple_field_accesses() {
+    let source = "struct Inner(u8, u8); struct Outer(Inner); impl Outer { fn first(&self) -> u8 { self.0.0 } fn second(&self) -> u8 { self.0.1 } } fn main() {}";
+    let parsed = parse(source, "2021");
+
+    assert_eq!(
+        parsed.coverage(),
+        CoverageStatus::Complete,
+        "{:?}",
+        parsed.issues()
+    );
+    assert!(parsed.issues().is_empty(), "{:?}", parsed.issues());
+
+    for (expression_text, expected_index) in [("self.0.0", 0), ("self.0.1", 1)] {
+        let expression = parsed
+            .syntax_nodes()
+            .iter()
+            .filter_map(|node| node.expression_syntax())
+            .find(|expression| source.get(expression.bounds()) == Some(expression_text))
+            .expect("链式 tuple 字段访问表达式");
+
+        assert!(matches!(
+            expression.kind(),
+            ExpressionSyntaxKind::TupleField { base, index }
+                if *index == expected_index
+                    && matches!(base.kind(), ExpressionSyntaxKind::TupleField { base, index: 0 }
+                        if matches!(base.kind(), ExpressionSyntaxKind::Path(path)
+                            if path.segments().first().is_some_and(|segment| segment.name() == "self")))
+        ));
+    }
+}
+
+#[test]
+fn parses_three_level_tuple_field_access_with_trivia() {
+    let expression_text = "tuple. /* first index */ 0. // second index\n 1.2";
+    let source = format!("fn f() {{ {expression_text}; }}");
+    let parsed = parse(&source, "2021");
+
+    assert_eq!(
+        parsed.coverage(),
+        CoverageStatus::Complete,
+        "{:?}",
+        parsed.issues()
+    );
+    assert!(parsed.issues().is_empty(), "{:?}", parsed.issues());
+
+    let expression = parsed
+        .syntax_nodes()
+        .iter()
+        .filter_map(|node| node.expression_syntax())
+        .find(|expression| source.get(expression.bounds()) == Some(expression_text))
+        .expect("带 trivia 的三层 tuple 字段访问表达式");
+
+    assert!(matches!(
+        expression.kind(),
+        ExpressionSyntaxKind::TupleField { base, index: 2 }
+            if matches!(base.kind(), ExpressionSyntaxKind::TupleField { base, index: 1 }
+                if matches!(base.kind(), ExpressionSyntaxKind::TupleField { base, index: 0 }
+                    if matches!(base.kind(), ExpressionSyntaxKind::Path(path)
+                        if path.segments().first().is_some_and(|segment| segment.name() == "tuple"))))
+    ));
+}
+
+#[test]
 fn parses_tuple_field_methods_starting_with_float_suffix_letters() {
     let source =
         "fn f() { tuple.0.extend(); tuple.0.example(); tuple.0.f64(); tuple.0.Example(); }";
