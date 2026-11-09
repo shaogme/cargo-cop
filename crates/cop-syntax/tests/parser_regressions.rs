@@ -1,8 +1,8 @@
 use cop_syntax::{
     AttributeMetaArgument, AttributeMetaValueKind, CoverageStatus, ExpressionSyntax,
-    ExpressionSyntaxKind, ForeignItemSyntaxKind, ItemSyntaxKind, LiteralKind, ParseIssueCode,
-    ParseIssueKind, ParseOptions, ParseOutput, PatternSyntaxKind, RustParser, SourceFile,
-    SyntaxNodeKind, TypeSyntaxKind, UnaryOperator,
+    ExpressionSyntaxKind, ForeignItemSyntaxKind, GenericArgumentSyntax, ItemSyntaxKind,
+    LiteralKind, ParseIssueCode, ParseIssueKind, ParseOptions, ParseOutput, PatternSyntaxKind,
+    RustParser, SourceFile, SyntaxNodeKind, TypeSyntaxKind, UnaryOperator,
 };
 
 struct UnaryExpressionInfo<'a> {
@@ -540,6 +540,166 @@ pub(crate) fn project<P: Platform>() -> <<P as Platform>::Fs as Fs>::Dir {}
                 == Some(direct_type)
         })
     }));
+}
+
+#[test]
+fn parses_turbofish_arguments_on_qualified_associated_types() {
+    let source = "fn f() { <AtomicStorage as Storage>::OptionPtr::<i32>::new(); }";
+    let expected_path = "<AtomicStorage as Storage>::OptionPtr::<i32>::new";
+    let parsed = parse(source, "2021");
+
+    assert_eq!(
+        parsed.coverage(),
+        CoverageStatus::Complete,
+        "issues: {:?}",
+        parsed.issues()
+    );
+    assert!(parsed.issues().is_empty(), "issues: {:?}", parsed.issues());
+
+    let call = parsed
+        .syntax_nodes()
+        .iter()
+        .filter_map(|node| node.expression_syntax())
+        .find(|expression| {
+            matches!(
+                expression.kind(),
+                ExpressionSyntaxKind::Call { callee, .. }
+                    if parsed.source().slice(callee.bounds().start, callee.bounds().end)
+                        == Some(expected_path)
+            )
+        })
+        .expect("限定 GAT 构造器调用");
+    let ExpressionSyntaxKind::Call { callee, .. } = call.kind() else {
+        unreachable!("匹配到的表达式应为调用")
+    };
+    let ExpressionSyntaxKind::Path(path) = callee.kind() else {
+        panic!("构造器被解析为路径")
+    };
+
+    assert!(path.qualified_self().is_some());
+    assert_eq!(
+        path.segments()
+            .iter()
+            .map(|segment| segment.name())
+            .collect::<Vec<_>>(),
+        vec!["OptionPtr", "new"]
+    );
+    let arguments = path.segments()[0].arguments();
+    assert_eq!(arguments.len(), 1);
+    let GenericArgumentSyntax::Type(argument) = &arguments[0] else {
+        panic!("GAT 参数应解析为类型")
+    };
+    assert_eq!(
+        parsed
+            .source()
+            .slice(argument.bounds().start, argument.bounds().end),
+        Some("i32")
+    );
+}
+
+#[test]
+fn preserves_qualified_path_turbofish_boundaries() {
+    let source = "fn f() { <S as T>::Assoc::new(); <S as T>::Assoc::<i32>::new(); <S as T>::Assoc::<i32, u8>::new(); <S as T>::Assoc::<Vec<Vec<u8>>>::new(); <S as T>::Assoc::<i32>::nested::new(); Vec::<Vec<u8>>::new(); }";
+    let parsed = parse(source, "2021");
+    let call_paths = parsed
+        .syntax_nodes()
+        .iter()
+        .filter_map(|node| node.expression_syntax())
+        .filter_map(|expression| {
+            let ExpressionSyntaxKind::Call { callee, .. } = expression.kind() else {
+                return None;
+            };
+            let ExpressionSyntaxKind::Path(path) = callee.kind() else {
+                return None;
+            };
+            Some((
+                parsed
+                    .source()
+                    .slice(callee.bounds().start, callee.bounds().end)?,
+                path,
+            ))
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        parsed.coverage(),
+        CoverageStatus::Complete,
+        "issues: {:?}",
+        parsed.issues()
+    );
+    assert!(parsed.issues().is_empty(), "issues: {:?}", parsed.issues());
+
+    let without_turbofish = call_paths
+        .iter()
+        .find(|(text, _)| *text == "<S as T>::Assoc::new")
+        .expect("无 turbofish 的限定关联路径")
+        .1;
+    assert_eq!(without_turbofish.segments()[0].arguments().len(), 0);
+
+    let one_argument = call_paths
+        .iter()
+        .find(|(text, _)| *text == "<S as T>::Assoc::<i32>::new")
+        .expect("单参数限定关联路径")
+        .1;
+    assert_eq!(one_argument.segments()[0].arguments().len(), 1);
+    assert_eq!(
+        parsed.source().slice(
+            one_argument.segments()[0].bounds().start,
+            one_argument.segments()[0].bounds().end
+        ),
+        Some("Assoc::<i32>")
+    );
+
+    let multiple_arguments = call_paths
+        .iter()
+        .find(|(text, _)| *text == "<S as T>::Assoc::<i32, u8>::new")
+        .expect("多参数限定关联路径")
+        .1;
+    assert_eq!(multiple_arguments.segments()[0].arguments().len(), 2);
+
+    let nested_argument = call_paths
+        .iter()
+        .find(|(text, _)| *text == "<S as T>::Assoc::<Vec<Vec<u8>>>::new")
+        .expect("嵌套类型参数的限定关联路径")
+        .1;
+    let GenericArgumentSyntax::Type(argument) = &nested_argument.segments()[0].arguments()[0]
+    else {
+        panic!("嵌套参数应解析为类型")
+    };
+    assert_eq!(
+        parsed
+            .source()
+            .slice(argument.bounds().start, argument.bounds().end),
+        Some("Vec<Vec<u8>>")
+    );
+
+    let continued_path = call_paths
+        .iter()
+        .find(|(text, _)| *text == "<S as T>::Assoc::<i32>::nested::new")
+        .expect("turbofish 后继续解析路径段")
+        .1;
+    assert_eq!(
+        continued_path
+            .segments()
+            .iter()
+            .map(|segment| segment.name())
+            .collect::<Vec<_>>(),
+        vec!["Assoc", "nested", "new"]
+    );
+
+    let unqualified_path = call_paths
+        .iter()
+        .find(|(text, _)| *text == "Vec::<Vec<u8>>::new")
+        .expect("非限定路径 turbofish")
+        .1;
+    assert_eq!(
+        unqualified_path
+            .segments()
+            .iter()
+            .map(|segment| segment.name())
+            .collect::<Vec<_>>(),
+        vec!["Vec", "new"]
+    );
 }
 
 #[test]

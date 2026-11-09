@@ -27,15 +27,7 @@ impl PathParser {
             if !cursor.consume_punctuation("::") {
                 break;
             }
-            if cursor.consume_angle_open() {
-                let arguments = Self::parse_arguments(cursor)?;
-                Self::expect_angle_close(cursor)?;
-                let previous = segments.pop().expect("路径至少包含一个段");
-                segments.push(PathSegmentSyntax::new(
-                    previous.name().to_owned(),
-                    arguments,
-                    previous.bounds().start..cursor.offset(),
-                ));
+            if Self::parse_turbofish_arguments(cursor, &mut segments)? {
                 continue;
             }
             segments.push(Self::parse_expression_segment(cursor)?);
@@ -63,18 +55,7 @@ impl PathParser {
             if !cursor.consume_punctuation("::") {
                 break;
             }
-            if cursor.consume_angle_open() {
-                let arguments = Self::parse_arguments(cursor)?;
-                Self::expect_angle_close(cursor)?;
-                let last = segments.pop().expect("路径至少包含一个段");
-                segments.push(PathSegmentSyntax::new(
-                    last.name().to_owned(),
-                    arguments,
-                    last.bounds().start..cursor.offset(),
-                ));
-                if !cursor.at_punctuation("::") {
-                    break;
-                }
+            if Self::parse_turbofish_arguments(cursor, &mut segments)? {
                 continue;
             }
             segments.push(Self::parse_segment(cursor)?);
@@ -107,6 +88,9 @@ impl PathParser {
         }
         let mut segments = vec![Self::parse_segment(cursor)?];
         while cursor.consume_punctuation("::") {
+            if Self::parse_turbofish_arguments(cursor, &mut segments)? {
+                continue;
+            }
             segments.push(Self::parse_segment(cursor)?);
         }
         let bounds = Self::span(
@@ -177,6 +161,24 @@ impl PathParser {
                 cursor.offset(),
             ),
         ))
+    }
+
+    fn parse_turbofish_arguments(
+        cursor: &mut TokenCursor<'_>,
+        segments: &mut Vec<PathSegmentSyntax>,
+    ) -> Result<bool, SyntaxError> {
+        if !cursor.consume_angle_open() {
+            return Ok(false);
+        }
+        let arguments = Self::parse_arguments(cursor)?;
+        Self::expect_angle_close(cursor)?;
+        let previous = segments.pop().expect("路径至少包含一个段");
+        segments.push(PathSegmentSyntax::new(
+            previous.name().to_owned(),
+            arguments,
+            previous.bounds().start..cursor.consumed_offset(),
+        ));
+        Ok(true)
     }
 
     fn parse_arguments(
