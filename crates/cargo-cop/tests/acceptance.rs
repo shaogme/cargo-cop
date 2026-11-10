@@ -1603,6 +1603,35 @@ fn parses_comments_inside_recursive_cfg_attr_arguments() {
 }
 
 #[test]
+fn quote_interpolation_hash_does_not_report_an_invalid_attribute() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "src/lib.rs",
+        "fn lower() { parameter.bounds.push(parse2(quote!(#trait_name))?); }\n",
+    );
+
+    let output = fixture.run(&["--format", "json", "--locale", "en-US"]);
+    let report = from_str::<Value>(&output.stdout).expect("JSON 报告");
+    let diagnostics = report["diagnostics"].as_array().expect("诊断数组");
+
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic["analysis_issue"] == "parser_coverage"
+            && diagnostic_message(diagnostic)
+                .contains("Macro input is opaque and its internal Rust syntax is not analyzed")
+    }));
+    assert!(
+        !diagnostics.iter().any(|diagnostic| {
+            diagnostic["analysis_issue"] == "parser_coverage"
+                && diagnostic_message(diagnostic)
+                    .contains("An opening bracket is required after the attribute marker #")
+        }),
+        "quote! 插值中的 # 不应被解释为属性标记：{}",
+        output.stdout
+    );
+}
+
+#[test]
 fn locates_malformed_stacked_cfg_at_the_attribute_that_failed() {
     let fixture = Fixture::new();
     fixture.write("Cargo.toml", &package_manifest("sample"));

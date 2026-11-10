@@ -17,7 +17,7 @@ use crate::{
         SyntaxNodeData, SyntaxNodeKind,
     },
     recovery::Recovery,
-    MacroProfileBinding, RustEdition, SourceFile, Token, TokenKind,
+    Delimiter, MacroProfileBinding, RustEdition, SourceFile, Token, TokenKind,
 };
 
 use super::{
@@ -28,6 +28,12 @@ use super::{
 use self::{impl_header::ImplHeaderParser, pratt::PrattParser, tree::ExpressionTree};
 
 pub(super) struct SyntaxCollector;
+
+#[derive(Clone, Copy)]
+enum MacroCallScanMode {
+    SourceRange,
+    OpaqueMacroInput,
+}
 
 pub(super) struct SyntaxRequest<'a> {
     pub(super) source: &'a SourceFile,
@@ -313,7 +319,7 @@ impl SyntaxCollector {
         ast_nodes: &mut Vec<SyntaxNode>,
         issues: &mut Vec<ParseIssue>,
     ) {
-        Self::collect_macro_calls(request, ast_nodes, issues, false);
+        Self::collect_macro_calls(request, ast_nodes, issues, MacroCallScanMode::SourceRange);
     }
 
     fn collect_nested_macro_calls(
@@ -321,14 +327,19 @@ impl SyntaxCollector {
         ast_nodes: &mut Vec<SyntaxNode>,
         issues: &mut Vec<ParseIssue>,
     ) {
-        Self::collect_macro_calls(request, ast_nodes, issues, true);
+        Self::collect_macro_calls(
+            request,
+            ast_nodes,
+            issues,
+            MacroCallScanMode::OpaqueMacroInput,
+        );
     }
 
     fn collect_macro_calls(
         request: SyntaxRequest<'_>,
         ast_nodes: &mut Vec<SyntaxNode>,
         issues: &mut Vec<ParseIssue>,
-        include_macro_inputs: bool,
+        scan_mode: MacroCallScanMode,
     ) {
         let SyntaxRequest {
             source,
@@ -345,12 +356,25 @@ impl SyntaxCollector {
                 continue;
             }
             if Recovery::is_punctuation(&tokens[index], "#") {
-                let mut attribute_cursor = index;
-                if !AttributeParser::parse_attributes(source, tokens, &mut attribute_cursor, issues)
-                    .is_empty()
-                {
-                    index = attribute_cursor;
-                    continue;
+                match scan_mode {
+                    MacroCallScanMode::SourceRange => {
+                        let mut attribute_cursor = index;
+                        if !AttributeParser::parse_attributes(
+                            source,
+                            tokens,
+                            &mut attribute_cursor,
+                            issues,
+                        )
+                        .is_empty()
+                        {
+                            index = attribute_cursor;
+                            continue;
+                        }
+                    }
+                    MacroCallScanMode::OpaqueMacroInput => {
+                        index = Self::opaque_hash_end(tokens, index, bounds.end);
+                        continue;
+                    }
                 }
             }
             if let Some((path, next)) = ImplHeaderParser::path_at(tokens, index, bounds.end) {
@@ -393,10 +417,9 @@ impl SyntaxCollector {
                                 t!("syntax.macro_opaque"),
                             ));
                         }
-                        index = if include_macro_inputs {
-                            next + 1
-                        } else {
-                            group_end + 1
+                        index = match scan_mode {
+                            MacroCallScanMode::SourceRange => group_end + 1,
+                            MacroCallScanMode::OpaqueMacroInput => next + 1,
                         };
                         continue;
                     }
@@ -413,5 +436,30 @@ impl SyntaxCollector {
             return None;
         }
         Recovery::matching_delimiter(tokens, index).filter(|close| *close < limit)
+    }
+
+    fn opaque_hash_end(tokens: &[Token], hash_index: usize, limit: usize) -> usize {
+        let mut operand = hash_index + 1;
+        if tokens
+            .get(operand)
+            .is_some_and(|token| Recovery::is_punctuation(token, "!"))
+        {
+            operand += 1;
+        }
+        if matches!(
+            tokens.get(operand).map(Token::kind),
+            Some(TokenKind::OpenDelimiter(Delimiter::Bracket))
+        ) {
+            if let Some(close) = Self::group_end(tokens, operand, limit) {
+                return close + 1;
+            }
+        }
+        if tokens
+            .get(operand)
+            .is_some_and(|token| token.kind().identifier().is_some())
+        {
+            return operand + 1;
+        }
+        hash_index + 1
     }
 }

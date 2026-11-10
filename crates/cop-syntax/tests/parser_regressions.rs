@@ -1,8 +1,8 @@
 use cop_syntax::{
     AttributeMetaArgument, AttributeMetaValueKind, CoverageStatus, ExpressionSyntax,
     ExpressionSyntaxKind, ForeignItemSyntaxKind, GenericArgumentSyntax, ItemSyntaxKind,
-    LiteralKind, ParseIssueCode, ParseIssueKind, ParseOptions, ParseOutput, PatternSyntaxKind,
-    RustParser, SourceFile, SyntaxNodeKind, TypeSyntaxKind, UnaryOperator,
+    LiteralKind, MacroInputStatus, ParseIssueCode, ParseIssueKind, ParseOptions, ParseOutput,
+    PatternSyntaxKind, RustParser, SourceFile, SyntaxNodeKind, TypeSyntaxKind, UnaryOperator,
 };
 
 struct UnaryExpressionInfo<'a> {
@@ -1144,6 +1144,53 @@ fn keeps_attribute_diagnostics_for_missing_values_and_unclosed_groups() {
         .issues()
         .iter()
         .any(|issue| issue.code() == ParseIssueCode::UnclosedDelimiter));
+}
+
+#[test]
+fn scans_quote_interpolations_as_opaque_tokens_and_keeps_nested_macros() {
+    let source =
+        "fn inspect() { quote!(#name!(); #(#repeat_name!(); nested!())*; #[invalid(,)] #![=]); }";
+    let parsed = RustParser::parse_structure(
+        SourceFile::new("src/parser_regressions.rs", source),
+        ParseOptions::default(),
+    )
+    .expect("structural parse succeeds");
+    let macro_names = parsed
+        .syntax_nodes()
+        .iter()
+        .filter_map(|node| node.macro_invocation())
+        .filter_map(|invocation| {
+            invocation
+                .path()
+                .segments()
+                .last()
+                .map(|segment| segment.name())
+        })
+        .collect::<Vec<_>>();
+
+    assert!(parsed
+        .issues()
+        .iter()
+        .all(|issue| issue.code() != ParseIssueCode::InvalidAttribute));
+    assert_eq!(macro_names, ["quote", "nested"]);
+    assert!(parsed.syntax_nodes().iter().any(|node| {
+        node.macro_invocation().is_some_and(|invocation| {
+            invocation.path().segments().last().is_some_and(|segment| {
+                segment.name() == "quote"
+                    && invocation.input().status() == &MacroInputStatus::Opaque
+            })
+        })
+    }));
+}
+
+#[test]
+fn retains_invalid_attribute_diagnostics_in_source_ranges() {
+    let parsed = parse("fn malformed() #name {}", "2021");
+
+    assert!(parsed
+        .issues()
+        .iter()
+        .any(|issue| issue.code() == ParseIssueCode::InvalidAttribute));
 }
 
 #[test]
