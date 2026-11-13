@@ -29,5 +29,6 @@ pub use symbol_index::{
 };
 pub use syntax_facts::{
     BlockItemFact, BlockScopeFact, FieldFact, ItemFact, ItemKindFact, ItemScopeFact,
-    ModuleSyntaxFacts, PathAttributeFact, ShapeParameterFact, SyntaxShapeFact, SyntaxShapeKind,
+    ModuleSyntaxFacts, PathAttributeFact, ScopeSequenceFact, ScopeSequenceKind, ShapeParameterFact,
+    SyntaxShapeFact, SyntaxShapeKind, UseGroupVisibility,
 };

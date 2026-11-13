@@ -319,7 +319,7 @@ impl Application {
                 let kind = cli_parse_error_kind(error.kind());
                 let message = t!("cli.parse_error", { kind: kind })?;
                 let report_error = ApplicationError::new(ToolErrorKind::Arguments, message);
-                Self::write_error_report(report_error, format, &fallback_root, locale)?;
+                let _ = Self::write_error_report(report_error, format, &fallback_root, locale)?;
                 return Ok(ExitCode::from(exit_code));
             }
         };

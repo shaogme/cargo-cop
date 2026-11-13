@@ -1,13 +1,13 @@
 mod kind;
 
-use std::ops::Range;
-
-use super::{PatternSyntax, TypeSyntax};
-
 pub use kind::{
     ExpressionBlockKind, ExpressionErrorKind, ExpressionSyntaxKind, ExpressionUnsupportedKind,
     UnaryOperator,
 };
+
+use std::ops::Range;
+
+use super::{PatternSyntax, TypeSyntax};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExpressionSyntax {

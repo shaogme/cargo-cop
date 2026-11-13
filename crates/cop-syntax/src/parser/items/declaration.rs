@@ -109,6 +109,7 @@ impl ItemSyntaxParser {
         DeclarationParser::parse(declarations::DeclarationInput {
             source: context.source,
             tokens: context.tokens,
+            edition: context.edition,
             cursor: context.cursor,
             parent,
             ast_nodes: context.ast_nodes,

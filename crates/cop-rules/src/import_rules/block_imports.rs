@@ -1,5 +1,5 @@
 use cop_i18n::{t, RenderError};
-use std::{collections::BTreeSet, ops::Range};
+use std::ops::Range;
 
 use cop_analysis::{AnalysisSnapshot, BlockScopeFact, ModuleNode};
 use cop_model::{Diagnostic, RuleId};
@@ -7,7 +7,7 @@ use cop_model::{Diagnostic, RuleId};
 use cop_syntax::ParseOutput;
 
 use crate::support::{
-    CfgImportSpacingFact, RuleDiagnosticAdapter, RuleReport, SyntaxSupport, UseLeaf,
+    RuleDiagnosticAdapter, RuleReport, SyntaxSupport, UseGroupSpacingFact, UseLeaf,
 };
 
 struct BlockImportRecord {
@@ -58,24 +58,16 @@ impl BlockScopeCheck<'_, '_> {
     ) -> Result<(), RenderError> {
         let mut preceding_non_imports = Vec::new();
         let mut imports = Vec::new();
-        let mut spacing_facts = Vec::new();
         for item in scope.items() {
             let condition = item.condition().map(str::to_owned);
+            if !item.is_enabled() {
+                continue;
+            }
             if !item.is_use_tree() {
                 preceding_non_imports.push(condition);
-                spacing_facts.push(CfgImportSpacingFact::new(
-                    item.bounds(),
-                    item.condition().map(str::to_owned),
-                    item.is_enabled(),
-                    false,
-                ));
                 continue;
             }
             let bounds = item.bounds();
-            if !item.is_enabled() {
-                spacing_facts.push(CfgImportSpacingFact::new(bounds, condition, false, true));
-                continue;
-            }
             use_tree_ranges.push(bounds.clone());
             if let Some(cfg_range) = item.nested_cfg_ranges().first() {
                 self.adapter.push(
@@ -113,20 +105,16 @@ impl BlockScopeCheck<'_, '_> {
                 None
             };
             if let Some(import) = import {
-                spacing_facts.push(CfgImportSpacingFact::new(
-                    import.bounds.clone(),
-                    Some(import.condition.clone()),
-                    true,
-                    true,
-                ));
                 imports.push(import);
-            } else {
-                spacing_facts.push(CfgImportSpacingFact::new(bounds, condition, true, false));
             }
         }
         check_block_common_prefixes(&imports, self.module, self.diagnostics, self.adapter)?;
-        check_block_cfg_group_splits(&imports, self.module, self.diagnostics, self.adapter)?;
-        SyntaxSupport::check_cfg_import_spacing(
+        let spacing_facts = scope
+            .sequence()
+            .iter()
+            .map(UseGroupSpacingFact::from_sequence)
+            .collect::<Vec<_>>();
+        SyntaxSupport::check_use_group_spacing(
             self.module.parse_output(),
             &spacing_facts,
             self.module,
@@ -189,49 +177,6 @@ fn check_block_common_prefixes(
             );
             break;
         }
-    }
-    Ok(())
-}
-
-fn check_block_cfg_group_splits(
-    imports: &[BlockImportRecord],
-    module: &ModuleNode,
-    diagnostics: &mut Vec<Diagnostic>,
-    adapter: &RuleDiagnosticAdapter<'_>,
-) -> Result<(), RenderError> {
-    let mut previous: Option<&BlockImportRecord> = None;
-    let mut completed_groups = BTreeSet::new();
-    for import in imports {
-        let condition = &import.condition;
-        if previous.is_none() && completed_groups.contains(condition) {
-            adapter.push(
-                module,
-                diagnostics,
-                RuleReport::new(
-                    RuleId::CfgUseGroupSpacing,
-                    t!("rule.cfg_use_group_split", { condition: condition })?,
-                    Some(import.bounds.clone()),
-                ),
-            );
-        }
-        if let Some(previous_import) = previous {
-            let previous_condition = &previous_import.condition;
-            if previous_condition != condition {
-                if completed_groups.contains(condition) {
-                    adapter.push(
-                        module,
-                        diagnostics,
-                        RuleReport::new(
-                            RuleId::CfgUseGroupSpacing,
-                            t!("rule.cfg_use_group_split", { condition: condition })?,
-                            Some(import.bounds.clone()),
-                        ),
-                    );
-                }
-                completed_groups.insert(previous_condition.clone());
-            }
-        }
-        previous = Some(import);
     }
     Ok(())
 }

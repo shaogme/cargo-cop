@@ -4,6 +4,7 @@ use cop_i18n::{t, RenderError};
 
 use super::{
     attributes::AttributeParser,
+    block::{BlockInput, BlockParser},
     expression::{SyntaxCollector, SyntaxRequest},
     token_cursor::{AngleScanContext, CursorRange, TokenCursor},
     types::{TypeInput, TypeParser},
@@ -15,7 +16,7 @@ use crate::{
         SyntaxNodeData, SyntaxNodeKind,
     },
     recovery::Recovery,
-    Delimiter, MacroProfileBinding, SourceFile, Token, TokenKind,
+    Delimiter, MacroProfileBinding, RustEdition, SourceFile, Token, TokenKind,
 };
 
 pub(super) struct DeclarationParser;
@@ -23,6 +24,7 @@ pub(super) struct DeclarationParser;
 pub(super) struct DeclarationInput<'a> {
     pub(super) source: &'a SourceFile,
     pub(super) tokens: &'a [Token],
+    pub(super) edition: RustEdition,
     pub(super) cursor: &'a mut usize,
     pub(super) parent: AstNodeId,
     pub(super) ast_nodes: &'a mut Vec<SyntaxNode>,
@@ -34,6 +36,7 @@ pub(super) struct DeclarationInput<'a> {
 struct DeclarationContext<'a> {
     source: &'a SourceFile,
     tokens: &'a [Token],
+    edition: RustEdition,
     ast_nodes: &'a mut Vec<SyntaxNode>,
     issues: &'a mut Vec<ParseIssue>,
     macro_profiles: &'a [MacroProfileBinding],
@@ -45,6 +48,7 @@ impl DeclarationParser {
         let DeclarationInput {
             source,
             tokens,
+            edition,
             cursor,
             parent,
             ast_nodes,
@@ -55,6 +59,7 @@ impl DeclarationParser {
         let mut context = DeclarationContext {
             source,
             tokens,
+            edition,
             ast_nodes,
             issues,
             macro_profiles,
@@ -88,14 +93,96 @@ impl DeclarationParser {
             Self::parse_struct_fields(&mut context, &keyword, tail, parent);
         } else {
             Self::collect_declared_type(&mut context, &keyword, tail.clone(), parent);
-            SyntaxCollector::collect(
-                SyntaxRequest {
+            if matches!(keyword.as_str(), "const" | "static") {
+                Self::collect_initializer_expression(&mut context, tail, parent);
+            } else {
+                SyntaxCollector::collect(
+                    SyntaxRequest {
+                        source: context.source,
+                        tokens: context.tokens,
+                        bounds: tail,
+                        parent,
+                        expression_tree: false,
+                        edition: None,
+                        macro_profiles: context.macro_profiles,
+                        defer_opaque_macro_diagnostics: context.defer_opaque_macro_diagnostics,
+                    },
+                    context.ast_nodes,
+                    context.issues,
+                );
+            }
+        }
+        AstFactory::named_declaration(name)
+    }
+
+    fn collect_initializer_expression(
+        context: &mut DeclarationContext<'_>,
+        tail: Range<usize>,
+        parent: AstNodeId,
+    ) {
+        let Some(cursor) = TokenCursor::from_token_range(context.tokens, tail.clone()) else {
+            return;
+        };
+        let Some(equals) = cursor.find_top_level_punctuation("=", AngleScanContext::Header) else {
+            return;
+        };
+        let end = tail
+            .end
+            .checked_sub(1)
+            .filter(|index| Recovery::is_punctuation(&context.tokens[*index], ";"))
+            .unwrap_or(tail.end);
+        let bounds = equals + 1..end;
+        if bounds.start >= bounds.end {
+            return;
+        }
+        let expression_node = SyntaxCollector::collect_expression(
+            SyntaxRequest {
+                source: context.source,
+                tokens: context.tokens,
+                bounds,
+                parent,
+                expression_tree: true,
+                edition: Some(context.edition),
+                macro_profiles: context.macro_profiles,
+                defer_opaque_macro_diagnostics: context.defer_opaque_macro_diagnostics,
+            },
+            context.ast_nodes,
+            context.issues,
+        );
+        let Some(expression_node) = expression_node else {
+            return;
+        };
+        let blocks = context
+            .ast_nodes
+            .get(expression_node.index())
+            .into_iter()
+            .flat_map(SyntaxNode::children)
+            .filter_map(|id| context.ast_nodes.get(id.index()))
+            .filter(|node| node.kind() == SyntaxNodeKind::Block)
+            .map(|node| (node.id(), node.start()..node.end()))
+            .collect::<Vec<_>>();
+        for (block_id, bounds) in blocks {
+            let Some(open) = context
+                .tokens
+                .iter()
+                .position(|token| token.start() == bounds.start)
+            else {
+                continue;
+            };
+            let Some(close) = Recovery::matching_delimiter(context.tokens, open) else {
+                continue;
+            };
+            if context.tokens[close].end() != bounds.end {
+                continue;
+            }
+            BlockParser::parse(
+                BlockInput {
                     source: context.source,
                     tokens: context.tokens,
-                    bounds: tail,
-                    parent,
-                    expression_tree: false,
-                    edition: None,
+                    edition: context.edition,
+                    start: open + 1,
+                    end: close,
+                    parent: block_id,
                     macro_profiles: context.macro_profiles,
                     defer_opaque_macro_diagnostics: context.defer_opaque_macro_diagnostics,
                 },
@@ -103,7 +190,6 @@ impl DeclarationParser {
                 context.issues,
             );
         }
-        AstFactory::named_declaration(name)
     }
 
     fn parse_struct_fields(

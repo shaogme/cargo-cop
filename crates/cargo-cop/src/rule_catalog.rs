@@ -166,8 +166,8 @@ impl RuleCatalog {
                 locale = locale.as_tag().as_locale(),
                 {}
             ),
-            RuleId::CfgUseGroupSpacing => t!(
-                "rule_catalog.cfg_use_group_spacing.summary",
+            RuleId::UseGroupSpacing => t!(
+                "rule_catalog.use_group_spacing.summary",
                 locale = locale.as_tag().as_locale(),
                 {}
             ),
@@ -286,8 +286,8 @@ impl RuleCatalog {
                 locale = locale.as_tag().as_locale(),
                 {}
             ),
-            RuleId::CfgUseGroupSpacing => t!(
-                "rule_catalog.cfg_use_group_spacing.description",
+            RuleId::UseGroupSpacing => t!(
+                "rule_catalog.use_group_spacing.description",
                 locale = locale.as_tag().as_locale(),
                 {}
             ),

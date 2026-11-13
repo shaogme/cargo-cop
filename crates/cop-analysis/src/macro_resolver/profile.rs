@@ -587,6 +587,7 @@ impl MacroProfileResolver {
                     VisibilityKind::RestrictedIn(path) => {
                         path == "crate" || path.starts_with("crate::")
                     }
+                    VisibilityKind::RestrictedSuper | VisibilityKind::RestrictedSelf => false,
                     VisibilityKind::Private => false,
                 };
             }

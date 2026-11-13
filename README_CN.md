@@ -56,7 +56,7 @@ steps:
   - uses: actions/checkout@main
   - uses: shaogme/cargo-cop@main
     with:
-      version: 0.3.14
+      version: 0.3.15
   - run: cargo cop --workspace
 ```
 
@@ -67,7 +67,7 @@ steps:
   - uses: actions/checkout@main
   - uses: shaogme/cargo-cop@main
     with:
-      version: 0.3.14
+      version: 0.3.15
       from-source: true
   - run: cargo cop --workspace
 ```
@@ -175,7 +175,7 @@ Feature 选择根据所选 package 的 Cargo feature 定义计算，处理 defau
 | `extern_crate_at_scope_start` | 每个模块作用域中的 `extern crate` 声明必须位于开头。 |
 | `imports_at_scope_start` | 模块作用域中的 `use` 位于外部模块声明之后、其他 item 之前；block 导入放在其他语句之前。 |
 | `out_of_line_modules_at_scope_start` | 外部模块声明位于 `extern crate` 之后、`use` 和其他 item 之前，并连续排列。 |
-| `cfg_use_group_spacing` | 不同 `cfg` 条件的导入应分组排列，组间留一行空行。 |
+| `use_group_spacing` | 模块作用域按 `pub`、受限、`pub(super)`、私有顺序排列 use 组；每个可见性组内相同有效 `cfg` 条件保持连续，可见性或 `cfg` 边界之间恰好留一行空行。非 use 节点会中断分组，block 作用域独立检查。 |
 | `cfg_inside_use_tree` | `cfg` 属性应放在完整的 `use` item 上，不能嵌套在花括号 use tree 中。 |
 | `no_pub_in_visibility` | 禁止显式 `pub(in path)` 可见性；按访问边界改用私有、`pub(crate)` 或 `pub(super)`。 |
 

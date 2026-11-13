@@ -1,9 +1,13 @@
 use std::{
     borrow::Cow,
+    collections::BTreeSet,
     ops::{Range, RangeInclusive},
 };
 
-use cop_analysis::{AnalysisFacts, CfgCondition, CfgDecision, ItemFact, ItemKindFact, ModuleNode};
+use cop_analysis::{
+    AnalysisFacts, CfgCondition, CfgDecision, ItemFact, ItemKindFact, ModuleNode,
+    ScopeSequenceFact, ScopeSequenceKind, UseGroupVisibility,
+};
 use cop_config::ResolvedConfig;
 use cop_i18n::{t, PluralCount, RenderError};
 use cop_model::{Diagnostic, RuleId, SourceSpan};
@@ -28,11 +32,17 @@ pub(super) struct UseLeaf {
     pub(super) condition: Option<String>,
 }
 
-pub(super) struct CfgImportSpacingFact {
+pub(super) struct UseGroupSpacingFact {
     bounds: Range<usize>,
     condition: Option<String>,
     enabled: bool,
-    use_item: bool,
+    kind: ScopeSequenceKind,
+}
+
+struct PreviousUseGroup {
+    bounds: Range<usize>,
+    visibility: UseGroupVisibility,
+    condition: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -50,18 +60,13 @@ enum SpacingDefinitionKind {
 
 pub(super) struct SyntaxSupport;
 
-impl CfgImportSpacingFact {
-    pub(super) fn new(
-        bounds: Range<usize>,
-        condition: Option<String>,
-        enabled: bool,
-        use_item: bool,
-    ) -> Self {
+impl UseGroupSpacingFact {
+    pub(super) fn from_sequence(sequence: &ScopeSequenceFact) -> Self {
         Self {
-            bounds,
-            condition,
-            enabled,
-            use_item,
+            bounds: sequence.bounds(),
+            condition: sequence.condition().map(str::to_owned),
+            enabled: sequence.is_enabled(),
+            kind: sequence.kind().clone(),
         }
     }
 }
@@ -235,44 +240,101 @@ impl SyntaxSupport {
         })
     }
 
-    pub(super) fn check_cfg_import_spacing(
+    pub(super) fn check_use_group_spacing(
         output: &ParseOutput,
-        facts: &[CfgImportSpacingFact],
+        facts: &[UseGroupSpacingFact],
         module: &ModuleNode,
         diagnostics: &mut Vec<Diagnostic>,
         adapter: &RuleDiagnosticAdapter<'_>,
     ) -> Result<(), RenderError> {
-        let mut previous: Option<(Range<usize>, String)> = None;
+        let mut previous: Option<PreviousUseGroup> = None;
+        let mut current_visibility = None;
+        let mut completed_visibilities = BTreeSet::new();
+        let mut current_cfg = None;
+        let mut completed_cfg_groups = BTreeSet::new();
         for fact in facts {
-            if !fact.use_item {
-                if fact.enabled {
-                    previous = None;
-                }
+            let ScopeSequenceKind::Use { visibility } = &fact.kind else {
+                previous = None;
+                current_visibility = None;
+                completed_visibilities.clear();
+                current_cfg = None;
+                completed_cfg_groups.clear();
                 continue;
-            }
+            };
             if !fact.enabled {
                 previous = None;
+                current_visibility = None;
+                completed_visibilities.clear();
+                current_cfg = None;
+                completed_cfg_groups.clear();
                 continue;
             }
+            let visibility = *visibility;
             let condition = fact.condition.as_deref().unwrap_or("all()").to_owned();
-            if let Some((previous_bounds, previous_condition)) = &previous {
-                if previous_condition != &condition {
-                    let blank_lines =
-                        Self::blank_lines_between(output, previous_bounds.end, fact.bounds.start);
+            if let Some(previous_group) = &previous {
+                if previous_group.visibility != visibility || previous_group.condition != condition
+                {
+                    let blank_lines = Self::blank_lines_between(
+                        output,
+                        previous_group.bounds.end,
+                        fact.bounds.start,
+                    );
                     if blank_lines != 1 {
                         adapter.push(
                             module,
                             diagnostics,
                             RuleReport::new(
-                                RuleId::CfgUseGroupSpacing,
-                                t!("rule.cfg_use_group_spacing", { empty_lines: PluralCount::new((blank_lines as i64) as u64) })?,
+                                RuleId::UseGroupSpacing,
+                                t!("rule.use_group_spacing", { empty_lines: PluralCount::new((blank_lines as i64) as u64) })?,
                                 Some(fact.bounds.clone()),
                             ),
                         );
                     }
                 }
             }
-            previous = Some((fact.bounds.clone(), condition));
+            if current_visibility != Some(visibility) {
+                if let Some(previous_visibility) = current_visibility {
+                    if visibility_order(visibility) < visibility_order(previous_visibility)
+                        || completed_visibilities.contains(&visibility)
+                    {
+                        let group = visibility_label(visibility)?;
+                        adapter.push(
+                            module,
+                            diagnostics,
+                            RuleReport::new(
+                                RuleId::UseGroupSpacing,
+                                t!("rule.use_group_visibility_order", { group: group.as_ref() })?,
+                                Some(fact.bounds.clone()),
+                            ),
+                        );
+                    }
+                    completed_visibilities.insert(previous_visibility);
+                }
+                current_visibility = Some(visibility);
+                current_cfg = None;
+                completed_cfg_groups.clear();
+            }
+            if current_cfg.as_deref() != Some(condition.as_str()) {
+                if completed_cfg_groups.contains(&condition) {
+                    adapter.push(
+                        module,
+                        diagnostics,
+                        RuleReport::new(
+                            RuleId::UseGroupSpacing,
+                            t!("rule.use_group_cfg_split", { condition: condition.as_str() })?,
+                            Some(fact.bounds.clone()),
+                        ),
+                    );
+                }
+                if let Some(previous_condition) = current_cfg.replace(condition.clone()) {
+                    completed_cfg_groups.insert(previous_condition);
+                }
+            }
+            previous = Some(PreviousUseGroup {
+                bounds: fact.bounds.clone(),
+                visibility,
+                condition,
+            });
         }
         Ok(())
     }
@@ -358,6 +420,24 @@ impl SyntaxSupport {
             ItemKindFact::Impl => Some(SpacingDefinitionKind::Impl),
             _ => None,
         }
+    }
+}
+
+fn visibility_order(visibility: UseGroupVisibility) -> u8 {
+    match visibility {
+        UseGroupVisibility::Public => 0,
+        UseGroupVisibility::Restricted => 1,
+        UseGroupVisibility::Parent => 2,
+        UseGroupVisibility::Private => 3,
+    }
+}
+
+fn visibility_label(visibility: UseGroupVisibility) -> Result<Cow<'static, str>, RenderError> {
+    match visibility {
+        UseGroupVisibility::Public => t!("rule.use_group_visibility.public"),
+        UseGroupVisibility::Restricted => t!("rule.use_group_visibility.restricted"),
+        UseGroupVisibility::Parent => t!("rule.use_group_visibility.parent"),
+        UseGroupVisibility::Private => t!("rule.use_group_visibility.private"),
     }
 }
 

@@ -5,11 +5,11 @@ mod macro_scan;
 mod node;
 mod scope;
 
+pub use self::{lint_attributes::ConfiguredAttribute, node::ModuleNode};
+
 use cop_cargo::{SelectedPackage, TargetContext};
 use cop_i18n::RenderError;
 use cop_model::Diagnostic;
-
-pub use self::{lint_attributes::ConfiguredAttribute, node::ModuleNode};
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct ModuleGraph {

@@ -3,6 +3,7 @@ use cop_syntax::{
     ExpressionSyntaxKind, ForeignItemSyntaxKind, GenericArgumentSyntax, ItemSyntaxKind,
     LiteralKind, MacroInputStatus, ParseIssueCode, ParseIssueKind, ParseOptions, ParseOutput,
     PatternSyntaxKind, RustParser, SourceFile, SyntaxNodeKind, TypeSyntaxKind, UnaryOperator,
+    VisibilityKind,
 };
 
 struct UnaryExpressionInfo<'a> {
@@ -17,6 +18,31 @@ fn parse(source: &str, edition: &str) -> ParseOutput {
         ParseOptions::new(edition),
     )
     .expect("catalog messages render")
+}
+
+#[test]
+fn classifies_super_and_self_visibility_from_tokens() {
+    let source = "pub( super ) use a::A;\npub( /* comment */ super ) use b::B;\npub( self ) use c::C;\npub( /* comment */ self ) use d::D;\npub(in super) use e::E;\n";
+    let parsed = parse(source, "2021");
+    let kinds = parsed
+        .syntax_nodes()
+        .iter()
+        .filter_map(|node| node.item_syntax())
+        .filter(|item| matches!(item.kind(), ItemSyntaxKind::Use))
+        .map(|item| item.visibility().kind())
+        .collect::<Vec<_>>();
+
+    assert!(parsed.issues().is_empty(), "{:?}", parsed.issues());
+    assert_eq!(
+        kinds,
+        vec![
+            &VisibilityKind::RestrictedSuper,
+            &VisibilityKind::RestrictedSuper,
+            &VisibilityKind::RestrictedSelf,
+            &VisibilityKind::RestrictedSelf,
+            &VisibilityKind::RestrictedIn("(in super)".to_owned()),
+        ]
+    );
 }
 
 #[test]

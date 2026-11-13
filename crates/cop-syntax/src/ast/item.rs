@@ -8,6 +8,8 @@ pub enum VisibilityKind {
     Public,
     Restricted(String),
     RestrictedIn(String),
+    RestrictedSuper,
+    RestrictedSelf,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

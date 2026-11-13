@@ -56,7 +56,7 @@ steps:
   - uses: actions/checkout@main
   - uses: shaogme/cargo-cop@main
     with:
-      version: 0.3.14
+      version: 0.3.15
   - run: cargo cop --workspace
 ```
 
@@ -67,7 +67,7 @@ steps:
   - uses: actions/checkout@main
   - uses: shaogme/cargo-cop@main
     with:
-      version: 0.3.14
+      version: 0.3.15
       from-source: true
   - run: cargo cop --workspace
 ```
@@ -175,7 +175,7 @@ All rules are enabled by default and use `error` severity unless configured othe
 | `extern_crate_at_scope_start` | Keep module-scope `extern crate` declarations at the start of each module scope. |
 | `imports_at_scope_start` | Place module-scope `use` declarations after out-of-line modules and before other items; keep block imports before other statements. |
 | `out_of_line_modules_at_scope_start` | Keep out-of-line modules together after `extern crate` declarations and before `use` declarations and other items. |
-| `cfg_use_group_spacing` | Keep imports with different `cfg` conditions in distinct groups separated by one blank line. |
+| `use_group_spacing` | Order module-scope use groups by visibility (`pub`, restricted, `pub(super)`, private), keep each effective `cfg` condition contiguous within its visibility group, and use exactly one blank line at visibility or `cfg` boundaries. Non-use nodes break a group; blocks are checked independently. |
 | `cfg_inside_use_tree` | Put `cfg` attributes on a complete `use` item, not inside a braced use tree. |
 | `no_pub_in_visibility` | Do not use explicit `pub(in path)` visibility; use private, `pub(crate)`, or `pub(super)` visibility where appropriate. |
 

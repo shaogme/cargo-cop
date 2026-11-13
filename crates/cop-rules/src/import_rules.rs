@@ -1,7 +1,7 @@
 mod block_imports;
 
 use cop_i18n::{t, RenderError};
-use std::{collections::BTreeSet, ops::Range};
+use std::ops::Range;
 
 use cop_analysis::{
     AnalysisReference, AnalysisSnapshot, ItemFact, ItemKindFact, ModuleNode, ReferenceKind,
@@ -11,7 +11,7 @@ use cop_model::{Diagnostic, RuleId};
 use cop_syntax::ParseOutput;
 
 use crate::support::{
-    CfgImportSpacingFact, RuleDiagnosticAdapter, RuleReport, SyntaxSupport, UseLeaf,
+    RuleDiagnosticAdapter, RuleReport, SyntaxSupport, UseGroupSpacingFact, UseLeaf,
 };
 
 pub(super) struct ImportRuleSet;
@@ -44,7 +44,7 @@ impl ImportRuleSet {
                 &adapter,
             )?;
             Self::common_prefixes(module, snapshot, diagnostics, &adapter)?;
-            Self::cfg_group_spacing(snapshot, module, diagnostics, &adapter)?;
+            Self::use_group_spacing(snapshot, module, diagnostics, &adapter)?;
             Self::cfg_inside_use_tree(snapshot, module, diagnostics, &adapter)?;
         }
         Ok(())
@@ -249,13 +249,12 @@ impl ImportRuleSet {
         Ok(())
     }
 
-    fn cfg_group_spacing(
+    fn use_group_spacing(
         snapshot: &AnalysisSnapshot,
         module: &ModuleNode,
         diagnostics: &mut Vec<Diagnostic>,
         adapter: &RuleDiagnosticAdapter<'_>,
     ) -> Result<(), RenderError> {
-        let output = module.parse_output();
         let Some(scope) = snapshot
             .facts()
             .syntax_for_module(module)
@@ -264,67 +263,17 @@ impl ImportRuleSet {
             return Ok(());
         };
         let spacing_facts = scope
-            .items()
+            .sequence()
             .iter()
-            .map(|item| {
-                CfgImportSpacingFact::new(
-                    item.bounds(),
-                    item.condition().map(str::to_owned),
-                    item.is_enabled(),
-                    matches!(item.kind(), ItemKindFact::Use),
-                )
-            })
+            .map(UseGroupSpacingFact::from_sequence)
             .collect::<Vec<_>>();
-        SyntaxSupport::check_cfg_import_spacing(
-            output,
+        SyntaxSupport::check_use_group_spacing(
+            module.parse_output(),
             &spacing_facts,
             module,
             diagnostics,
             adapter,
         )?;
-
-        let mut previous: Option<String> = None;
-        let mut completed_groups = BTreeSet::new();
-        for item in scope.items() {
-            if !item.is_enabled() {
-                continue;
-            }
-            if !matches!(item.kind(), ItemKindFact::Use) {
-                if let Some(previous_condition) = previous.take() {
-                    completed_groups.insert(previous_condition);
-                }
-                continue;
-            }
-            let condition = item.condition().unwrap_or("all()").to_owned();
-            if previous.is_none() && completed_groups.contains(&condition) {
-                adapter.push(
-                    module,
-                    diagnostics,
-                    RuleReport::new(
-                        RuleId::CfgUseGroupSpacing,
-                        t!("rule.cfg_use_group_split", { condition: &condition })?,
-                        Some(item.bounds()),
-                    ),
-                );
-            }
-            if let Some(previous_condition) = previous.as_ref() {
-                if previous_condition != &condition {
-                    if completed_groups.contains(&condition) {
-                        adapter.push(
-                            module,
-                            diagnostics,
-                            RuleReport::new(
-                                RuleId::CfgUseGroupSpacing,
-                                t!("rule.cfg_use_group_split", { condition: &condition })?,
-                                Some(item.bounds()),
-                            ),
-                        );
-                    }
-                    completed_groups.insert(previous_condition.clone());
-                }
-            }
-            previous = Some(condition);
-        }
         Ok(())
     }
 

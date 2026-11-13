@@ -1,10 +1,10 @@
-use std::{error::Error, fmt};
-
-use language_tags::LanguageTag;
-
 pub use u18n::{
     Locale as RuntimeLocale, LocaleProvider, PluralCount, RenderError, RenderedMessage,
 };
+
+use std::{error::Error, fmt};
+
+use language_tags::LanguageTag;
 
 include!(concat!(env!("OUT_DIR"), "/u18n_messages.rs"));
 

@@ -3,6 +3,11 @@ mod local_bindings;
 mod prelude;
 mod support;
 
+pub use index::{PathResolution, PathRootIdentity, PathRootKind, SymbolIndex};
+pub use prelude::{ExternalItemIdentity, ExternalItemKind, ExternalItemSource};
+
+pub(crate) use support::SymbolIndexSupport;
+
 use std::{
     collections::BTreeMap,
     ops::Range,
@@ -14,14 +19,10 @@ use cop_cargo::{DependencyKind, SelectedPackage};
 use cop_model::SourceSpan;
 use cop_syntax::{AstNodeId, ForeignItemSyntaxKind, ItemSyntaxKind, SyntaxNode, SyntaxNodeKind};
 
-pub(crate) use support::SymbolIndexSupport;
-
 use crate::{
     cfg_eval::{CfgDecision, CfgEvaluator},
     module_graph::ModuleNode,
 };
-pub use index::{PathResolution, PathRootIdentity, PathRootKind, SymbolIndex};
-pub use prelude::{ExternalItemIdentity, ExternalItemKind, ExternalItemSource};
 use prelude::{PreludeConfig, PreludeProvider};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

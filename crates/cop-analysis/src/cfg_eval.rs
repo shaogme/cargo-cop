@@ -1,3 +1,5 @@
+pub use cop_cfg::CfgDecision;
+
 use std::{collections::BTreeSet, ops::Range};
 
 use cop_cargo::TargetContext;
@@ -6,8 +8,6 @@ use cop_syntax::{
     Attribute, AttributeMeta, AttributeMetaArgument, AttributeMetaKind, AttributeMetaValueKind,
     LiteralKind, SourceFile,
 };
-
-pub use cop_cfg::CfgDecision;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct UnknownCondition {

@@ -876,7 +876,7 @@ fn queries_the_localized_rule_catalog_without_project_discovery() {
             "extern_crate_at_scope_start",
             "imports_at_scope_start",
             "out_of_line_modules_at_scope_start",
-            "cfg_use_group_spacing",
+            "use_group_spacing",
             "cfg_inside_use_tree",
             "unnecessary_pub_crate",
             "no_pub_in_visibility",
@@ -912,6 +912,7 @@ fn queries_the_localized_rule_catalog_without_project_discovery() {
         "impl_locality",
         "trait_impl_locality",
         "no_pub_in_visibility",
+        "use_group_spacing",
     ] {
         let explanation = fixture.run(&[
             "--explain-rule",
@@ -1003,6 +1004,9 @@ fn queries_the_localized_rule_catalog_without_project_discovery() {
     assert!(human_list
         .stdout
         .contains("no_pub_in_visibility [enabled, error]"));
+    assert!(human_list
+        .stdout
+        .contains("use_group_spacing [enabled, error]"));
 }
 
 #[test]
@@ -1101,6 +1105,45 @@ fn rejects_invalid_rule_queries_and_query_option_conflicts() {
         .as_str()
         .expect("本地化错误消息")
         .contains("未知规则"));
+
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write("src/lib.rs", "pub fn ready() {}\n");
+    for arguments in [
+        vec![
+            "--disable-rule",
+            "cfg_use_group_spacing",
+            "--format",
+            "json",
+        ],
+        vec![
+            "--severity",
+            "cfg_use_group_spacing=warning",
+            "--format",
+            "json",
+        ],
+        vec![
+            "--explain-rule",
+            "cfg_use_group_spacing",
+            "--format",
+            "json",
+        ],
+    ] {
+        let removed_id = fixture.run(&arguments);
+        let report = from_str::<Value>(&removed_id.stdout).expect("已移除规则 ID 错误 JSON");
+        assert_eq!(removed_id.status, 2, "{}", removed_id.stdout);
+        assert!(report["diagnostics"][0]["message"]
+            .as_str()
+            .expect("未知规则 ID 消息")
+            .contains("cfg_use_group_spacing"));
+    }
+
+    fixture.write(
+        "cargo-cop.toml",
+        "version = 4\n\n[rules.cfg_use_group_spacing]\nenabled = false\n",
+    );
+    let removed_config = fixture.run(&["--format", "json"]);
+    assert_eq!(removed_config.status, 2, "{}", removed_config.stdout);
+    assert!(removed_config.stdout.contains("cfg_use_group_spacing"));
 
     for arguments in [
         vec![
@@ -5169,7 +5212,7 @@ fn checks_import_spacing_in_module_and_nested_block_scopes() {
     assert_eq!(output.status, 1, "{}", output.stderr);
     assert!(output.stdout.contains("\"status\":\"complete\""));
     assert!(output.has_rule("merge_common_prefix_imports"));
-    assert!(output.has_rule("cfg_use_group_spacing"));
+    assert!(!output.has_rule("use_group_spacing"));
     assert!(output.has_rule("cfg_inside_use_tree"));
     assert!(output.has_rule("imports_at_scope_start"));
 }
@@ -5468,7 +5511,7 @@ fn reports_module_scope_order_violations_on_the_late_items() {
         "--disable-rule",
         "child_module_line_count",
         "--disable-rule",
-        "cfg_use_group_spacing",
+        "use_group_spacing",
     ]);
     let english = fixture.run(&[
         "--format",
@@ -5478,7 +5521,7 @@ fn reports_module_scope_order_violations_on_the_late_items() {
         "--disable-rule",
         "child_module_line_count",
         "--disable-rule",
-        "cfg_use_group_spacing",
+        "use_group_spacing",
     ]);
 
     assert_eq!(chinese.status, 1, "{}", chinese.stdout);
@@ -5747,7 +5790,7 @@ fn normalizes_stacked_cfg_conditions_before_import_grouping() {
     assert_eq!(diagnostics[0]["start"]["line"], 8);
     assert_eq!(reported_import_line(&diagnostics[0]), 1);
     assert!(diagnostic_message(&diagnostics[0]).contains("crate::module"));
-    assert!(!output.has_rule("cfg_use_group_spacing"));
+    assert!(!output.has_rule("use_group_spacing"));
 }
 
 #[test]
@@ -7376,7 +7419,7 @@ fn separates_cfg_import_groups_from_unconditional_imports() {
     assert_eq!(
         missing_separator
             .stdout
-            .matches("\"rule_id\":\"cfg_use_group_spacing\"")
+            .matches("\"rule_id\":\"use_group_spacing\"")
             .count(),
         1,
         "{}",
@@ -7389,7 +7432,46 @@ fn separates_cfg_import_groups_from_unconditional_imports() {
     );
     let separated = fixture.run(&["--format", "json", "--features", "enabled,other"]);
     assert_eq!(separated.status, 0, "{}", separated.stdout);
-    assert!(!separated.has_rule("cfg_use_group_spacing"));
+    assert!(!separated.has_rule("use_group_spacing"));
+}
+
+#[test]
+fn treats_explicit_all_cfg_as_the_unconditional_use_group() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "src/lib.rs",
+        "use crate::Unconditional;\n#[cfg(all())]\nuse crate::ExplicitAll;\n",
+    );
+
+    let output = fixture.run(&["--format", "json"]);
+
+    assert!(
+        rule_diagnostics(&output, "use_group_spacing").is_empty(),
+        "{}",
+        output.stdout
+    );
+}
+
+#[test]
+fn ignores_comment_lines_when_counting_group_spacing() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "Cargo.toml",
+        "[package]\nname = \"sample\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[features]\nalpha = []\n",
+    );
+    fixture.write(
+        "src/lib.rs",
+        "#[cfg(feature = \"alpha\")]\nuse crate::Conditional;\n// This comment does not count as a blank line.\n\nuse crate::Unconditional;\n",
+    );
+
+    let output = fixture.run(&["--format", "json", "--features", "alpha"]);
+
+    assert!(
+        rule_diagnostics(&output, "use_group_spacing").is_empty(),
+        "{}",
+        output.stdout
+    );
 }
 
 #[test]
@@ -7404,7 +7486,7 @@ fn skips_spacing_checks_across_target_disabled_import_groups() {
     let output = fixture.run(&["--format", "json", "--target", "x86_64-unknown-linux-gnu"]);
 
     assert_eq!(output.status, 0, "{}", output.stdout);
-    assert!(!output.has_rule("cfg_use_group_spacing"));
+    assert!(!output.has_rule("use_group_spacing"));
 }
 
 #[test]
@@ -7419,7 +7501,7 @@ fn skips_block_spacing_checks_across_target_disabled_import_groups() {
     let output = fixture.run(&["--format", "json", "--target", "x86_64-unknown-linux-gnu"]);
 
     assert_eq!(output.status, 0, "{}", output.stdout);
-    assert!(!output.has_rule("cfg_use_group_spacing"));
+    assert!(!output.has_rule("use_group_spacing"));
 }
 
 #[test]
@@ -7435,13 +7517,132 @@ fn checks_block_cfg_import_spacing_without_disabled_boundaries() {
         );
 
         let output = fixture.run(&["--format", "json", "--target", "x86_64-unknown-linux-gnu"]);
-        let diagnostics = rule_diagnostics(&output, "cfg_use_group_spacing");
+        let diagnostics = rule_diagnostics(&output, "use_group_spacing");
 
         assert_eq!(diagnostics.len(), expected_count, "{}", output.stdout);
         if separator == "\n\n" {
             assert!(diagnostic_message(&diagnostics[0]).contains("found 2 blank lines"));
         }
     }
+}
+
+#[test]
+fn orders_module_use_groups_by_source_visibility_form() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "src/lib.rs",
+        "pub use public::A;\n\npub(crate) use restricted::B;\npub(in crate::inner) use restricted::C;\npub(in super) use restricted::D;\n\npub(super) use parent::E;\n\npub(self) use private::F;\nuse private::G;\n",
+    );
+
+    let output = fixture.run(&["--format", "json"]);
+
+    assert!(output.status != 2, "{}", output.stdout);
+    assert!(
+        rule_diagnostics(&output, "use_group_spacing").is_empty(),
+        "{}",
+        output.stdout
+    );
+}
+
+#[test]
+fn classifies_spaced_and_commented_super_and_self_visibility_groups() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "src/lib.rs",
+        "mod spaced_super { pub( super ) use a::A; pub(crate) use b::B; }\nmod commented_super { pub( /* comment */ super ) use a::A; pub(crate) use b::B; }\nmod spaced_self { pub( self ) use a::A; pub(crate) use b::B; }\nmod commented_self { pub( /* comment */ self ) use a::A; pub(crate) use b::B; }\n",
+    );
+
+    let output = fixture.run(&["--format", "json"]);
+    let diagnostics = rule_diagnostics(&output, "use_group_spacing");
+    let order_errors = diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic_message(diagnostic).contains("appears out of order"))
+        .count();
+    let spacing_errors = diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic_message(diagnostic).contains("blank lines"))
+        .count();
+
+    assert!(output.status != 2, "{}", output.stdout);
+    assert_eq!(order_errors, 4, "{}", output.stdout);
+    assert_eq!(spacing_errors, 4, "{}", output.stdout);
+}
+
+#[test]
+fn reports_visibility_inversions_and_repeated_categories_once_per_group() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "src/lib.rs",
+        "use private::First;\n\npub use public::Item;\n\npub(crate) use restricted::Item;\n\npub(super) use parent::Item;\n\nuse private::Second;\n",
+    );
+
+    let output = fixture.run(&["--format", "json"]);
+    let diagnostics = rule_diagnostics(&output, "use_group_spacing")
+        .into_iter()
+        .filter(|diagnostic| diagnostic_message(diagnostic).contains("appears out of order"))
+        .collect::<Vec<_>>();
+
+    assert_eq!(diagnostics.len(), 2, "{}", output.stdout);
+    assert_eq!(diagnostics[0]["start"]["line"], 3);
+    assert_eq!(diagnostics[1]["start"]["line"], 9);
+}
+
+#[test]
+fn non_use_nodes_break_module_use_group_runs() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "src/lib.rs",
+        "use private::Item;\nfn boundary() {}\npub use public::Item;\n",
+    );
+
+    let output = fixture.run(&["--format", "json"]);
+
+    assert!(
+        rule_diagnostics(&output, "use_group_spacing").is_empty(),
+        "{}",
+        output.stdout
+    );
+}
+
+#[test]
+fn checks_cfg_groups_in_const_and_static_initializer_blocks() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "src/lib.rs",
+        "const VALUE: () = {\n    #[cfg(target_os = \"linux\")]\n    use crate::LinuxConst;\n    use crate::AlwaysConst;\n};\n\nstatic OTHER: () = {\n    #[cfg(target_os = \"linux\")]\n    use crate::LinuxStatic;\n    use crate::AlwaysStatic;\n};\n",
+    );
+
+    let output = fixture.run(&["--format", "json", "--target", "x86_64-unknown-linux-gnu"]);
+    let diagnostics = rule_diagnostics(&output, "use_group_spacing");
+
+    assert_eq!(diagnostics.len(), 2, "{}", output.stdout);
+    assert_eq!(diagnostics[0]["start"]["line"], 4);
+    assert_eq!(diagnostics[1]["start"]["line"], 10);
+}
+
+#[test]
+fn checks_late_block_uses_independently_of_import_position_results() {
+    let fixture = Fixture::new();
+    fixture.write("Cargo.toml", &package_manifest("sample"));
+    fixture.write(
+        "src/lib.rs",
+        "fn body() {\n    let value = ();\n    #[cfg(unix)]\n    use crate::Unix;\n    use crate::Always;\n}\n",
+    );
+
+    let output = fixture.run(&["--format", "json", "--target", "x86_64-unknown-linux-gnu"]);
+
+    assert_eq!(
+        rule_diagnostics(&output, "use_group_spacing").len(),
+        1,
+        "{}",
+        output.stdout
+    );
+    assert!(output.has_rule("imports_at_scope_start"));
 }
 
 #[test]
@@ -7457,14 +7658,38 @@ fn reports_repeated_available_cfg_import_groups() {
     );
 
     let output = fixture.run(&["--format", "json", "--features", "alpha,beta"]);
-    let split_diagnostics = rule_diagnostics(&output, "cfg_use_group_spacing")
+    let split_diagnostics = rule_diagnostics(&output, "use_group_spacing")
         .into_iter()
         .filter(|diagnostic| {
-            diagnostic_message(diagnostic).contains("is split by another import group")
+            diagnostic_message(diagnostic).contains("is split by another use group")
         })
         .count();
 
     assert_eq!(split_diagnostics, 2, "{}", output.stdout);
+}
+
+#[test]
+fn unknown_cfg_conditions_participate_in_use_grouping() {
+    let fixture = Fixture::new();
+    fixture.write(
+        "Cargo.toml",
+        "[package]\nname = \"sample\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[features]\nalpha = []\n",
+    );
+    fixture.write(
+        "src/lib.rs",
+        "#[cfg(custom_flag = \"x\")]\nuse crate::First;\n\n#[cfg(feature = \"alpha\")]\nuse crate::Middle;\n\n#[cfg(custom_flag = \"x\")]\nuse crate::Last;\n",
+    );
+
+    let output = fixture.run(&["--format", "json", "--features", "alpha"]);
+    let splits = rule_diagnostics(&output, "use_group_spacing")
+        .into_iter()
+        .filter(|diagnostic| {
+            diagnostic_message(diagnostic).contains("is split by another use group")
+        })
+        .count();
+
+    assert_eq!(splits, 1, "{}", output.stdout);
+    assert!(output.stdout.contains("\"analysis_issue\":\"unknown_cfg\""));
 }
 
 #[test]
@@ -7479,7 +7704,7 @@ fn ignores_target_disabled_imports_when_checking_cfg_group_splits() {
     let output = fixture.run(&["--format", "json", "--target", "x86_64-unknown-linux-gnu"]);
 
     assert_eq!(output.status, 0, "{}", output.stdout);
-    assert!(!output.has_rule("cfg_use_group_spacing"));
+    assert!(!output.has_rule("use_group_spacing"));
 }
 
 #[test]

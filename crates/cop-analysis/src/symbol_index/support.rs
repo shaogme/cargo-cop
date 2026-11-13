@@ -26,6 +26,8 @@ impl SymbolIndexSupport {
             VisibilityKind::Restricted(scope) | VisibilityKind::RestrictedIn(scope) => {
                 SymbolVisibility::Restricted(scope.clone())
             }
+            VisibilityKind::RestrictedSuper => SymbolVisibility::Restricted("(super)".to_owned()),
+            VisibilityKind::RestrictedSelf => SymbolVisibility::Restricted("(self)".to_owned()),
         }
     }
 

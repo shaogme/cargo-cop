@@ -6,31 +6,14 @@ mod kind;
 mod macro_input;
 mod syntax;
 
-use std::{borrow::Cow, ops::Range};
-
-use cop_i18n::RenderError;
-
-use crate::{
-    lexer::{LexIssue, LexOutput, Token, Trivia},
-    source::SourceFile,
-};
-
-pub(crate) use attribute::AttributeInput;
 pub use attribute::{Attribute, AttributeMeta, AttributeMetaValue};
 pub use attribute_kinds::{AttributeMetaArgument, AttributeMetaKind, AttributeMetaValueKind};
-pub(crate) use factory::AstFactory;
-pub(crate) use item::Item;
 pub use item::{Visibility, VisibilityKind};
-pub(crate) use kind::{
-    ExternBlockItem, ExternCrateItem, FunctionItem, ImplItem, ItemKind, ModuleItem,
-    NamedDeclaration, Parameter, TraitItem,
-};
 pub use kind::{ImplSyntaxData, MacroDefinition, MacroInvocation};
 pub use macro_input::{
     CfgCandidate, MacroInput, MacroInputStatus, MacroProfileBinding, MacroProfileKey,
     MacroTokenTree,
 };
-pub(crate) use syntax::GenericParameterParts;
 pub use syntax::{
     ClosureParameterSyntax, ExpressionBlockKind, ExpressionErrorKind, ExpressionFieldSyntax,
     ExpressionMatchArmSyntax, ExpressionSyntax, ExpressionSyntaxKind, ExpressionUnsupportedKind,
@@ -38,6 +21,24 @@ pub use syntax::{
     GenericParameterSyntax, PathSegmentSyntax, PathSyntax, PatternFieldSyntax, PatternSyntax,
     PatternSyntaxKind, TraitBoundKind, TraitBoundSyntax, TypeSyntax, TypeSyntaxKind, UnaryOperator,
     WhereClauseSyntax, WherePredicateKind, WherePredicateSyntax,
+};
+
+pub(crate) use attribute::AttributeInput;
+pub(crate) use factory::AstFactory;
+pub(crate) use item::Item;
+pub(crate) use kind::{
+    ExternBlockItem, ExternCrateItem, FunctionItem, ImplItem, ItemKind, ModuleItem,
+    NamedDeclaration, Parameter, TraitItem,
+};
+pub(crate) use syntax::GenericParameterParts;
+
+use std::{borrow::Cow, ops::Range};
+
+use cop_i18n::RenderError;
+
+use crate::{
+    lexer::{LexIssue, LexOutput, Token, Trivia},
+    source::SourceFile,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

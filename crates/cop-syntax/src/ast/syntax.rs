@@ -3,10 +3,6 @@ mod path;
 mod pattern;
 mod types;
 
-use std::ops::Range;
-
-use crate::Delimiter;
-
 pub use expression::{
     ClosureParameterSyntax, ExpressionBlockKind, ExpressionErrorKind, ExpressionFieldSyntax,
     ExpressionMatchArmSyntax, ExpressionSyntax, ExpressionSyntaxKind, ExpressionUnsupportedKind,
@@ -15,6 +11,10 @@ pub use expression::{
 pub use path::{GenericArgumentSyntax, PathSegmentSyntax, PathSyntax};
 pub use pattern::{PatternFieldSyntax, PatternSyntax};
 pub use types::{FunctionTraitArgumentsSyntax, TraitBoundKind, TraitBoundSyntax, TypeSyntax};
+
+use std::ops::Range;
+
+use crate::Delimiter;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TypeSyntaxKind {

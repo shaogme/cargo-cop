@@ -2,16 +2,16 @@ mod api_surface;
 mod collector;
 mod records;
 
+pub use collector::ReferenceKind;
+pub use records::{
+    CfgMacroFact, CoverageRegion, CoverageRegionKind, ImplOwnerRecord, TypeAliasFact,
+};
+
 use std::{collections::BTreeMap, mem, ops::Range, path::PathBuf};
 
 use cop_cargo::SelectedPackage;
 use cop_syntax::{
     AstNodeId, CoverageStatus, ItemSyntaxKind, SyntaxNode, SyntaxNodeKind, TypeSyntaxKind,
-};
-
-pub use collector::ReferenceKind;
-pub use records::{
-    CfgMacroFact, CoverageRegion, CoverageRegionKind, ImplOwnerRecord, TypeAliasFact,
 };
 
 use api_surface::{ApiSurfaceCollector, ApiSurfaceRange, PendingDeclaration};

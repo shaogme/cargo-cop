@@ -1,11 +1,15 @@
+mod support;
+
 use std::{collections::BTreeMap, ops::Range};
 
 use cop_syntax::{
-    AstNodeId, ExpressionSyntaxKind, ItemSyntaxKind, ParseOutput, SyntaxNode, SyntaxNodeKind,
-    VisibilityKind,
+    AstNodeId, ExpressionSyntaxKind, ItemSyntaxKind, StatementSyntaxKind, SyntaxNode,
+    SyntaxNodeKind, VisibilityKind,
 };
 
 use crate::{CfgDecision, ModuleNode, SymbolVisibility};
+
+use self::support::SyntaxFactSupport;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ItemKindFact {
@@ -55,11 +59,34 @@ pub struct ItemFact {
     public_fields: Vec<FieldFact>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum UseGroupVisibility {
+    Public,
+    Restricted,
+    Parent,
+    Private,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ScopeSequenceKind {
+    Use { visibility: UseGroupVisibility },
+    Boundary,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ScopeSequenceFact {
+    bounds: Range<usize>,
+    condition: Option<String>,
+    enabled: bool,
+    kind: ScopeSequenceKind,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ItemScopeFact {
     id: usize,
     bounds: Range<usize>,
     items: Vec<ItemFact>,
+    sequence: Vec<ScopeSequenceFact>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -71,10 +98,7 @@ pub struct ShapeParameterFact {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BlockItemFact {
-    bounds: Range<usize>,
-    condition: Option<String>,
-    enabled: bool,
-    use_tree: bool,
+    sequence: ScopeSequenceFact,
     supported: bool,
     nested_cfg_ranges: Vec<Range<usize>>,
 }
@@ -83,6 +107,7 @@ pub struct BlockItemFact {
 pub struct BlockScopeFact {
     bounds: Range<usize>,
     items: Vec<BlockItemFact>,
+    sequence: Vec<ScopeSequenceFact>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -213,6 +238,28 @@ impl ItemScopeFact {
     pub fn items(&self) -> &[ItemFact] {
         &self.items
     }
+
+    pub fn sequence(&self) -> &[ScopeSequenceFact] {
+        &self.sequence
+    }
+}
+
+impl ScopeSequenceFact {
+    pub fn bounds(&self) -> Range<usize> {
+        self.bounds.clone()
+    }
+
+    pub fn condition(&self) -> Option<&str> {
+        self.condition.as_deref()
+    }
+
+    pub fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+
+    pub fn kind(&self) -> &ScopeSequenceKind {
+        &self.kind
+    }
 }
 
 impl ShapeParameterFact {
@@ -231,19 +278,19 @@ impl ShapeParameterFact {
 
 impl BlockItemFact {
     pub fn bounds(&self) -> Range<usize> {
-        self.bounds.clone()
+        self.sequence.bounds()
     }
 
     pub fn condition(&self) -> Option<&str> {
-        self.condition.as_deref()
+        self.sequence.condition()
     }
 
     pub fn is_enabled(&self) -> bool {
-        self.enabled
+        self.sequence.is_enabled()
     }
 
     pub fn is_use_tree(&self) -> bool {
-        self.use_tree
+        matches!(self.sequence.kind(), ScopeSequenceKind::Use { .. })
     }
 
     pub fn is_supported(&self) -> bool {
@@ -252,6 +299,10 @@ impl BlockItemFact {
 
     pub fn nested_cfg_ranges(&self) -> &[Range<usize>] {
         &self.nested_cfg_ranges
+    }
+
+    pub fn sequence(&self) -> &ScopeSequenceFact {
+        &self.sequence
     }
 }
 
@@ -262,6 +313,10 @@ impl BlockScopeFact {
 
     pub fn items(&self) -> &[BlockItemFact] {
         &self.items
+    }
+
+    pub fn sequence(&self) -> &[ScopeSequenceFact] {
+        &self.sequence
     }
 }
 
@@ -311,6 +366,11 @@ impl SyntaxFactsCollector {
             id: 0,
             bounds: module.scope_range(),
             items: Vec::new(),
+            sequence: module
+                .parse_output()
+                .node(module.scope_id())
+                .map(|scope| make_scope_sequence(module, scope))
+                .unwrap_or_default(),
         };
         Self {
             facts: ModuleSyntaxFacts {
@@ -346,10 +406,10 @@ impl SyntaxFactsCollector {
                 .parent()
                 .and_then(|id| output.node(id))
                 .is_none_or(|parent| parent.kind() != SyntaxNodeKind::MacroDefinition)
-            && node_is_enabled(module, node)
+            && SyntaxFactSupport::node_is_enabled(module, node)
         {
             self.has_non_declarative_opaque = true;
-            if within_bounds(&module.scope_range(), node.start()..node.end()) {
+            if SyntaxFactSupport::within_bounds(&module.scope_range(), node.start()..node.end()) {
                 self.has_scope_non_declarative_opaque = true;
             }
         }
@@ -372,6 +432,7 @@ impl SyntaxFactsCollector {
                         .map(|(first, last)| first.start()..last.end())
                         .unwrap_or(node.start()..node.end()),
                     items: Vec::new(),
+                    sequence: make_scope_sequence(module, node),
                 });
             }
         }
@@ -421,13 +482,13 @@ impl SyntaxFactsCollector {
                         ))
             })
         {
-            if let Some(owner) = nearest_record_item(module, node) {
+            if let Some(owner) = SyntaxFactSupport::nearest_record_item(module, node) {
                 if let Some((scope_index, item_index)) = self.items_by_node.get(&owner).copied() {
                     self.facts.scopes[scope_index].items[item_index]
                         .public_fields
                         .push(FieldFact {
                             bounds: node.start()..node.end(),
-                            condition: condition_for_node(module, node),
+                            condition: SyntaxFactSupport::condition_for_node(module, node),
                             enabled: module
                                 .configured_ast()
                                 .is_enabled_range(node.start(), node.end()),
@@ -438,25 +499,23 @@ impl SyntaxFactsCollector {
         if node.kind() == SyntaxNodeKind::UseTree {
             self.record_nested_cfg_range(module, node);
         }
-        if node.kind() == SyntaxNodeKind::Block && inside_function(module, node) {
+        if node.kind() == SyntaxNodeKind::Block && SyntaxFactSupport::is_source_block(module, node)
+        {
             let items = node
                 .children()
                 .iter()
                 .filter_map(|id| output.node(*id))
-                .filter(|child| node_is_enabled(module, child) || is_use_statement(output, child))
                 .map(|child| {
-                    let use_tree = is_use_statement(output, child);
+                    let sequence = make_sequence_fact(
+                        module,
+                        child,
+                        is_use_statement(child).then_some(UseGroupVisibility::Private),
+                    );
+                    let use_tree = matches!(sequence.kind(), ScopeSequenceKind::Use { .. });
                     (
                         child.id(),
                         BlockItemFact {
-                            bounds: child.start()..child.end(),
-                            condition: module
-                                .configured_ast()
-                                .node(child.id())
-                                .and_then(|configured| configured.availability_condition())
-                                .map(str::to_owned),
-                            enabled: node_is_enabled(module, child),
-                            use_tree,
+                            sequence,
                             supported: use_tree
                                 && module.configured_ast().is_supported_range(
                                     output,
@@ -472,6 +531,7 @@ impl SyntaxFactsCollector {
             self.facts.block_scopes.push(BlockScopeFact {
                 bounds: node.start()..node.end(),
                 items: items.iter().map(|(_, item)| item.clone()).collect(),
+                sequence: make_scope_sequence(module, node),
             });
             for (item_index, (item_id, _)) in items.into_iter().enumerate() {
                 self.block_items_by_node
@@ -545,10 +605,10 @@ impl SyntaxFactsCollector {
             .iter()
             .any(|issue| module.configured_ast().is_issue_enabled(issue));
         self.has_scope_issue = module.parse_output().issues().iter().any(|issue| {
-            within_bounds(&module.scope_range(), issue.start()..issue.end())
+            SyntaxFactSupport::within_bounds(&module.scope_range(), issue.start()..issue.end())
                 && module.configured_ast().is_issue_enabled(issue)
         });
-        self.facts.code_line_count = count_code_lines(module, &self.test_ranges);
+        self.facts.code_line_count = SyntaxFactSupport::count_code_lines(module, &self.test_ranges);
         self.facts.declarative_coverage = !self.has_issue && !self.has_non_declarative_opaque;
         self.facts.declarative_scope_coverage =
             !self.has_scope_issue && !self.has_scope_non_declarative_opaque;
@@ -657,6 +717,8 @@ fn make_item_fact(module: &ModuleNode, node: &SyntaxNode, scope_id: usize) -> It
         VisibilityKind::Restricted(scope) | VisibilityKind::RestrictedIn(scope) => {
             SymbolVisibility::Restricted(scope.clone())
         }
+        VisibilityKind::RestrictedSuper => SymbolVisibility::Restricted("(super)".to_owned()),
+        VisibilityKind::RestrictedSelf => SymbolVisibility::Restricted("(self)".to_owned()),
     };
     let declarative = match item.kind() {
         ItemSyntaxKind::Module { .. }
@@ -689,8 +751,8 @@ fn make_item_fact(module: &ModuleNode, node: &SyntaxNode, scope_id: usize) -> It
         node_id: node.id(),
         scope_id,
         bounds: node.start()..node.end(),
-        condition: condition_for_node(module, node),
-        enabled: node_is_enabled(module, node),
+        condition: SyntaxFactSupport::condition_for_node(module, node),
+        enabled: SyntaxFactSupport::node_is_enabled(module, node),
         kind,
         name,
         visibility,
@@ -699,6 +761,87 @@ fn make_item_fact(module: &ModuleNode, node: &SyntaxNode, scope_id: usize) -> It
         declarative,
         public_fields: Vec::new(),
     }
+}
+
+fn make_scope_sequence(module: &ModuleNode, scope: &SyntaxNode) -> Vec<ScopeSequenceFact> {
+    let output = module.parse_output();
+    let children = scope
+        .children()
+        .iter()
+        .filter_map(|id| output.node(*id))
+        .collect::<Vec<_>>();
+    let mut sequence = children
+        .iter()
+        .map(|child| {
+            let visibility = scope_use_visibility(child)
+                .or_else(|| is_use_statement(child).then_some(UseGroupVisibility::Private));
+            make_sequence_fact(module, child, visibility)
+        })
+        .collect::<Vec<_>>();
+    sequence.extend(
+        output
+            .issues()
+            .iter()
+            .filter(|issue| issue.source_node_id() == Some(scope.id()))
+            .filter(|issue| {
+                !children
+                    .iter()
+                    .any(|child| child.start() <= issue.start() && issue.end() <= child.end())
+            })
+            .map(|issue| ScopeSequenceFact {
+                bounds: issue.start()..issue.end(),
+                condition: module
+                    .configured_ast()
+                    .condition_for_span(issue.start(), issue.end())
+                    .map(str::to_owned),
+                enabled: module
+                    .configured_ast()
+                    .is_enabled_range(issue.start(), issue.end()),
+                kind: ScopeSequenceKind::Boundary,
+            }),
+    );
+    sequence.sort_by(|left, right| {
+        left.bounds
+            .start
+            .cmp(&right.bounds.start)
+            .then_with(|| left.bounds.end.cmp(&right.bounds.end))
+    });
+    sequence
+}
+
+fn make_sequence_fact(
+    module: &ModuleNode,
+    node: &SyntaxNode,
+    visibility: Option<UseGroupVisibility>,
+) -> ScopeSequenceFact {
+    let configured = module.configured_ast().node(node.id());
+    ScopeSequenceFact {
+        bounds: node.start()..node.end(),
+        condition: configured
+            .and_then(|configured| configured.availability_condition())
+            .map(str::to_owned),
+        enabled: configured
+            .is_none_or(|configured| configured.availability_decision() != CfgDecision::False),
+        kind: visibility.map_or(ScopeSequenceKind::Boundary, |visibility| {
+            ScopeSequenceKind::Use { visibility }
+        }),
+    }
+}
+
+fn scope_use_visibility(node: &SyntaxNode) -> Option<UseGroupVisibility> {
+    let item = node.item_syntax()?;
+    if !matches!(item.kind(), ItemSyntaxKind::Use) {
+        return None;
+    }
+    Some(match item.visibility().kind() {
+        VisibilityKind::Private => UseGroupVisibility::Private,
+        VisibilityKind::Public => UseGroupVisibility::Public,
+        VisibilityKind::RestrictedSuper => UseGroupVisibility::Parent,
+        VisibilityKind::RestrictedSelf => UseGroupVisibility::Private,
+        VisibilityKind::Restricted(_) | VisibilityKind::RestrictedIn(_) => {
+            UseGroupVisibility::Restricted
+        }
+    })
 }
 
 fn direct_item_children<'a>(module: &'a ModuleNode, scope: &'a SyntaxNode) -> Vec<&'a SyntaxNode> {
@@ -710,114 +853,7 @@ fn direct_item_children<'a>(module: &'a ModuleNode, scope: &'a SyntaxNode) -> Ve
         .collect()
 }
 
-fn nearest_record_item(module: &ModuleNode, node: &SyntaxNode) -> Option<AstNodeId> {
-    let output = module.parse_output();
-    let mut current = node.parent();
-    while let Some(id) = current {
-        let ancestor = output.node(id)?;
-        if ancestor.item_syntax().is_some_and(|item| {
-            matches!(
-                item.kind(),
-                ItemSyntaxKind::Struct(_) | ItemSyntaxKind::Enum(_) | ItemSyntaxKind::Union(_)
-            )
-        }) {
-            return Some(id);
-        }
-        if ancestor
-            .item_syntax()
-            .is_some_and(|item| matches!(item.kind(), ItemSyntaxKind::Module { .. }))
-        {
-            return None;
-        }
-        current = ancestor.parent();
-    }
-    None
-}
-
-fn inside_function(module: &ModuleNode, node: &SyntaxNode) -> bool {
-    let output = module.parse_output();
-    let mut current = node.parent();
-    while let Some(id) = current {
-        let Some(ancestor) = output.node(id) else {
-            return false;
-        };
-        if ancestor
-            .item_syntax()
-            .is_some_and(|item| matches!(item.kind(), ItemSyntaxKind::Function { .. }))
-        {
-            return true;
-        }
-        if ancestor
-            .item_syntax()
-            .is_some_and(|item| matches!(item.kind(), ItemSyntaxKind::Module { .. }))
-        {
-            return false;
-        }
-        current = ancestor.parent();
-    }
-    false
-}
-
-fn is_use_statement(output: &ParseOutput, node: &SyntaxNode) -> bool {
+fn is_use_statement(node: &SyntaxNode) -> bool {
     node.kind() == SyntaxNodeKind::Statement
-        && node.children().iter().any(|id| {
-            output
-                .node(*id)
-                .is_some_and(|tree| tree.kind() == SyntaxNodeKind::UseTree)
-        })
-}
-
-fn node_is_enabled(module: &ModuleNode, node: &SyntaxNode) -> bool {
-    module
-        .configured_ast()
-        .node(node.id())
-        .is_some_and(|configured| configured.availability_decision() != CfgDecision::False)
-}
-
-fn condition_for_node(module: &ModuleNode, node: &SyntaxNode) -> Option<String> {
-    module
-        .configured_ast()
-        .condition_for_span(node.start(), node.end())
-        .map(str::to_owned)
-}
-
-fn within_bounds(outer: &Range<usize>, inner: Range<usize>) -> bool {
-    outer.start <= inner.start && inner.end <= outer.end
-}
-
-fn count_code_lines(module: &ModuleNode, test_ranges: &[Range<usize>]) -> usize {
-    let output = module.parse_output();
-    let test_module = output
-        .inner_attributes()
-        .iter()
-        .any(|attribute| attribute.is_cfg_test());
-    let mut lines = Vec::new();
-    if !test_module {
-        for token in output.tokens() {
-            if !module
-                .configured_ast()
-                .is_enabled_range(token.start(), token.end())
-                || test_ranges
-                    .iter()
-                    .any(|range| range.contains(&token.start()))
-            {
-                continue;
-            }
-            if let Some((start_line, _)) = output.source().line_column(token.start()) {
-                let line_breaks = token
-                    .text(output.source())
-                    .bytes()
-                    .filter(|byte| *byte == b'\n')
-                    .count();
-                let end_line =
-                    start_line.saturating_add(u32::try_from(line_breaks).unwrap_or(u32::MAX));
-                for line in start_line..=end_line {
-                    if lines.last() != Some(&line) {
-                        lines.push(line);
-                    }
-                }
-            }
-        }
-    }
-    lines.len()
+        && node.statement_kind() == Some(StatementSyntaxKind::Use)
 }

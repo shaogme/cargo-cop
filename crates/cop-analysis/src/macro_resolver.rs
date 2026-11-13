@@ -1,11 +1,12 @@
 mod index;
 mod profile;
 
+pub(crate) use self::index::{MacroResolverCatalog, MacroResolverIndex};
+
 use std::collections::BTreeSet;
 
 use cop_syntax::{AstNodeId, MacroInvocation, MacroProfileBinding, ParseOutput};
 
-pub(crate) use self::index::{MacroResolverCatalog, MacroResolverIndex};
 use crate::{
     cfg_eval::CfgDecision,
     macro_resolver::{index::IndexedMacroUseKind, profile::MacroProfileResolver},

@@ -1,6 +1,7 @@
+pub(super) use crate::recovery::AngleScanContext;
+
 use std::ops::Range;
 
-pub(super) use crate::recovery::AngleScanContext;
 use crate::{Delimiter, Token, TokenKind};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -805,8 +806,8 @@ impl<'a> TokenCursor<'a> {
             _ => return None,
         }
         let mut stack = Vec::new();
-        for index in open..self.end {
-            match self.tokens[index].kind() {
+        for (index, token) in self.tokens.iter().enumerate().take(self.end).skip(open) {
+            match token.kind() {
                 TokenKind::OpenDelimiter(delimiter) => stack.push(*delimiter),
                 TokenKind::CloseDelimiter(delimiter) => {
                     if stack.last() != Some(delimiter) {
